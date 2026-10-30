@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Yayoi OCR ground truth (1 page)",
+  "description": "実サンプルの正解データ。実データ(値)は $YAYOI_PRIVATE_DATA/ground_truth/*.json にのみ置き、リポジトリにはこのスキーマだけをコミットする。",
+  "type": "object",
+  "required": ["schema_version", "image", "title", "number", "rows"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "image": {"type": "string", "description": "samples/ 配下のファイル名"},
+    "title": {"$ref": "#/$defs/field"},
+    "number": {"$ref": "#/$defs/field"},
+    "rows": {
+      "type": "array",
+      "description": "明細 29 行(様式の行数)。空行も含め、全行を順番に並べる。",
+      "items": {
+        "type": "object",
+        "required": ["date", "account", "description", "amount"],
+        "properties": {
+          "date": {"$ref": "#/$defs/field"},
+          "account": {"$ref": "#/$defs/field"},
+          "description": {"$ref": "#/$defs/field"},
+          "amount": {"$ref": "#/$defs/field"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "required": ["raw", "resolved"],
+      "properties": {
+        "raw": {
+          "type": "string",
+          "description": "書かれた通りの文字列。同上記号は「〃」、下の行へ続く矢印は「→」などのトークンで表す。空欄は空文字。"
+        },
+        "resolved": {
+          "type": "string",
+          "description": "同上・矢印などを展開した後の値。空欄は空文字。"
+        },
+        "uncertain": {"type": "boolean", "description": "読み取りに自信がない場合 true"},
+        "note": {"type": "string", "description": "補足(実データの値を含めないこと。値は raw/resolved にのみ書く)"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

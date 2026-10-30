@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yayoi-ocr"
+version = "0.1.0"
+description = "手書き経理帳票のスキャン画像を OCR し、弥生会計向け CSV に変換する(Windows・完全オフライン)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "Pillow>=10.0",
+    "pypdfium2>=4.30",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+yayoi-ocr = "yayoi_ocr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+yayoi_ocr = ["templates/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "samples: 実サンプル画像(YAYOI_PRIVATE_DATA/samples)が必要なテスト。無ければ skip",
+    "slow: 時間のかかるテスト",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # 日本語の全角文字を許可
+    "N803", "N806",                # 画像処理で H, W 等の大文字変数を使う
+]

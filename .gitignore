@@ -1,0 +1,63 @@
+# ---- 実データ保護(public リポジトリ): 画像・PDF・データ・モデルは絶対にコミットしない ----
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.webp
+*.heic
+*.heif
+*.pdf
+*.ico
+*.psd
+# データ・モデル・DB
+*.sqlite
+*.sqlite3
+*.db
+*.npy
+*.npz
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
+*.pkl
+*.pickle
+*.csv
+*.zip
+*.7z
+*.tar
+*.gz
+# フォント(ライセンス上、再配布しない)
+*.ttf
+*.otf
+*.ttc
+# データ用ディレクトリ
+/data/
+/private/
+/samples/
+/ground_truth/
+/models/
+/outputs/
+/out/
+/debug/
+/scratch/
+yayoi_private/
+
+# ---- Python / ツール ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/

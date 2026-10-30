@@ -1,0 +1,5 @@
+#!/bin/sh
+# push 前: 未 push コミットの全 blob(履歴含む)と追跡ファイルを検査
+root="$(git rev-parse --show-toplevel)"
+python3 "$root/scripts/check_no_private_data.py" --unpushed || exit 1
+exec python3 "$root/scripts/check_no_private_data.py" --all
