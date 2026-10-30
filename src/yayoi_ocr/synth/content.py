@@ -115,7 +115,12 @@ def _fmt_amount(rng: np.random.Generator, v: int) -> str:
     return s + ("-" if rng.random() < 0.95 else "")
 
 
-def plan_page(rng: np.random.Generator, n_rows: int = 29, fill_rows: int | None = None) -> PagePlan:
+def plan_page(
+    rng: np.random.Generator,
+    n_rows: int = 29,
+    fill_rows: int | None = None,
+    desc_pool: list[str] | None = None,
+) -> PagePlan:
     """1 ページ分の内容を作る。`fill_rows` 行が埋まり、残りは空行(途中の空行も少し混ぜる)。"""
     if fill_rows is None:
         fill_rows = int(rng.integers(10, n_rows + 1))
@@ -173,7 +178,8 @@ def plan_page(rng: np.random.Generator, n_rows: int = 29, fill_rows: int | None 
         if i > 0 and desc and u < 0.30:
             new_desc = desc
         else:
-            new_desc = str(rng.choice(DESCRIPTIONS)).replace("{m}", str(int(rng.integers(1, 13))))
+            pool = desc_pool or DESCRIPTIONS
+            new_desc = str(rng.choice(pool)).replace("{m}", str(int(rng.integers(1, 13))))
         if i > 0 and desc and new_desc == desc and rng.random() < 0.9:
             row["description"] = CellPlan("description", "ditto", DITTO, desc)
         elif desc_history and u > 0.95:

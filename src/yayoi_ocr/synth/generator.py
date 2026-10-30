@@ -67,6 +67,8 @@ class SynthConfig:
     # 書き手の癖の強さ(1.0 = 標準)。弾性変形・回転/拡大のゆらぎ・字間/ベースラインのゆらぎにかかる倍率。
     # 合成の書き手が実際の手書きより極端すぎないかを、強さの段階ごとの正解率で確かめるための設定
     writer_strength: float = 1.0
+    # 摘要の語彙: "base"(既定の少数語)/ "general-train" / "general-eval"(一般語彙。学習用と評価用で語を分ける。vocab.py)
+    vocab: str = "base"
 
 
 @dataclass
@@ -311,6 +313,17 @@ def _apply_lighting(img: np.ndarray, rng: np.random.Generator, strength: float) 
     return img * np.clip(light * vign, 0.3, 1.3)[..., None]
 
 
+def _desc_pool(vocab: str) -> list[str] | None:
+    if vocab == "base":
+        return None
+    from .content import DESCRIPTIONS
+    from .vocab import general_pool
+
+    split = {"general-train": "train", "general-eval": "eval"}[vocab]
+    # 学習用は既定語も 3 割混ぜる(既定語の読みを維持)。評価用は一般語彙だけ(学習に出ない語)
+    return general_pool(split) + (DESCRIPTIONS[:0] if split == "eval" else list(DESCRIPTIONS) * 2)
+
+
 def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = None) -> SynthSample:
     cfg = cfg or SynthConfig()
     tpl = tpl or load_template()
@@ -332,7 +345,7 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
     blank, info = render_blank(tpl, scale, rng)
     to_px = info["to_px"]
     cw, ch = info["size"]
-    plan = plan_page(rng, tpl.n_rows, cfg.fill_rows)
+    plan = plan_page(rng, tpl.n_rows, cfg.fill_rows, _desc_pool(cfg.vocab))
     fill_form(blank, tpl, to_px, rng, writer, plan)
 
     use = set(ALL_DEGRADATIONS if cfg.degradations is None else cfg.degradations)

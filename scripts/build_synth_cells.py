@@ -48,6 +48,14 @@ def main() -> int:
     )
     ap.add_argument("--strength", type=float, default=1.0)
     ap.add_argument("--fill-rows", type=int, default=None)
+    ap.add_argument("--vocab", default="base", choices=["base", "general-train", "general-eval"])
+    ap.add_argument(
+        "--strength-range",
+        type=float,
+        nargs=2,
+        metavar=("LO", "HI"),
+        help="書き手の崩しの倍率をページごとに [LO, HI] の一様乱数で決める(学習用に 0.5〜1.0 を混ぜる)",
+    )
     ap.add_argument(
         "--writer-strength", type=float, default=1.0, help="書き手の崩しの倍率(1.0 = 標準)"
     )
@@ -60,6 +68,8 @@ def main() -> int:
     kw: dict = {"degrade_strength": args.strength}
     if args.writer_strength != 1.0:
         kw["writer_strength"] = args.writer_strength
+    if args.vocab != "base":
+        kw["vocab"] = args.vocab
     if args.fill_rows:
         kw["fill_rows"] = args.fill_rows
     if args.font_include:
@@ -69,7 +79,13 @@ def main() -> int:
     tasks = []
     for i in range(args.n):
         w = args.writer0 + (i % args.writers if args.writers else i)
-        tasks.append((str(out), args.preset, args.seed0 + i, w, kw))
+        kwi = dict(kw)
+        if args.strength_range:
+            lo, hi = args.strength_range
+            kwi["writer_strength"] = (
+                lo + (hi - lo) * (((args.seed0 + i) * 2654435761) % 1000) / 1000.0
+            )
+        tasks.append((str(out), args.preset, args.seed0 + i, w, kwi))
     t0 = time.time()
     done = 0
     if args.jobs > 1:
