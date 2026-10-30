@@ -130,13 +130,35 @@ class DecoderLayer(nn.Module):
         self.norm_q = nn.LayerNorm(d_model, eps=layer_norm_eps)
         self.norm_c = nn.LayerNorm(d_model, eps=layer_norm_eps)
 
-    def forward_stream(self, tgt, tgt_norm, tgt_kv, memory, tgt_mask, tgt_key_padding_mask):
+    def project_memory(self, memory: Tensor) -> tuple[Tensor, Tensor]:
+        """エンコーダ出力 (B, S, C) → cross-attention の K・V(各 (B, H, S, C/H))。デコードの全ステップ・全候補で共有する。"""
+        mha = self.cross_attn
+        c, h = mha.embed_dim, mha.num_heads
+        w, b = mha.in_proj_weight, mha.in_proj_bias
+        k = F.linear(memory, w[c : 2 * c], b[c : 2 * c])
+        v = F.linear(memory, w[2 * c :], b[2 * c :])
+        bsz, s = k.shape[:2]
+        return k.view(bsz, s, h, c // h).transpose(1, 2), v.view(bsz, s, h, c // h).transpose(1, 2)
+
+    def cross(self, x: Tensor, kv: tuple[Tensor, Tensor]) -> Tensor:
+        """nn.MultiheadAttention と同じ計算(マスクなし)。K・V のバッチは 1 でも x と同じでもよい。"""
+        mha = self.cross_attn
+        c, h = mha.embed_dim, mha.num_heads
+        n, t, _ = x.shape
+        q = F.linear(x, mha.in_proj_weight[:c], mha.in_proj_bias[:c])
+        q = q.view(n, t, h, c // h).transpose(1, 2)
+        k, v = kv
+        if k.shape[0] != n:
+            k, v = k.expand(n, -1, -1, -1), v.expand(n, -1, -1, -1)
+        o = F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(n, t, c)
+        return F.linear(o, mha.out_proj.weight, mha.out_proj.bias)
+
+    def forward_stream(self, tgt, tgt_norm, tgt_kv, memory_kv, tgt_mask, tgt_key_padding_mask):
         tgt2, _ = self.self_attn(
             tgt_norm, tgt_kv, tgt_kv, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
         )
         tgt = tgt + tgt2
-        tgt2, _ = self.cross_attn(self.norm1(tgt), memory, memory)
-        tgt = tgt + tgt2
+        tgt = tgt + self.cross(self.norm1(tgt), memory_kv)
         return tgt + self.linear2(F.gelu(self.linear1(self.norm2(tgt))))
 
     def forward(
@@ -167,11 +189,14 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList([DecoderLayer(*decoder_layer_args) for _ in range(num_layers)])
         self.norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, query, content, memory, query_mask=None, content_mask=None, content_kpm=None):
+    def forward(
+        self, query, content, memory_kv, query_mask=None, content_mask=None, content_kpm=None
+    ):
+        """memory_kv: レイヤごとの (K, V) のリスト(`PARSeq.project_memory`)。"""
         for i, mod in enumerate(self.layers):
             last = i == len(self.layers) - 1
             query, content = mod(
-                query, content, memory, query_mask, content_mask, content_kpm, not last
+                query, content, memory_kv[i], query_mask, content_mask, content_kpm, not last
             )
         return self.norm(query)
 
@@ -232,12 +257,13 @@ class PARSeq(nn.Module):
     def decode(
         self,
         tgt: Tensor,
-        memory: Tensor,
+        memory: Tensor | list,
         tgt_mask: Tensor | None = None,
         tgt_padding_mask: Tensor | None = None,
         tgt_query: Tensor | None = None,
         tgt_query_mask: Tensor | None = None,
     ) -> Tensor:
+        """memory: エンコーダ出力(Tensor)か、`project_memory` の結果(K・V のキャッシュ)。"""
         n, length = tgt.shape
         # <bos> は null コンテキスト。BOS より後の文字にだけ位置情報を与える。
         null_ctx = self.text_embed(tgt[:, :1])
@@ -245,7 +271,12 @@ class PARSeq(nn.Module):
         tgt_emb = torch.cat([null_ctx, tgt_emb], dim=1)
         if tgt_query is None:
             tgt_query = self.pos_queries[:, :length].expand(n, -1, -1)
-        return self.decoder(tgt_query, tgt_emb, memory, tgt_query_mask, tgt_mask, tgt_padding_mask)
+        kv = memory if isinstance(memory, list) else self.project_memory(memory)
+        return self.decoder(tgt_query, tgt_emb, kv, tgt_query_mask, tgt_mask, tgt_padding_mask)
+
+    def project_memory(self, memory: Tensor) -> list[tuple[Tensor, Tensor]]:
+        """cross-attention の K・V をレイヤごとに 1 回だけ射影する(全ステップ・全候補で共有)。"""
+        return [layer.project_memory(memory) for layer in self.decoder.layers]
 
     # ------------------------------------------------------------------ 推論
 
@@ -260,7 +291,7 @@ class PARSeq(nn.Module):
         refine_iters = self.refine_iters if refine is None else int(bool(refine))
         bs = images.shape[0]
         num_steps = self.max_label_length + 1
-        memory = self.encode(images)
+        memory = self.project_memory(self.encode(images))
         pos_queries = self.pos_queries[:, :num_steps].expand(bs, -1, -1)
         tgt_mask = query_mask = torch.triu(
             torch.ones((num_steps, num_steps), dtype=torch.bool, device=self.device), 1
@@ -351,7 +382,10 @@ class PARSeq(nn.Module):
         n = memory.shape[0]
         k = beam
         v = self.head.out_features
-        mem = memory.repeat_interleave(k, dim=0)
+        mem = [
+            (kk.repeat_interleave(k, dim=0), vv.repeat_interleave(k, dim=0))
+            for kk, vv in self.project_memory(memory)
+        ]
         vmask = None if vocab_mask is None else (
             vocab_mask.repeat_interleave(k, dim=0) if vocab_mask.dim() == 2 else vocab_mask
         )  # fmt: skip
@@ -384,11 +418,11 @@ class PARSeq(nn.Module):
         return out, scores
 
     def token_logprobs(
-        self, memory: Tensor, token_ids: list[list[int]], vocab_mask: Tensor | None = None
+        self, memory: Tensor | list, token_ids: list[list[int]], vocab_mask: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
         """教師強制(AR・前向き)での、出力トークン(文字 + 終端 EOS)ごとの対数確率 (N, L) と有効位置 (N, L)。
 
-        token_ids は EOS を含まない文字 ID。メモリ memory は N 件分(N, T, C)。
+        token_ids は EOS を含まない文字 ID。memory は (1 または N, T, C) か、`project_memory` の結果。
         マスクで許可されない文字を含む系列は -inf になる。
         """
         n = len(token_ids)

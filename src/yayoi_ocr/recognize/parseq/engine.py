@@ -67,6 +67,7 @@ class RecognizeOutput:
     candidates: list[ParseqResult]
     width: int
     embedding: np.ndarray | None = None  # エンコーダ出力の平均 → L2 正規化(見覚えメモリ用)
+    memory: torch.Tensor | None = field(default=None, repr=False)  # (1, T, C) 再採点用に保持
 
     @property
     def best(self) -> ParseqResult:
@@ -208,6 +209,7 @@ class ParseqEngine:
         width: int | None = None,
         with_embedding: bool = False,
         batch_size: int = 32,
+        keep_memory: bool = False,
     ) -> list[RecognizeOutput]:
         """複数のセル画像を認識する(幅・列が違ってもよい。幅ごとにまとめてバッチ処理)。"""
         if len(crops) != len(columns):
@@ -226,6 +228,7 @@ class ParseqEngine:
                     [columns[i] for i in sub],
                     beam,
                     with_embedding,
+                    keep_memory,
                 )
                 for i, o in zip(sub, outs, strict=True):
                     results[i] = o
@@ -239,9 +242,15 @@ class ParseqEngine:
         beam: int = 5,
         width: int | None = None,
         with_embedding: bool = False,
+        keep_memory: bool = False,
     ) -> RecognizeOutput:
         return self.recognize_many(
-            [crop], [column], beam=beam, width=width, with_embedding=with_embedding
+            [crop],
+            [column],
+            beam=beam,
+            width=width,
+            with_embedding=with_embedding,
+            keep_memory=keep_memory,
         )[0]
 
     def _recognize_batch(
@@ -252,6 +261,7 @@ class ParseqEngine:
         columns: Sequence[ColumnKind | str | None],
         beam: int,
         with_embedding: bool,
+        keep_memory: bool = False,
     ) -> list[RecognizeOutput]:
         x = self._batch(crops, width)
         vmask = self._row_mask(columns)
@@ -275,9 +285,12 @@ class ParseqEngine:
                         cand_ids[b].append((ids, "beam"))
         # すべての候補を同じ定義(教師強制の AR)で採点し直す
         flat = [(b, ids, src) for b in range(n) for ids, src in cand_ids[b]]
-        mem_rep = memory[[b for b, _, _ in flat]]
-        mask_rep = None if vmask is None else vmask[[b for b, _, _ in flat]]
-        picked, valid = model.token_logprobs(mem_rep, [ids for _, ids, _ in flat], mask_rep)
+        rows = [b for b, _, _ in flat]
+        kv_rep = [
+            (k[rows], v[rows]) for k, v in model.project_memory(memory)
+        ]  # K・V は 1 回だけ射影
+        mask_rep = None if vmask is None else vmask[rows]
+        picked, valid = model.token_logprobs(kv_rep, [ids for _, ids, _ in flat], mask_rep)
         picked = picked.cpu()
         valid = valid.cpu()
         emb = self._embed(memory) if with_embedding else None
@@ -289,7 +302,14 @@ class ParseqEngine:
                 cands.append(self._make_result(ids, picked[pos], valid[pos], src))
                 pos += 1
             head, tail = cands[:1], sorted(cands[1:], key=lambda r: -r.logprob)
-            outs.append(RecognizeOutput(head + tail, width, None if emb is None else emb[b]))
+            outs.append(
+                RecognizeOutput(
+                    head + tail,
+                    width,
+                    None if emb is None else emb[b],
+                    memory[b : b + 1].clone() if keep_memory else None,
+                )
+            )
         return outs
 
     @staticmethod
@@ -336,6 +356,15 @@ class ParseqEngine:
         w = width or self.default_width(column)
         model = self._model(w)
         memory = model.encode(self._batch([crop], w))
+        return self._score_memory(model, memory, texts, column)
+
+    def _score_memory(
+        self,
+        model: PARSeq,
+        memory: torch.Tensor,
+        texts: Sequence[str],
+        column: ColumnKind | str | None,
+    ) -> list[ParseqResult]:
         enc = [self.encode_text(t) for t in texts]
         ok = [i for i, e in enumerate(enc) if e is not None and len(e) <= model.max_label_length]
         outs: list[ParseqResult] = [
@@ -343,14 +372,26 @@ class ParseqEngine:
         ]
         if ok:
             vm = self.vocab_mask(column)
-            mem_rep = memory.expand(len(ok), -1, -1)
             ids = [enc[i] for i in ok]  # type: ignore[misc]
-            picked, valid = model.token_logprobs(mem_rep, ids, vm)
+            picked, valid = model.token_logprobs(memory, ids, vm)  # メモリ(バッチ 1)は全候補で共有
             picked, valid = picked.cpu(), valid.cpu()
             for j, i in enumerate(ok):
                 outs[i] = self._make_result(list(ids[j]), picked[j], valid[j], "score")
                 outs[i].text = texts[i]
         return outs
+
+    @torch.inference_mode()
+    def score_output(
+        self,
+        out: RecognizeOutput,
+        texts: Sequence[str],
+        column: ColumnKind | str | None = None,
+    ) -> list[ParseqResult]:
+        """`recognize(..., keep_memory=True)` の結果に対して、各文字列の教師強制の対数尤度を返す(再エンコードしない)。"""
+        if out.memory is None:
+            raise ValueError("keep_memory=True で認識した結果が必要です")
+        model = self._model(out.width)
+        return self._score_memory(model, out.memory, texts, column)
 
     def score(
         self,

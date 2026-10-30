@@ -36,8 +36,13 @@ def test_date_format_and_surfaces():
     d = DateValue(7, 1, 5)
     assert d.format() == "R7.1.5" and d.western_year() == 2025
     assert DateValue(None, 11, 19).format() == "11.19"
-    assert date_surfaces(d) == ["R7 1.5", "R71.5", "R7.1.5"]
-    assert date_surfaces(DateValue(None, 3, 4)) == ["3.4"]
+    assert (
+        "R7 1.5" in date_surfaces(d)
+        and "R71.5" in date_surfaces(d)
+        and "R7.1.5" in date_surfaces(d)
+    )
+    assert "R715" in date_surfaces(d)  # ピリオドが見えない書き方
+    assert date_surfaces(DateValue(None, 3, 4)) == ["3.4", "34", "3 4"]
     assert d.with_year(8) == DateValue(8, 1, 5)
 
 

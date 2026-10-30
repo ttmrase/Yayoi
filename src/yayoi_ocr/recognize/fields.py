@@ -1,0 +1,272 @@
+"""列ごとの解決: R1 の候補 → 文法・語彙に合う値(と事後確率・確信度の特徴量)。
+
+どの列も同じ考え方: 候補の値ごとに、書かれ方(表記ゆれ)の尤度をエンジンで採点して足し合わせ(周辺化)、
+値の尤度とする。事後確率は候補集合の中での正規化(post_top, post_gap)と、モデルが与える絶対的な確率
+(top_p = exp(L_top)、mass = 候補集合全体の確率質量)の両方を特徴量に出す。後者が小さいときは、
+モデルが「文法に合わない文字列」に確率を割いている = 読めていない、という意味になる。
+
+- 日付: 文法 + 暦。年は省略可(年の継承はページ段階 `page.py` で行う)。
+- 金額: 文法(カンマ・末尾の「-」は任意)。値 > 0。
+- 科目・タイトル: 閉じた語彙(設定の支払方法 + 過去の確定値)の中で最も尤度の高いもの。語彙外なら確認。
+- 摘要: 過去に確定した値の頻度辞書 vs 自由認識。辞書に無い新しい記入は自由認識の結果を使う。
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from .grammar import (
+    DateValue,
+    amount_surfaces,
+    date_surfaces,
+    norm_text,
+    repair_amount,
+    repair_date,
+)
+from .parseq.engine import ParseqResult, RecognizeOutput
+
+NEG_INF = float("-inf")
+
+
+class Scorer(Protocol):
+    """採点器(ParseqEngine)。テストでは差し替える。"""
+
+    def score_output(
+        self, out: RecognizeOutput, texts: Sequence[str], column: object = None
+    ) -> list[ParseqResult]: ...
+
+
+def logsumexp(xs: Sequence[float]) -> float:
+    xs = [x for x in xs if x != NEG_INF]
+    if not xs:
+        return NEG_INF
+    m = max(xs)
+    return m + math.log(sum(math.exp(x - m) for x in xs))
+
+
+def _marginal_logps(
+    scorer: Scorer,
+    out: RecognizeOutput,
+    values: Sequence,
+    surfaces_of,
+    column: object = None,
+) -> list[float]:
+    """値ごとの対数尤度 = その値の表記ゆれの尤度の和(周辺化)。
+
+    全表記を 1 回の呼び出しでまとめて採点する。複数の値が同じ表記を持つ場合(例: '111' は 1.11 とも 11.1 とも読める)
+    は、その表記の確率を値の数で等分する(曖昧さが事後確率の差の小ささとして現れる)。
+    """
+    owners: dict[str, list[int]] = {}
+    for i, v in enumerate(values):
+        for s in surfaces_of(v):
+            owners.setdefault(s, [])
+            if i not in owners[s]:
+                owners[s].append(i)
+    texts = list(owners)
+    scores = scorer.score_output(out, texts, column)
+    per: list[list[float]] = [[] for _ in values]
+    for t, sc in zip(texts, scores, strict=True):
+        share = math.log(len(owners[t]))
+        for i in owners[t]:
+            per[i].append(sc.logprob - share)
+    return [logsumexp(p) for p in per]
+
+
+@dataclass
+class FieldResult:
+    value: str  # 解決した値(日付は 'R7.11.19'・'11.19'、金額は '3456'、文字列はそのまま)。空 = 決まらなかった
+    text: str  # R1 の第 1 候補(書かれた通りに近い認識文字列)
+    ok: bool  # 文法・語彙に合う値が得られた
+    candidates: list[tuple[str, float]] = field(default_factory=list)  # (値, 事後確率) の降順
+    features: dict[str, float] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
+    obj: object = None  # DateValue など(ページ段階で使う)
+    char_confidences: list[float] = field(default_factory=list)
+
+
+def _posterior_features(logps: dict[str, float], prefix: str = "") -> dict[str, float]:
+    """値 → 対数尤度 から、事後確率・差・質量などの特徴量。"""
+    items = sorted(logps.items(), key=lambda kv: -kv[1])
+    total = logsumexp([v for _, v in items])
+    top = items[0][1]
+    second = items[1][1] if len(items) > 1 else NEG_INF
+    post_top = math.exp(top - total) if total != NEG_INF else 0.0
+    post_second = math.exp(second - total) if second != NEG_INF else 0.0
+    return {
+        f"{prefix}top_logp": max(top, -50.0),
+        f"{prefix}top_p": math.exp(max(top, -50.0)),
+        f"{prefix}mass": math.exp(max(total, -50.0)) if total != NEG_INF else 0.0,
+        f"{prefix}post_top": post_top,
+        f"{prefix}post_gap": post_top - post_second,
+        f"{prefix}n_cands": float(len(items)),
+    }
+
+
+def _ranked(logps: dict[str, float], k: int = 5) -> list[tuple[str, float]]:
+    total = logsumexp(list(logps.values()))
+    items = sorted(logps.items(), key=lambda kv: -kv[1])[:k]
+    return [(v, math.exp(lp - total) if total != NEG_INF else 0.0) for v, lp in items]
+
+
+# ---------------------------------------------------------------- 日付
+
+
+def resolve_date(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> FieldResult:
+    best = out.best
+    cands: dict[DateValue, None] = {}
+    for c in out.candidates[:max_cands]:
+        for v in repair_date(c.text):
+            cands.setdefault(v, None)
+    feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
+    if not cands:
+        return FieldResult(
+            "", best.text, False, [], feats, ["grammar_violation"], None, best.char_confidences
+        )
+    vals = list(cands)
+    logps = dict(zip(vals, _marginal_logps(scorer, out, vals, date_surfaces, "date"), strict=True))
+    named = {v.format(): lp for v, lp in logps.items()}
+    feats.update(_posterior_features(named))
+    top = max(logps, key=lambda v: logps[v])
+    feats["direct"] = float(repair_date(best.text)[:1] == [top])
+    feats["explicit_year"] = float(top.explicit_year)
+    reasons = []
+    if feats["top_p"] < 1e-3:
+        reasons.append("grammar_violation")
+    return FieldResult(
+        top.format(), best.text, True, _ranked(named), feats, reasons, top, best.char_confidences
+    )
+
+
+# ---------------------------------------------------------------- 金額
+
+
+def resolve_amount(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> FieldResult:
+    best = out.best
+    cands: dict[int, None] = {}
+    for c in out.candidates[:max_cands]:
+        for v in repair_amount(c.text):
+            cands.setdefault(v, None)
+    feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
+    if not cands:
+        return FieldResult(
+            "", best.text, False, [], feats, ["grammar_violation"], None, best.char_confidences
+        )
+    vals = list(cands)
+    logps = dict(
+        zip(vals, _marginal_logps(scorer, out, vals, amount_surfaces, "amount"), strict=True)
+    )
+    named = {str(v): lp for v, lp in logps.items()}
+    feats.update(_posterior_features(named))
+    top = max(logps, key=lambda v: logps[v])
+    feats["direct"] = float(repair_amount(best.text)[:1] == [top])
+    reasons = []
+    if feats["top_p"] < 1e-3:
+        reasons.append("grammar_violation")
+    return FieldResult(
+        str(top), best.text, True, _ranked(named), feats, reasons, top, best.char_confidences
+    )
+
+
+# ---------------------------------------------------------------- 閉じた語彙(科目・タイトル)
+
+
+def _surfaces(v: str) -> list[str]:
+    """文字列の表記ゆれ: 原文と、空白を除いたもの(NDL のモデルは空白をほとんど出さない)。"""
+    nospace = "".join(v.split())
+    return [v] if nospace == v else [v, nospace]
+
+
+def resolve_closed(
+    scorer: Scorer,
+    out: RecognizeOutput,
+    vocab: Sequence[str],
+    prior: dict[str, float] | None = None,
+    oov_gap: float = 4.0,
+) -> FieldResult:
+    """語彙の中で最も尤度の高い値。自由認識より `oov_gap`(対数尤度)以上悪いときは語彙外の疑い。"""
+    best = out.best
+    feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
+    if not vocab:
+        return FieldResult(
+            "", best.text, False, [], feats, ["oov_account"], None, best.char_confidences
+        )
+    texts: list[str] = []
+    owner: list[int] = []
+    for i, v in enumerate(vocab):
+        for s in _surfaces(v):
+            texts.append(s)
+            owner.append(i)
+    scores = scorer.score_output(out, texts)
+    per: dict[int, list[float]] = {}
+    for o, sc in zip(owner, scores, strict=True):
+        per.setdefault(o, []).append(sc.logprob)
+    logps = {}
+    for i, v in enumerate(vocab):
+        lp = logsumexp(per[i])
+        if prior is not None and v in prior and prior[v] > 0:
+            lp += math.log(prior[v])
+        logps[v] = lp
+    feats.update(_posterior_features(logps))
+    top = max(logps, key=lambda v: logps[v])
+    fit = logps[top] - best.logprob  # 自由認識に対する、語彙内の最良の尤度の差(≦ 0 が普通)
+    feats["vocab_fit"] = max(min(fit, 5.0), -50.0)
+    feats["free_agree"] = float(norm_text(best.text) == norm_text(top))
+    reasons = []
+    if fit < -oov_gap:
+        reasons.append("oov_account")
+    return FieldResult(
+        top, best.text, True, _ranked(logps), feats, reasons, top, best.char_confidences
+    )
+
+
+# ---------------------------------------------------------------- 摘要
+
+
+def resolve_description(
+    scorer: Scorer,
+    out: RecognizeOutput,
+    dictionary: dict[str, int] | None = None,
+    max_dict: int = 400,
+    dict_weight: float = 0.9,
+    free_prior_logp: float = -5.0,
+) -> FieldResult:
+    """過去に確定した摘要(頻度辞書)と自由認識の比較。
+
+    事後 ∝ 画像の尤度 x 事前。辞書の事前は頻度 x `dict_weight`、辞書に無い自由認識の事前は `free_prior_logp`。
+    """
+    best = out.best
+    feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
+    logps: dict[str, float] = {}
+    dict_keys: set[str] = set()
+    if dictionary:
+        total = float(sum(dictionary.values()))
+        entries = sorted(dictionary, key=lambda k: -dictionary[k])[:max_dict]
+        texts, owner = [], []
+        for i, v in enumerate(entries):
+            for s_ in _surfaces(v):
+                texts.append(s_)
+                owner.append(i)
+        scores = scorer.score_output(out, texts)
+        per: dict[int, list[float]] = {}
+        for o, sc in zip(owner, scores, strict=True):
+            per.setdefault(o, []).append(sc.logprob)
+        for i, v in enumerate(entries):
+            prior = max(dict_weight * dictionary[v] / total, 1e-12)
+            logps[v] = logsumexp(per[i]) + math.log(prior)
+            dict_keys.add(norm_text(v))
+    # 自由認識(第 1 候補と他の候補)。辞書の値と(空白を除いて)同じ文字列は辞書側にまとめる
+    for c in out.candidates[:5]:
+        if c.text and c.text not in logps and norm_text(c.text) not in dict_keys:
+            logps[c.text] = c.logprob + free_prior_logp
+    if not logps:
+        return FieldResult(
+            "", best.text, False, [], feats, ["no_valid_candidate"], None, best.char_confidences
+        )
+    feats.update(_posterior_features(logps))
+    top = max(logps, key=lambda v: logps[v])
+    feats["from_dict"] = float(bool(dictionary) and top in dictionary)
+    feats["free_agree"] = float(norm_text(best.text) == norm_text(top))
+    return FieldResult(top, best.text, True, _ranked(logps), feats, [], top, best.char_confidences)

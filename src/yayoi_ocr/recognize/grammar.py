@@ -91,12 +91,12 @@ def parse_date(text: str) -> DateValue | None:
 
 
 def date_surfaces(v: DateValue) -> list[str]:
-    """日付の書かれ方(表記ゆれ)。年あり: 'R7 11.19' 'R711.19' 'R7.11.19'、年なし: '11.19'。"""
-    md = f"{v.month}.{v.day}"
+    """日付の書かれ方(表記ゆれ)。月日の区切りは「.」「なし」「空白」(ピリオドが見えない・小さいことが多い)、
+    年があれば年と月日の間も「空白」「なし」「.」(例: 'R7 11.19' 'R711.19' 'R7.11.19' 'R7 1119')。"""
+    mds = [f"{v.month}{sep}{v.day}" for sep in (".", "", " ")]
     if v.era_year is None:
-        return [md]
-    y = f"R{v.era_year}"
-    return [f"{y} {md}", f"{y}{md}", f"{y}.{md}"]
+        return mds
+    return [f"R{v.era_year}{ysep}{md}" for ysep in (" ", "", ".") for md in mds]
 
 
 def repair_date(text: str) -> list[DateValue]:
