@@ -45,6 +45,11 @@ def main() -> int:
     ap.add_argument("--dictionary", action="store_true")
     ap.add_argument("--mem-bonus", type=float, default=fields.MEMORY_BONUS)
     ap.add_argument("--sim-threshold", type=float, default=0.85)
+    ap.add_argument(
+        "--column-thresholds",
+        default="",
+        help="列ごとの類似度しきい値の上書き(例: date=1.1,amount=1.1,description=0.9)。1.1 以上 = その列は使わない",
+    )
     ap.add_argument("--temperature", type=float, default=0.04)
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--max-writers", type=int, default=0)
@@ -68,6 +73,10 @@ def main() -> int:
         # 末尾の引数 mem_bonus の既定値を差し替える
         d[-1] = args.mem_bonus
         fn.__defaults__ = tuple(d)
+    col_thr = {
+        k: float(v)
+        for k, _, v in (kv.partition("=") for kv in args.column_thresholds.split(",") if kv)
+    }
     engine = ParseqEngine(refine_mode=args.refine_mode)
     clf = CellTypeClassifier.load(args.classifier)
     cal = ConfidenceModel.load(args.confidence) if args.confidence else None
@@ -87,7 +96,7 @@ def main() -> int:
         ctx = JobContext(
             accounts=list(ACCOUNTS),
             titles=list(TITLES),
-            memory=RecognitionMemory(args.k, args.sim_threshold, args.temperature)
+            memory=RecognitionMemory(args.k, args.sim_threshold, args.temperature, col_thr)
             if args.memory
             else None,
         )
@@ -99,7 +108,7 @@ def main() -> int:
                 j = judge(r, c, page_review)
                 stats[idx].append(j)
                 if dump:
-                    dump.write(json.dumps(dump_row(pg.meta, c, r, j), ensure_ascii=False) + "\\n")
+                    dump.write(json.dumps(dump_row(pg.meta, c, r, j), ensure_ascii=False) + "\n")
             confirm_page(
                 ctx,
                 res,
@@ -114,7 +123,7 @@ def main() -> int:
         dump.close()
     print(
         f"設定: memory={args.memory} dictionary={args.dictionary} bonus={args.mem_bonus} "
-        f"sim>={args.sim_threshold} confidence={'較正済み' if cal else '暫定'} 書き手 {len(writers)} 人"
+        f"sim>={args.sim_threshold}{col_thr or ''} confidence={'較正済み' if cal else '暫定'} 書き手 {len(writers)} 人"
     )
     print(
         f"{'ページ':>6s} {'n頁':>4s} {'正解率(nb)':>10s} {'要確認率(nb)':>12s} {'見逃し%(全)':>11s} {'金額見逃し%':>11s} {'金額要確認':>10s}"

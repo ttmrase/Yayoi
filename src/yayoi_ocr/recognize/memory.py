@@ -24,9 +24,17 @@ class Neighbor:
 
 
 class RecognitionMemory:
-    def __init__(self, k: int = 5, sim_threshold: float = 0.85, temperature: float = 0.04) -> None:
+    def __init__(
+        self,
+        k: int = 5,
+        sim_threshold: float = 0.85,
+        temperature: float = 0.04,
+        column_thresholds: dict[str, float] | None = None,
+    ) -> None:
         self.k = k
         self.sim_threshold = sim_threshold  # これ未満の類似度の近傍は票にしない
+        # 列ごとの上書き(日付・金額は同じ文字列がほとんど繰り返されないので、事実上使わない = 1.1 など)
+        self.column_thresholds = dict(column_thresholds or {})
         self.temperature = temperature  # 票の重み exp((sim - 1) / T)
         self._emb: dict[str, list[np.ndarray]] = defaultdict(list)
         self._txt: dict[str, list[str]] = defaultdict(list)
@@ -73,9 +81,10 @@ class RecognitionMemory:
         """テキスト → 票の割合(合計 1。しきい値以上の近傍だけ)と、近傍の最大類似度。"""
         nb = self.query(column, embedding)
         max_sim = nb[0].sim if nb else 0.0
+        thr = self.column_thresholds.get(column, self.sim_threshold)
         w: dict[str, float] = defaultdict(float)
         for n in nb:
-            if n.sim >= self.sim_threshold:
+            if n.sim >= thr:
                 w[n.text] += float(np.exp((n.sim - 1.0) / self.temperature))
         total = sum(w.values())
         if total <= 0:
@@ -90,6 +99,7 @@ class RecognitionMemory:
                 "k": self.k,
                 "sim_threshold": self.sim_threshold,
                 "temperature": self.temperature,
+                "column_thresholds": self.column_thresholds,
                 "texts": {c: t for c, t in self._txt.items()},
             },
             ensure_ascii=False,
@@ -100,7 +110,9 @@ class RecognitionMemory:
     def load(cls, path: str | Path) -> RecognitionMemory:
         with np.load(Path(path), allow_pickle=False) as z:
             meta = json.loads(str(z["meta"]))
-            mem = cls(meta["k"], meta["sim_threshold"], meta["temperature"])
+            mem = cls(
+                meta["k"], meta["sim_threshold"], meta["temperature"], meta.get("column_thresholds")
+            )
             for c, texts in meta["texts"].items():
                 if not texts:
                     continue

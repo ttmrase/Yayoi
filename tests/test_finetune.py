@@ -8,10 +8,13 @@ import pytest
 from yayoi_ocr.recognize.parseq.engine import MODEL_FILES
 from yayoi_ocr.recognize.variants import (
     MIN_CONFIRMED_PAGES,
+    PageCounts,
     VariantScore,
     available_variants,
     choose_variant,
+    count_page,
     default_variant,
+    score_counts,
     score_variant,
     variant_dir,
 )
@@ -55,6 +58,27 @@ def test_score_variant_punishes_misses_harder_than_errors():
     # 正解率が少し高くても、見逃しが多い側は負ける
     assert score_variant(0.95, 0.02) < score_variant(0.92, 0.0)
     assert score_variant(0.9, 0.0) == pytest.approx(0.9)
+
+
+def test_count_page_and_score_counts():
+    from types import SimpleNamespace
+
+    def cell(value, review=False):
+        return SimpleNamespace(value=value, review=review)
+
+    def conf(resolved, kind="text"):
+        return SimpleNamespace(resolved=resolved, kind=kind)
+
+    result = SimpleNamespace(
+        cells=[cell("a"), cell("b"), cell("c", review=True), cell("x"), cell("")]
+    )
+    confirmed = [conf("a"), conf("B"), conf("C"), conf("", "blank"), conf("", "blank")]
+    c = count_page(result, confirmed)
+    # 全 5 セル。空欄でない 3 つのうち正解は 1。見逃しは 'b'(誤り・確認なし)と 'x'(誤り・確認なし)の 2、'c' は確認済みなので数えない
+    assert (c.n_cells, c.n_text, c.n_correct, c.n_miss) == (5, 3, 1, 2)
+    s = score_counts("adapted", c + PageCounts(5, 5, 5, 0))
+    assert s.accuracy == pytest.approx(6 / 8) and s.miss_rate == pytest.approx(0.2)
+    assert s.score == pytest.approx(score_variant(s.accuracy, s.miss_rate))
 
 
 torch = pytest.importorskip("torch")

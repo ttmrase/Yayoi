@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import models_dir
+from .learning import ConfirmedCell
+from .page import PageResult
 from .parseq.engine import MODEL_FILES, ParseqEngine
 
 VARIANTS = ("adapted", "base")  # 既定の優先順
@@ -44,16 +46,53 @@ def open_engine(name: str, root: Path | None = None, **kw) -> ParseqEngine:
 
 
 @dataclass
+class PageCounts:
+    """確定したページ(の集まり)での 1 つの重みの成績。ページごとに数えて足し合わせる(Phase 4 の世代ゲートでも同じ)。"""
+
+    n_cells: int = 0  # 空欄を含む全セル
+    n_text: int = 0  # 確定が空欄でないセル
+    n_correct: int = 0  # そのうち、認識した値が確定値と一致したもの
+    n_miss: int = 0  # 見逃し(認識した値が確定値と違うのに、要確認が付かなかった全セル)
+
+    def __add__(self, o: PageCounts) -> PageCounts:
+        return PageCounts(
+            self.n_cells + o.n_cells,
+            self.n_text + o.n_text,
+            self.n_correct + o.n_correct,
+            self.n_miss + o.n_miss,
+        )
+
+
+def count_page(result: PageResult, confirmed: Sequence[ConfirmedCell]) -> PageCounts:
+    """同じ画像を 1 つの重みで認識した結果 `result` と、利用者が確定した値を突き合わせる。"""
+    c = PageCounts()
+    for r, t in zip(result.cells, confirmed, strict=True):
+        ok = r.value == t.resolved
+        c.n_cells += 1
+        if t.kind != "blank":
+            c.n_text += 1
+            c.n_correct += int(ok)
+        c.n_miss += int(not ok and not r.review)
+    return c
+
+
+@dataclass
 class VariantScore:
     name: str
-    accuracy: float  # 確定した text セルの値の正解率
-    miss_penalty: float  # 見逃し(間違い ∧ 要確認なし)の割合 x 重み
+    accuracy: float  # 確定した(空欄でない)セルの値の正解率
+    miss_rate: float  # 見逃し率(全セル中)
     score: float
 
 
 def score_variant(accuracy: float, miss_rate: float, miss_weight: float = 20.0) -> float:
     """採用ゲート共通の点数: 正解率 − 重み x 見逃し率(見逃しを強く嫌う)。"""
     return accuracy - miss_weight * miss_rate
+
+
+def score_counts(name: str, c: PageCounts) -> VariantScore:
+    acc = c.n_correct / max(c.n_text, 1)
+    miss = c.n_miss / max(c.n_cells, 1)
+    return VariantScore(name, acc, miss, score_variant(acc, miss))
 
 
 def choose_variant(

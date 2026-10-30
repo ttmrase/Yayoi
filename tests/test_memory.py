@@ -39,6 +39,21 @@ def test_votes_weight_by_similarity_and_threshold():
     assert far_votes == {} and far_sim < 0.9
 
 
+def test_column_thresholds_override_and_roundtrip(tmp_path):
+    mem = RecognitionMemory(k=3, sim_threshold=0.5, column_thresholds={"amount": 1.1})
+    a = _vec(1)
+    for col in ("amount", "description"):
+        mem.add(col, _vec(11, noise=0.03, base=a), "x")
+    q = _vec(50, noise=0.03, base=a)
+    assert mem.votes("amount", q)[0] == {}  # 1.1 以上の列は票にならない
+    assert mem.votes("amount", q)[1] > 0.9  # 近傍の類似度そのものは返る
+    assert mem.votes("description", q)[0] == {"x": 1.0}
+    mem.save(tmp_path / "m.npz")
+    loaded = RecognitionMemory.load(tmp_path / "m.npz")
+    assert loaded.column_thresholds == {"amount": 1.1}
+    assert loaded.votes("amount", q)[0] == {}
+
+
 def test_save_load_roundtrip(tmp_path):
     mem = RecognitionMemory(k=4, sim_threshold=0.8, temperature=0.05)
     for i, t in enumerate(["a", "b", "c"]):
