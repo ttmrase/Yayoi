@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import multiprocessing
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -81,15 +82,34 @@ class FakeBackend:
 
 _RECOGNIZERS: dict[str, object] = {}  # 別プロセスの中だけで使う(重みを 1 回だけ読み込む)
 
+ENV_THREADS = "YAYOI_TORCH_THREADS"
+
+
+def worker_threads(cpu_count: int | None = None) -> int:
+    """認識ワーカーの torch のスレッド数。論理コアの半分(2〜4)に抑える。
+
+    全コア分のスレッドを張ると、画面(ブラウザ・サーバ)や他のアプリと取り合ってかえって遅くなる
+    (4 コアで他の計算が動いているとき: 4 スレッド 34 秒/ページ、1〜2 スレッド 約 3〜4 秒/ページ。認識部分のみ)。
+    環境変数 YAYOI_TORCH_THREADS で固定できる。
+    """
+    env = os.environ.get(ENV_THREADS)
+    if env and env.isdigit() and int(env) > 0:
+        return int(env)
+    n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
+    return max(2, min(4, n // 2))
+
 
 def _recognizer(variant: str):
     if variant not in _RECOGNIZERS:
+        import torch
+
         from ..config import models_dir
         from ..recognize import variants
         from ..recognize.celltype import CellTypeClassifier
         from ..recognize.confidence import ConfidenceModel
         from ..recognize.page import PageRecognizer
 
+        torch.set_num_threads(worker_threads())
         engine = variants.open_engine(variant)
         clf_path = models_dir() / "celltype.pt"
         clf = CellTypeClassifier.load(clf_path) if clf_path.is_file() else None

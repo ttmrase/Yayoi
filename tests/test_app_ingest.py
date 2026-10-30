@@ -17,7 +17,7 @@ from yayoi_ocr.app import uploads
 from yayoi_ocr.app.fake import fake_page
 from yayoi_ocr.app.security import allowed_hosts_for, new_token
 from yayoi_ocr.app.server import create_app
-from yayoi_ocr.app.worker import FakeBackend, PageOutcome, PagePayload
+from yayoi_ocr.app.worker import FakeBackend, PageOutcome, PagePayload, worker_threads
 
 PORT = 8125
 TOKEN = new_token()
@@ -253,3 +253,12 @@ def test_fake_backend_is_deterministic_per_page(tmp_path):
     assert [c.resolved_value for c in a1.spec.cells] == [c.resolved_value for c in a2.spec.cells]
     other = b.process(PagePayload(path="x", source_index=1, page_key="k:1"))
     assert [c.resolved_value for c in a1.spec.cells] != [c.resolved_value for c in other.spec.cells]
+
+
+def test_worker_threads_stays_below_the_core_count(monkeypatch):
+    monkeypatch.delenv("YAYOI_TORCH_THREADS", raising=False)
+    assert [worker_threads(n) for n in (1, 2, 4, 8, 16, 64)] == [2, 2, 2, 4, 4, 4]
+    monkeypatch.setenv("YAYOI_TORCH_THREADS", "3")
+    assert worker_threads(64) == 3
+    monkeypatch.setenv("YAYOI_TORCH_THREADS", "zero")
+    assert worker_threads(8) == 4
