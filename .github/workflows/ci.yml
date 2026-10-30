@@ -18,10 +18,13 @@ jobs:
         python-version: ["3.11", "3.12"]
     env:
       PYTHONUTF8: "1"
-      # フォント(OFL・取得物)などの置き場。リポジトリの外に置く。
-      YAYOI_PRIVATE_DATA: ${{ runner.temp }}/yayoi_private
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set private data dir (outside the repository)
+        shell: bash
+        # フォント(OFL・取得物)などの置き場。リポジトリの外に置く。
+        run: echo "YAYOI_PRIVATE_DATA=$RUNNER_TEMP/yayoi_private" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
