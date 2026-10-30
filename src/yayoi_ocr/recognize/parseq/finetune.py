@@ -94,7 +94,7 @@ def finetune(
             sched.step()
             tot_ar += l_ar.item() * len(items)
             tot_ref += l_ref.item() * len(items)
-            tot_sp += float(sp) * len(items)
+            tot_sp += float(sp.detach()) * len(items)
             n += len(items)
         hist = {"ar": tot_ar / n, "refine": tot_ref / n, "drift_sq": tot_sp / n}
         log(
