@@ -44,7 +44,13 @@ FEATURE_NAMES = (
     "mem_share",
     "mem_max_sim",
     "mem_n",
+    "dash_ambig",
+    "comma_bad",
+    "hist_desc",
+    "hist_acct",
 )
+# 値が正であることを保証する特徴(一致で確信度を上げるが、不一致で下げない)
+NONNEG_FEATURES = ("hist_desc", "hist_acct")
 # 確認が必須の理由(学習・しきい値の対象外。常に要確認)
 HARD_REASONS = frozenset(
     {
@@ -66,6 +72,8 @@ HARD_REASONS = frozenset(
         "ditto_gap",
         "ditto_source_uncertain",
         "annotation_present",
+        "dash_digit_ambiguity",
+        "comma_mismatch",
     }
 )
 ALWAYS_REVIEW_KINDS = ("arrow", "wave")
@@ -222,29 +230,68 @@ def samples_from_dump(rows: Iterable[dict]) -> list[Sample]:
     return out
 
 
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    """P(X ≤ k), X ~ Binomial(n, p)。k が小さい前提(見逃し件数)で、対数ガンマで直接足し上げる。"""
+    if p <= 0.0:
+        return 1.0
+    if p >= 1.0:
+        return 1.0 if k >= n else 0.0
+    lp, lq = math.log(p), math.log1p(-p)
+    terms = [
+        math.lgamma(n + 1) - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * lp + (n - i) * lq
+        for i in range(min(k, n) + 1)
+    ]
+    m = max(terms)
+    return min(1.0, math.exp(m) * sum(math.exp(t - m) for t in terms))
+
+
+def cp_upper(k: int, n: int, alpha: float = 0.05) -> float:
+    """見逃し k 件 / n セルの割合の、Clopper-Pearson の片側 (1 - alpha) 上側信頼限界(例: alpha = 0.05 で 95%)。"""
+    if n <= 0:
+        return 1.0
+    if k >= n:
+        return 1.0
+    lo, hi = k / n, 1.0
+    for _ in range(80):  # P(X ≤ k | p) は p について単調減少。= alpha となる p を二分法で求める
+        mid = 0.5 * (lo + hi)
+        if _binom_cdf(k, n, mid) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
 def choose_threshold(
     p: np.ndarray,
     correct: np.ndarray,
     n_column_cells: int,
     max_miss_rate: float,
-    margin: float = 1.0,
+    alpha: float = 0.05,
 ) -> float:
-    """p < τ を要確認としたとき、(間違い ∧ p ≥ τ)の件数 ≦ 目標 x 列の全セル数 / margin を満たす最小の τ。"""
-    allowed = max_miss_rate * n_column_cells / margin
-    order = np.argsort(-p)  # 確信度の高い順に「確認なし」にしていく
+    """p < τ を要確認としたとき、見逃し率(間違い ∧ p ≥ τ の件数 / 列の全セル数)の Clopper-Pearson 上側信頼限界
+    (片側 1 - alpha)が `max_miss_rate` 以下になる最小の τ。較正データが少ないほど上側限界が大きくなり、
+    自然に保守的(要確認が多め)になる。確信度の高い順に確認なしにしていく。
+    """
+    order = np.argsort(-p)
     wrong_cum = np.cumsum(~correct[order])
-    # k 件を確認なしにしたときの見逃し = wrong_cum[k-1]。許される最大の k を探す
-    ok = np.nonzero(wrong_cum <= allowed)[0]
-    k = 0 if len(ok) == 0 else int(ok.max()) + 1
-    if k == 0:
+    k_ok = 0
+    for k in range(1, len(p) + 1):  # 上位 k 件を確認なしにしたときの見逃しは wrong_cum[k-1] 件
+        if cp_upper(int(wrong_cum[k - 1]), n_column_cells, alpha) <= max_miss_rate:
+            k_ok = k
+        elif (
+            wrong_cum[k - 1] > wrong_cum[max(k_ok - 1, 0)] + 50
+        ):  # 見逃しが増え続けているので打ち切り
+            break
+    if k_ok == 0:
         return 1.1
-    if k >= len(p):
+    if k_ok >= len(p):
         return 0.0
-    # k 件目と k+1 件目の確信度の間にしきい値を置く(同点は確認側に倒す)
+    ps = p[order]
+    # k_ok 件目と次の件の確信度の間にしきい値を置く(同点は確認側に倒す)
     return (
-        float(0.5 * (p[order][k - 1] + p[order][k]))
-        if p[order][k - 1] > p[order][k]
-        else float(p[order][k - 1] + 1e-9)
+        float(0.5 * (ps[k_ok - 1] + ps[k_ok]))
+        if ps[k_ok - 1] > ps[k_ok]
+        else float(ps[k_ok - 1] + 1e-9)
     )
 
 
@@ -253,13 +300,15 @@ def fit_confidence(
     n_column_cells: dict[str, int],
     max_miss: dict[str, float] | None = None,
     default_max_miss: float = 0.005,
-    margin: float = 1.0,
+    alpha: float = 0.05,
     l2: float = 3.0,
 ) -> ConfidenceModel:
     """群ごとにロジスティック回帰を学習し、列ごとの見逃し目標から群のしきい値を決める。
 
     n_column_cells: 列 → 較正データでの全セル数(空欄を含む)。見逃し率の分母。
-    max_miss: 列 → 見逃し率の上限(既定 0.5%、金額は 0.1%)。同じ列の群には目標を群の寄与に応じて配分する。
+    max_miss: 列 → 見逃し率の上限(既定 0.5%、金額は 0.1%)。しきい値は、見逃し率の Clopper-Pearson 上側信頼限界
+    (片側 1 - alpha、既定 95%)がこの上限以下になるように決める(`choose_threshold`)。
+    Phase 4 では、利用者が確定したセルを Sample にして同じ関数で再較正できる(初期値は保守的でよい)。
     """
     max_miss = {"amount": 0.001, **(max_miss or {})}
     by_group: dict[str, list[Sample]] = defaultdict(list)
@@ -279,6 +328,8 @@ def fit_confidence(
             model.groups[gk] = GroupModel(None, const, 0.5 if const > 0.5 else 1.1, len(free))
             continue
         lr = LogisticRegression(l2).fit(x, y)
+        for name in NONNEG_FEATURES:  # 履歴との一致は確信度を上げるだけ(不一致で下げない)
+            lr.w[FEATURE_NAMES.index(name)] = max(lr.w[FEATURE_NAMES.index(name)], 0.0)
         model.groups[gk] = GroupModel(lr, 0.5, 0.9, len(free))
     # しきい値: 列ごとに、その列の全群(text・ditto・blank)をまとめて、目標の見逃し率を満たす最小の τ を決める。
     # 各群のロジスティック回帰は P(正しい) を表すので、列の中で共通のしきい値でよい。
@@ -295,7 +346,7 @@ def fit_confidence(
         p = np.array([t[0] for t in pooled])
         c = np.array([t[1] for t in pooled])
         target = max_miss.get(col, default_max_miss)
-        tau = choose_threshold(p, c, max(1, n_column_cells.get(col, 1)), target, margin)
+        tau = choose_threshold(p, c, max(1, n_column_cells.get(col, 1)), target, alpha)
         for gk in model.groups:
             if gk.endswith(f":{col}") and model.groups[gk].lr is not None:
                 model.groups[gk].threshold = tau

@@ -4,6 +4,7 @@ import numpy as np
 
 from yayoi_ocr.recognize.confidence import (
     FEATURE_NAMES,
+    NONNEG_FEATURES,
     ConfidenceModel,
     LogisticRegression,
     Sample,
@@ -32,17 +33,30 @@ def test_featurize_defaults_and_scaling():
     assert f["mass"] == 0.0  # 欠けている特徴は 0
 
 
-def test_choose_threshold_respects_miss_budget():
+def test_cp_upper_matches_known_values():
+    from yayoi_ocr.recognize.confidence import cp_upper
+
+    assert abs(cp_upper(0, 1000) - (1 - 0.05 ** (1 / 1000))) < 1e-6  # k = 0 の閉じた式
+    assert (
+        abs(cp_upper(3, 1000) - 0.007735) < 2e-6
+    )  # Clopper-Pearson 片側 95%(Poisson 近似は 0.007754)
+    assert (
+        abs(cp_upper(1, 100_000) - 4.744e-5) < 1e-8 and abs(cp_upper(2, 100_000) - 6.296e-5) < 1e-8
+    )
+    assert cp_upper(0, 0) == 1.0 and cp_upper(5, 5) == 1.0
+    assert cp_upper(2, 5000) > cp_upper(2, 50000)  # データが増えるほど限界は小さくなる
+
+
+def test_choose_threshold_uses_upper_confidence_limit():
     p = np.array([0.99, 0.98, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4])
     correct = np.array([1, 1, 1, 0, 1, 0, 0, 0], dtype=bool)
-    # 列の全セルが 1000 のとき、許される見逃し件数 = 目標 x 1000
-    tau0 = choose_threshold(p, correct, 1000, 0.0005)  # 0.5 件 → 0 件: 最初の誤り(0.8)の手前まで
-    assert (p >= tau0).sum() == 3
-    tau1 = choose_threshold(p, correct, 1000, 0.001)  # 1 件: 誤り 1 件を含む 5 件目(0.7)まで
-    assert (p >= tau1).sum() == 5
-    tau2 = choose_threshold(p, correct, 1000, 0.002)  # 2 件: 2 件目の誤り(0.6)まで
-    assert (p >= tau2).sum() == 6
-    assert choose_threshold(p, ~correct, 1000, 0.0) == 1.1  # 先頭がいきなり誤りなら、全部確認
+    # 列の全セルが少ないと、見逃し 0 件でも上側限界(約 3 / n)が目標を超えるので、全部確認
+    assert choose_threshold(p, correct, 1000, 0.001) == 1.1
+    # 十分に多ければ、見逃しが目標以下の範囲で確認なしにできる(最初の誤り 0.8 の直前まで)
+    # 目標 5e-5: 見逃し 1 件の上側限界 4.74e-5 は目標以内、2 件の 6.30e-5 は超える → 見逃し ≦ 1 件の範囲(上位 5 件)
+    tau = choose_threshold(p, correct, 100_000, 5e-5)
+    assert (p >= tau).sum() == 5
+    assert choose_threshold(p, ~correct, 100_000, 0.0) == 1.1
 
 
 def test_fit_confidence_and_roundtrip(tmp_path):
@@ -54,14 +68,19 @@ def test_fit_confidence_and_roundtrip(tmp_path):
         feats = {"top_p": top_p, "post_top": top_p, "mass": top_p, "n_cands": 2.0}
         samples.append(Sample("amount", "text", featurize(feats, 1.0), correct, False))
     samples.append(Sample("amount", "arrow", featurize({}, 1.0), False, True))
-    model = fit_confidence(samples, {"amount": 800})
+    model = fit_confidence(samples, {"amount": 200_000})
     g = model.groups["text:amount"]
     assert g.lr is not None and g.lr.w[FEATURE_NAMES.index("top_p")] != 0
     assert model.groups["arrow:amount"].threshold == 1.1
     # 較正データ上の見逃しは、列の全セルの 0.1% 以下
     p = np.array([g.prob(s.x) for s in samples if s.kind == "text"])
     c = np.array([s.correct for s in samples if s.kind == "text"])
-    assert ((p >= g.threshold) & ~c).sum() <= 1
+    from yayoi_ocr.recognize.confidence import cp_upper
+
+    k = int(((p >= g.threshold) & ~c).sum())
+    assert (
+        cp_upper(k, 200_000) <= 0.001 or g.threshold == 1.1
+    )  # 見逃し率の上側限界が目標(金額 0.1%)以下
     path = tmp_path / "conf.json"
     model.save(path)
     m2 = ConfidenceModel.load(path)
@@ -111,3 +130,17 @@ def test_samples_from_dump_marks_hard_cases():
     ]
     ss = samples_from_dump(rows)
     assert [s.hard for s in ss] == [False, True, True, True]
+
+
+def test_history_feature_weights_are_never_negative():
+    rng = np.random.default_rng(3)
+    n = 500
+    x = rng.normal(size=(n, len(FEATURE_NAMES)))
+    i = FEATURE_NAMES.index("hist_desc")
+    y = (x[:, 0] - 2.0 * x[:, i] + 0.2 * rng.normal(size=n) > 0).astype(
+        float
+    )  # 履歴の一致が負に効く合成データ
+    samples = [Sample("amount", "text", x[k], bool(y[k]), False) for k in range(n)]
+    model = fit_confidence(samples, {"amount": 1_000_000})
+    lr = model.groups["text:amount"].lr
+    assert lr is not None and all(lr.w[FEATURE_NAMES.index(f)] >= 0.0 for f in NONNEG_FEATURES)

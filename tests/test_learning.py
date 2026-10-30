@@ -49,3 +49,22 @@ def test_confirm_page_without_memory_still_updates_dictionary():
         ctx, PageResult(results), [ConfirmedCell(0, 2, "description", "text", "会議費", "会議費")]
     )
     assert ctx.dictionary == {"会議費": 1}
+
+
+def test_confirm_page_updates_amount_history_by_description_and_account():
+    ctx = JobContext()
+    cells = [
+        ConfirmedCell(0, 0, "date", "text", "8.21", "R8.8.21"),
+        ConfirmedCell(0, 1, "account", "text", "現金", "現金"),
+        ConfirmedCell(0, 2, "description", "text", "電話代 1月分", "電話代 1月分"),
+        ConfirmedCell(0, 3, "amount", "text", "5,800-", "5800"),
+    ]
+    results = [_cell(0, c.col, c.column, None) for c in cells]
+    confirm_page(
+        ctx,
+        PageResult(results),
+        cells + [ConfirmedCell(1, i, "x", "blank", "", "") for i in range(4)][:0],
+    )
+    confirm_page(ctx, PageResult(results), cells)
+    assert ctx.amount_history["d:電話代1月分"] == {5800: 2}  # 摘要は NFKC・空白除去で正規化
+    assert ctx.amount_history["a:現金"] == {5800: 2}

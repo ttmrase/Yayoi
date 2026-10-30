@@ -157,3 +157,35 @@ def test_memory_votes_amount_and_closed_and_description():
     sc2 = FakeScorer({"切手代": -3.0, "切手伐": -2.5})
     r = resolve_description(sc2, _out("切手伐", lp=-2.5), None, votes={"切手代": 1.0})
     assert r.value == "切手代"
+
+
+def test_amount_dash_hypothesis_forces_review_when_both_readings_are_plausible():
+    # R1 は「5000」と読むが、最後の 0 は「-」(= 500)かもしれない。両方の表記が同程度に尤もらしい
+    sc = FakeScorer({"5000": -1.0, "500-": -1.1, "5,000": -3.0})
+    r = resolve_amount(sc, _out("5000"))
+    assert "dash_digit_ambiguity" in r.reasons and r.features["dash_ambig"] == 1.0
+    # 末尾の「-」が明瞭(500- が圧倒的)なら曖昧さは立たない
+    sc2 = FakeScorer({"500-": -0.1, "5000": -9.0})
+    r2 = resolve_amount(sc2, _out("500-"))
+    assert r2.value == "500" and "dash_digit_ambiguity" not in r2.reasons
+
+
+def test_amount_prefers_trailing_dash_by_prior():
+    # 画像の尤度が同点なら、末尾「-」あり(事前 0.9)の 500 が、なし(0.1)の 5000 より有力
+    sc = FakeScorer({"5000": -1.0, "500-": -1.0})
+    r = resolve_amount(sc, _out("5000"))
+    assert r.value == "500"
+
+
+def test_amount_comma_mismatch_is_flagged():
+    sc = FakeScorer({"1,2800": -0.2})
+    r = resolve_amount(sc, _out("1,2800"))
+    assert r.value == "12800" and "comma_mismatch" in r.reasons and r.features["comma_bad"] == 1.0
+    ok = resolve_amount(FakeScorer({"1,280-": -0.1}), _out("1,280-"))
+    assert "comma_mismatch" not in ok.reasons
+
+
+def test_amount_history_candidates_are_scored_without_bonus():
+    sc = FakeScorer({"700-": -1.0, "7000": -1.2})
+    r = resolve_amount(sc, _out("7000"), extra_values=[700])
+    assert "700" in {v for v, _ in r.candidates}

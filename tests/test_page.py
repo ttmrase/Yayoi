@@ -227,3 +227,60 @@ def test_page_review_forces_review_on_all_cells():
     page.layout_status = "needs_review"
     res = PageRecognizer(FakeEngine(texts)).recognize_page(page, JobContext(), kinds)
     assert res.cell(0, 0).review and "page_needs_review" in res.cell(0, 0).reasons
+
+
+def test_row_consistency_rules_force_review_regardless_of_classifier_confidence():
+    res = run(
+        [
+            {
+                "date": "text:R8 8.21",
+                "account": "text:現金",
+                "description": "",
+                "amount": "text:500-",
+            },
+            {
+                "date": "text:R8 8.22",
+                "account": "text:現金",
+                "description": "text:切手代",
+                "amount": "",
+            },
+            {
+                "date": "text:R8 8.23",
+                "account": "text:現金",
+                "description": "text:切手代",
+                "amount": "text:5-",
+            },
+        ]
+    )
+    d = res.cell(0, 2)  # 金額あり・摘要が blank と判定
+    assert d.kind == "blank" and d.review and "row_inconsistent" in d.reasons
+    a = res.cell(1, 3)  # 他列に記入があるのに金額が blank
+    assert a.kind == "blank" and a.review and "row_inconsistent" in a.reasons
+    assert not res.cell(2, 2).review and "row_inconsistent" not in res.cell(2, 0).reasons
+    assert not res.cell(5, 3).review  # 行全体が空欄なら何も起きない
+
+
+def test_amount_history_feature_marks_repeat_transactions():
+    ctx = JobContext(
+        accounts=["現金"], amount_history={"d:切手代": {500: 2}, "a:現金": {500: 1, 900: 3}}
+    )
+    res = run(
+        [
+            {"account": "text:現金", "description": "text:切手代", "amount": "text:500-"},
+            {"account": "text:現金", "description": "text:切手代", "amount": "text:800-"},
+        ],
+        ctx,
+    )
+    hit, miss = res.cell(0, 3), res.cell(1, 3)
+    assert hit.features["hist_desc"] == 1.0 and hit.features["hist_acct"] == 1.0
+    assert (
+        miss.features["hist_desc"] == 0.0 and miss.features["hist_acct"] == 0.0
+    )  # 不一致は 0(下げる特徴は無い)
+
+
+def test_dash_digit_ambiguity_reason_reaches_cell():
+    # FakeScorer は R1 の第 1 候補の表記だけを尤もらしいとするので、曖昧さの有無は表記の事前で決まる:
+    # 「5000」と読まれた金額は、末尾が「-」の仮説(500)と 10 倍違う候補として並ぶ
+    res = run([{"account": "text:現金", "description": "text:切手代", "amount": "text:5000"}])
+    c = res.cell(0, 3)
+    assert c.value in ("500", "5000") and "dash_ambig" in c.features

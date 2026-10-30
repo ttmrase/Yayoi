@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .grammar import parse_date, repair_date
+from .grammar import norm_text, parse_date, repair_date
 from .page import JobContext, PageResult
 
 
@@ -30,6 +30,20 @@ def confirm_page(ctx: JobContext, result: PageResult, cells: list[ConfirmedCell]
     """確定セルで ctx を更新する。メモリに入れた件数を返す。"""
     n_mem = 0
     last_year: int | None = None
+    n = 4  # 列数(日付・科目・摘要・金額)
+    for row in range(len(cells) // n):
+        rc = cells[row * n : (row + 1) * n]
+        amount = rc[3]
+        if amount.kind != "blank" and amount.resolved.isdigit():
+            v = int(amount.resolved)
+            keys = []
+            if rc[2].resolved:
+                keys.append(f"d:{norm_text(rc[2].resolved)}")
+            if rc[1].resolved:
+                keys.append(f"a:{rc[1].resolved}")
+            for k in keys:
+                h = ctx.amount_history.setdefault(k, {})
+                h[v] = h.get(v, 0) + 1
     for r, c in zip(result.cells, cells, strict=True):
         if c.kind == "blank":
             continue

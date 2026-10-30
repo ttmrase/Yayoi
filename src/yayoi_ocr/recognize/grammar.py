@@ -185,3 +185,58 @@ def repair_amount(text: str) -> list[int]:
     if digits.isdigit() and not out:
         add(parse_amount(digits))
     return out
+
+
+# ---------------------------------------------------------------- 金額: 末尾「-」の仮説・表記の事前確率・桁区切りの整合
+
+P_TRAILING_DASH = (
+    0.9  # この帳票の金額が末尾の「-」で終わる割合の事前(確定データから学習できる設定。Phase 4)
+)
+
+
+def amount_surface_priors(v: int, p_dash: float | None = None) -> dict[str, float]:
+    """金額の書き方(表記) → 事前確率。末尾の「-」あり p_dash / なし 1 - p_dash、カンマあり/なしは半々(1,000 未満は区別なし)。"""
+    pd = P_TRAILING_DASH if p_dash is None else p_dash
+    plain, comma = str(v), f"{v:,}"
+    bodies = [plain] if plain == comma else [comma, plain]
+    out: dict[str, float] = {}
+    for body in bodies:
+        w = 1.0 / len(bodies)
+        out[body + "-"] = pd * w
+        out[body] = (1.0 - pd) * w
+    return out
+
+
+def dash_digit_alternatives(text: str) -> list[int]:
+    """末尾の字形が「-」か数字かの取り違え(「-」を 0/1/7 などに読む)の仮説から作る別の値。
+
+    末尾が数字なら「その数字は実は『-』」(最後の 1 桁を落とした値)、末尾が「-」なら「実は『0』」(10 倍の値)。
+    どちらも元の値と 10 倍違う。両方が有力なら、必ず要確認にする(fields.resolve_amount)。
+    """
+    t = unicodedata.normalize("NFKC", text).strip().replace(" ", "")
+    out: list[int] = []
+    digits = re.sub(r"[,\-]", "", t)
+    if not digits.isdigit():
+        return out
+    if t[-1:].isdigit() and len(digits) >= 2:
+        v = parse_amount(digits[:-1])
+        if v is not None:
+            out.append(v)
+    elif t.endswith("-"):
+        v = parse_amount(digits + "0")
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def ten_fold_pair(a: int, b: int) -> bool:
+    """a と b が「最後の 1 字の取り違え」で 10 倍違う関係か(a // 10 == b または b // 10 == a)。"""
+    return a != b and (a // 10 == b or b // 10 == a)
+
+
+def amount_comma_ok(text: str) -> bool:
+    """桁区切りのカンマの位置が桁数と整合しているか(カンマが無ければ True)。先頭・末尾の余計な線・カンマは無視する。"""
+    t = unicodedata.normalize("NFKC", text).strip().strip(",-")
+    if "," not in t:
+        return True
+    return bool(_AMOUNT_COMMA_RE.match(t + "-")) or bool(_AMOUNT_COMMA_RE.match(t))

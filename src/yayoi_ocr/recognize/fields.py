@@ -20,11 +20,14 @@ from typing import Protocol
 
 from .grammar import (
     DateValue,
-    amount_surfaces,
+    amount_comma_ok,
+    amount_surface_priors,
+    dash_digit_alternatives,
     date_surfaces,
     norm_text,
     repair_amount,
     repair_date,
+    ten_fold_pair,
 )
 from .parseq.engine import ParseqResult, RecognizeOutput
 
@@ -53,6 +56,8 @@ def _marginal_logps(
     values: Sequence,
     surfaces_of,
     column: object = None,
+    priors_of=None,
+    flat: list[float] | None = None,
 ) -> list[float]:
     """値ごとの対数尤度 = その値の表記ゆれの尤度の和(周辺化)。
 
@@ -68,10 +73,16 @@ def _marginal_logps(
     texts = list(owners)
     scores = scorer.score_output(out, texts, column)
     per: list[list[float]] = [[] for _ in values]
+    per_flat: list[list[float]] = [[] for _ in values]
+    pri = [priors_of(v) for v in values] if priors_of else None
     for t, sc in zip(texts, scores, strict=True):
         share = math.log(len(owners[t]))
         for i in owners[t]:
-            per[i].append(sc.logprob - share)
+            lw = math.log(max(pri[i].get(t, 1.0), 1e-12)) if pri else 0.0  # 表記の事前
+            per[i].append(sc.logprob - share + lw)
+            per_flat[i].append(sc.logprob - share)
+    if flat is not None:  # 事前なし(画像の証拠だけ)の対数尤度も返す
+        flat[:] = [logsumexp(p) for p in per_flat]
     return [logsumexp(p) for p in per]
 
 
@@ -186,7 +197,16 @@ def resolve_amount(
     votes: dict[str, float] | None = None,
     max_sim: float = 0.0,
     mem_bonus: float | None = None,
+    extra_values: Sequence[int] = (),
+    ambiguity_post: float = 0.10,
 ) -> FieldResult:
+    """金額の解決。
+
+    末尾の字形について「『-』である」「数字(0 など)である」の両方の仮説の値を候補に出し(`dash_digit_alternatives`)、
+    表記の事前(末尾の「-」あり = 0.9)を掛けて周辺化する。10 倍違う(最後の 1 字の取り違え)候補が両方とも
+    有力(事後確率 ≥ `ambiguity_post`)なら、必ず要確認(`dash_digit_ambiguity`)。
+    `extra_values`: 履歴(同じ摘要・科目の過去の確定金額)から来る候補。R1 の尤度で採点するだけで、ボーナスは与えない。
+    """
     mb = (
         MEMORY_BONUS if mem_bonus is None else mem_bonus
     )  # 実行時の値(sim_learning.py が較正で変える)
@@ -195,31 +215,58 @@ def resolve_amount(
     for c in out.candidates[:max_cands]:
         for v in repair_amount(c.text):
             cands.setdefault(v, None)
+    for c in out.candidates[:3]:  # 末尾の字形の仮説(「-」か数字か)は上位の読みから
+        for v in dash_digit_alternatives(c.text):
+            cands.setdefault(v, None)
     vote_v: dict[int, float] = {}
     for t, w in (votes or {}).items():
         vs = repair_amount(t)
         if vs:
             vote_v[vs[0]] = vote_v.get(vs[0], 0.0) + w
             cands.setdefault(vs[0], None)
+    for v in extra_values:
+        cands.setdefault(int(v), None)
     feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
     if not cands:
         return FieldResult(
             "", best.text, False, [], feats, ["grammar_violation"], None, best.char_confidences
         )
     vals = list(cands)
+    flat: list[float] = []
     logps = dict(
-        zip(vals, _marginal_logps(scorer, out, vals, amount_surfaces, "amount"), strict=True)
-    )
+        zip(
+            vals,
+            _marginal_logps(
+                scorer, out, vals, lambda v: list(amount_surface_priors(v)), "amount",
+                priors_of=amount_surface_priors, flat=flat,
+            ),
+            strict=True,
+        )
+    )  # fmt: skip
     if vote_v:
         logps = {v: lp + mb * vote_v.get(v, 0.0) for v, lp in logps.items()}
     named = {str(v): lp for v, lp in logps.items()}
     feats.update(_posterior_features(named))
     top = max(logps, key=lambda v: logps[v])
     feats.update(_mem_features(votes, max_sim, vote_v.get(top, 0.0)))
-    feats["direct"] = float(repair_amount(best.text)[:1] == [top])
+    direct = repair_amount(best.text)[:1] == [top]
+    feats["direct"] = float(direct)
     reasons = []
     if feats["top_p"] < 1e-3:
         reasons.append("grammar_violation")
+    # 10 倍違う候補が両方とも有力なら要確認。「有力」は表記の事前(末尾「-」が多い)を除いた、画像の証拠だけの事後で判断する
+    # (事前を入れると 10 倍違う側が小さく見えて、曖昧さを見落とす)
+    flat_named = {str(v): lp for v, lp in zip(vals, flat, strict=True)}
+    strong = [int(v) for v, p_ in _ranked(flat_named, k=len(flat_named)) if p_ >= ambiguity_post]
+    ambig = any(ten_fold_pair(a, b) for ia, a in enumerate(strong) for b in strong[ia + 1 :])
+    feats["dash_ambig"] = float(ambig)
+    if ambig:
+        reasons.append("dash_digit_ambiguity")
+    # 桁区切りのカンマの位置が桁数と整合しない読みを採ったときは要確認
+    comma_bad = not amount_comma_ok(best.text)
+    feats["comma_bad"] = float(comma_bad)
+    if comma_bad and direct:
+        reasons.append("comma_mismatch")
     return FieldResult(
         str(top), best.text, True, _ranked(named), feats, reasons, top, best.char_confidences
     )

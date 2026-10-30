@@ -93,3 +93,32 @@ def test_repair_amount_strips_stray_marks():
 )
 def test_norm_text(a, b):
     assert norm_text(a) == norm_text(b)
+
+
+def test_amount_surface_priors_sum_to_one_and_favor_trailing_dash():
+    from yayoi_ocr.recognize.grammar import amount_surface_priors
+
+    p = amount_surface_priors(3456)
+    assert set(p) == {"3,456-", "3456-", "3,456", "3456"}
+    assert abs(sum(p.values()) - 1.0) < 1e-9
+    assert p["3,456-"] > p["3,456"] * 5
+    small = amount_surface_priors(500)  # 1,000 未満はカンマの有無の区別なし
+    assert set(small) == {"500-", "500"} and abs(sum(small.values()) - 1.0) < 1e-9
+
+
+def test_dash_digit_alternatives_and_ten_fold_pair():
+    from yayoi_ocr.recognize.grammar import dash_digit_alternatives, ten_fold_pair
+
+    assert dash_digit_alternatives("5000") == [500]  # 末尾の 0 は実は「-」かもしれない
+    assert dash_digit_alternatives("1,2807") == [1280]
+    assert dash_digit_alternatives("500-") == [5000]  # 末尾の「-」は実は「0」かもしれない
+    assert dash_digit_alternatives("7") == [] and dash_digit_alternatives("abc") == []
+    assert ten_fold_pair(5000, 500) and ten_fold_pair(5003, 500) and not ten_fold_pair(5000, 50)
+    assert not ten_fold_pair(500, 500)
+
+
+def test_amount_comma_ok():
+    from yayoi_ocr.recognize.grammar import amount_comma_ok
+
+    assert amount_comma_ok("1,280-") and amount_comma_ok("500-") and amount_comma_ok("-1,280-")
+    assert not amount_comma_ok("12,80-") and not amount_comma_ok("1,2800")

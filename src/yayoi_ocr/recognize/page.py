@@ -152,6 +152,8 @@ class JobContext:
     dictionary: dict[str, int] = field(default_factory=dict)  # 摘要の頻度辞書(過去の確定値)
     account_prior: dict[str, float] | None = None
     memory: RecognitionMemory | None = None  # 見覚えメモリ(確定済みセルの埋め込み + 確定テキスト)
+    # 繰り返しの取引: 確定した摘要("d:<摘要>")・科目("a:<科目>")ごとの金額の件数(learning.confirm_page が更新)
+    amount_history: dict[str, dict[int, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -217,6 +219,7 @@ class PageRecognizer:
         oracle_kinds: Sequence[str] | None = None,
     ) -> PageResult:
         ctx = ctx or JobContext()
+        self._ctx = ctx  # _finalize が履歴を参照する
         probs = self.classify(page, oracle_kinds)
         results: list[CellResult] = []
         for i, c in enumerate(page.cells):
@@ -231,11 +234,13 @@ class PageRecognizer:
             and (r.cls_probs["text"] >= self.cfg.run_r1_min_p or r.cls_probs["wave"] >= 0.5)
         ]
         outs = self._recognize(page, run)
-        for i in run:
-            self._resolve_cell(results[i], page.cells[i], outs[i], ctx)
+        order = {"date": 0, "account": 0, "description": 0, "amount": 1}
+        for i in sorted(run, key=lambda k: order[page.cells[k].column]):
+            self._resolve_cell(results[i], page.cells[i], outs[i], ctx, results)
         # タイトル・No.
         title = self._resolve_title(page, ctx)
         self._page_pass(page, results, ctx)
+        self._row_consistency(results)
         layout_reasons = layout_reason_codes(page.layout_notes)
         for r, c in zip(results, page.cells, strict=True):
             self._finalize(r, c, page, results)
@@ -278,7 +283,12 @@ class PageRecognizer:
     # ------------------------------------------------------------------ セルの解決
 
     def _resolve_cell(
-        self, r: CellResult, c: CellInput, out: RecognizeOutput, ctx: JobContext
+        self,
+        r: CellResult,
+        c: CellInput,
+        out: RecognizeOutput,
+        ctx: JobContext,
+        results: list[CellResult] | None = None,
     ) -> None:
         r.out = out
         if r.kind == "wave":
@@ -290,7 +300,10 @@ class PageRecognizer:
         votes, max_sim = None, 0.0
         if ctx.memory is not None and out.embedding is not None and ctx.memory.size(c.column):
             votes, max_sim = ctx.memory.votes(c.column, out.embedding)
-        fr = self._field(c.column, out, ctx, votes, max_sim)
+        extra: list[int] = []
+        if c.column == "amount" and results is not None:
+            extra = _history_amounts(ctx, results, c.row)
+        fr = self._field(c.column, out, ctx, votes, max_sim, extra)
         r.text = fr.text
         r.value = fr.value
         r.ok = fr.ok
@@ -307,12 +320,13 @@ class PageRecognizer:
         ctx: JobContext,
         votes: dict[str, float] | None = None,
         max_sim: float = 0.0,
+        extra_amounts: Sequence[int] = (),
     ) -> FieldResult:
         mem = {"votes": votes, "max_sim": max_sim}
         if column == "date":
             return resolve_date(self.engine, out, **mem)
         if column == "amount":
-            return resolve_amount(self.engine, out, **mem)
+            return resolve_amount(self.engine, out, extra_values=extra_amounts, **mem)
         if column == "account":
             return resolve_closed(self.engine, out, ctx.accounts, ctx.account_prior, **mem)
         return resolve_description(self.engine, out, ctx.dictionary, **mem)
@@ -433,6 +447,21 @@ class PageRecognizer:
         r.ok = bool(hit)
         r.reasons.append(R_WAVE)
 
+    # ------------------------------------------------------------------ 行の整合
+
+    def _row_consistency(self, results: list[CellResult]) -> None:
+        """取引の行で日付・科目・摘要が空欄、または他列に記入があるのに金額が空欄、は(分類器の確信度が高くても)要確認。"""
+        n = len(COLUMNS)
+        for row in range(N_ROWS):
+            cells = results[row * n : (row + 1) * n]
+            amount = cells[3]
+            if amount.kind != "blank":
+                for r in cells[:3]:
+                    if r.kind == "blank":
+                        r.reasons.append(R_ROW_INCONSISTENT)
+            elif any(r.kind != "blank" for r in cells[:3]):
+                amount.reasons.append(R_ROW_INCONSISTENT)
+
     # ------------------------------------------------------------------ 仕上げ
 
     def _finalize(
@@ -469,6 +498,9 @@ class PageRecognizer:
         r.features["ink_w_frac"] = float(c.stats[6])
         r.features["faint"] = float(c.faint_only)
         r.features["overflow"] = float("overflow" in c.flags)
+        if r.column == "amount" and r.kind in ("text", "ditto") and r.value.isdigit():
+            hd, ha = _history_match(self._ctx, results, r.row, int(r.value))
+            r.features["hist_desc"], r.features["hist_acct"] = hd, ha
         if r.kind == "ditto" and r.source is not None:
             r.features["src_conf"] = results[r.source[0] * len(COLUMNS) + r.source[1]].confidence
         r.confidence = float(self.calibrator(r))
@@ -478,6 +510,41 @@ class PageRecognizer:
         if low:
             r.reasons.append(R_LOW_CONF)
         r.review = low or bool(HARD_REASONS & set(r.reasons))
+
+
+def _row_key_values(
+    ctx: JobContext, results: list[CellResult], row: int
+) -> tuple[str | None, str | None]:
+    n = len(COLUMNS)
+    acc, desc = results[row * n + 1], results[row * n + 2]
+    a = f"a:{acc.value}" if acc.value else None
+    d = f"d:{norm_text(desc.value)}" if desc.value else None
+    return d, a
+
+
+def _history_amounts(
+    ctx: JobContext, results: list[CellResult], row: int, top: int = 3
+) -> list[int]:
+    """同じ摘要・科目(認識済みの text のみ)の過去の確定金額(頻度の高い順)。候補として R1 の尤度で採点する。"""
+    n = len(COLUMNS)
+    d, a = _row_key_values(ctx, results, row)
+    out: list[int] = []
+    for key, cell in ((d, results[row * n + 2]), (a, results[row * n + 1])):
+        if key and cell.kind == "text" and key in ctx.amount_history:
+            h = ctx.amount_history[key]
+            out += [v for v in sorted(h, key=lambda k: -h[k])[:top] if v not in out]
+    return out
+
+
+def _history_match(
+    ctx: JobContext, results: list[CellResult], row: int, value: int
+) -> tuple[float, float]:
+    """金額 value が、同じ摘要・同じ科目の過去の確定金額と一致するか(一致 1.0 / それ以外 0.0)。不一致は確信度を変えない。"""
+    d, a = _row_key_values(ctx, results, row)
+    return (
+        float(bool(d) and value in ctx.amount_history.get(d, {})),
+        float(bool(a) and value in ctx.amount_history.get(a, {})),
+    )
 
 
 _WAVE_RE = re.compile(r"[〜~～ー\-—–]")

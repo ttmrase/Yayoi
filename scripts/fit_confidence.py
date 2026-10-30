@@ -2,10 +2,10 @@
 """確信度モデル(列 x 種別のロジスティック回帰と、要確認のしきい値)を較正する。
 
     python scripts/fit_confidence.py --dump CALIB.jsonl [CALIB2.jsonl ...] --out confidence.json
-        [--margin 2.0] [--max-miss-amount 0.001] [--max-miss 0.005]
+        [--alpha 0.05] [--max-miss-amount 0.001] [--max-miss 0.005]
 
 - --dump: scripts/eval_recognize.py --dump の出力(較正用データセットで、学習済みの分類器を使って認識したもの)。
-- 見逃し率の目標(列の全セルに対する割合): 金額 0.1%、その他 0.5%。--margin は安全側の余裕(目標を margin で割った件数まで許す)。
+- 見逃し率の目標(列の全セルに対する割合): 金額 0.1%、その他 0.5%。しきい値は見逃し率の Clopper-Pearson 上側信頼限界(--alpha、既定 95%)が目標以下になるように決める。
 - 出力はリポジトリの外(例: $YAYOI_PRIVATE_DATA/models/)に置く。
 """
 
@@ -25,7 +25,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", nargs="+", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--margin", type=float, default=2.0)
+    ap.add_argument(
+        "--alpha",
+        type=float,
+        default=0.05,
+        help="Clopper-Pearson の片側の有意水準(0.05 = 95% 上側信頼限界)",
+    )
     ap.add_argument("--max-miss", type=float, default=0.005)
     ap.add_argument("--max-miss-amount", type=float, default=0.001)
     ap.add_argument("--l2", type=float, default=3.0)
@@ -46,7 +51,7 @@ def main() -> int:
             "description": args.max_miss,
         },
         default_max_miss=args.max_miss,
-        margin=args.margin,
+        alpha=args.alpha,
         l2=args.l2,
     )
     out = Path(args.out)
