@@ -29,7 +29,12 @@ from yayoi_ocr.config import assert_safe_output_dir
 from yayoi_ocr.recognize.celltype import CellTypeClassifier
 from yayoi_ocr.recognize.confidence import ConfidenceModel
 from yayoi_ocr.recognize.evaluate import dump_row, judge
-from yayoi_ocr.recognize.grammar import norm_text
+from yayoi_ocr.recognize.grammar import (
+    amount_surface_priors,
+    date_surfaces,
+    norm_text,
+    parse_date,
+)
 from yayoi_ocr.recognize.inputs import from_page_data
 from yayoi_ocr.recognize.page import JobContext, PageRecognizer
 from yayoi_ocr.recognize.parseq.engine import MODEL_FILES, ParseqEngine
@@ -41,13 +46,40 @@ from yayoi_ocr.synth.dataset import list_pages, load_page
 WIDTH_COLUMNS = {256: ("date", "account", "amount"), 384: ("description",)}
 
 
-def samples_from_pages(pages, columns) -> list[tuple[np.ndarray, str]]:
-    """確定ページのセル → (認識用画像, 確定テキスト)。書かれた通りに記入された text セルだけ(〃・矢印・波線は除く)。"""
+def label_candidates(column: str, resolved: str) -> list[str]:
+    """確定値(CSV に出す値)と整合する、紙への書き方の集合。確認画面は書かれた通りの文字列を聞かないので、学習側で書き方を推定する。"""
+    if column == "date":
+        v = parse_date(resolved)
+        if v is None:
+            return [resolved]
+        return date_surfaces(v) + date_surfaces(v.with_year(None))  # 年が書かれていない場合も含む
+    if column == "amount" and resolved.isdigit():
+        return list(amount_surface_priors(int(resolved)))
+    return [norm_text(resolved)]
+
+
+def samples_from_pages(
+    pages, columns, label_mode: str = "written", engine: ParseqEngine | None = None
+) -> list[tuple[np.ndarray, str]]:
+    """確定ページのセル → (認識用画像, 確定テキスト)。text セルだけ(〃・矢印・波線は除く)。
+
+    label_mode = written: 書かれた通りの正解(理想。確認画面では得られない)。
+    label_mode = resolved: 確定値だけが分かる想定。確定値と整合する書き方のうち、今の重みで最も尤度の高いものを正解とする(自己ラベル)。
+    """
     out = []
     for pg in pages:
         for i, c in enumerate(pg.cells):
-            if c.kind == "text" and c.column in columns and i in pg.rec and c.raw:
+            if c.kind != "text" or c.column not in columns or i not in pg.rec or not c.raw:
+                continue
+            if label_mode == "written":
                 out.append((pg.rec[i], norm_text(c.raw)))
+                continue
+            cands = label_candidates(c.column, c.resolved)
+            if len(cands) > 1 and engine is not None:
+                crop = np.stack([pg.rec[i]] * 3, axis=-1)
+                scores = engine.score_many(crop, cands, c.column)
+                cands = [max(zip(cands, scores, strict=True), key=lambda t: t[1].logprob)[0]]
+            out.append((pg.rec[i], cands[0]))
     return out
 
 
@@ -78,6 +110,9 @@ def main() -> int:
     ap.add_argument("--eval-pages", type=int, default=12)
     ap.add_argument("--shard", default="0/1", help="i/k: 書き手を k 分割したうちの i 番目")
     ap.add_argument("--max-writers", type=int, default=0)
+    ap.add_argument(
+        "--only-writers", type=int, nargs="*", default=[], help="この書き手 ID だけ処理する"
+    )
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--l2sp", type=float, default=0.1)
     ap.add_argument("--frozen-blocks", type=int, default=8)
@@ -87,6 +122,12 @@ def main() -> int:
         type=int,
         default=2000,
         help="エポック数 = clamp(この値 / 学習セル数, 3, 40)。少数のセルでも十分な更新回数にする",
+    )
+    ap.add_argument(
+        "--label-mode",
+        choices=["written", "resolved"],
+        default="written",
+        help="written = 書かれた通りの正解で学習(理想)/ resolved = 確定値だけから書き方を自己ラベル(確認画面で得られる情報だけ)",
     )
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--forget-data", nargs="*", default=[], help="忘却の測定に使うデータセット")
@@ -112,13 +153,21 @@ def main() -> int:
             ms[w] = m
         return ms, charset
 
-    by_writer: dict[int, list] = defaultdict(list)
-    for p in list_pages(args.data):
-        pg = load_page(p)
-        by_writer[pg.meta["writer_id"]].append(pg)
-    writers = sorted(by_writer)[i_shard::k_shard]
+    def writer_of(path: Path) -> int:
+        with np.load(path, allow_pickle=False) as z:  # meta だけ読む(ページ全体は読み込まない)
+            return int(json.loads(str(z["meta"]))["page"]["writer_id"])
+
+    paths_by_writer: dict[int, list[Path]] = defaultdict(list)
+    for path in list_pages(args.data):
+        paths_by_writer[writer_of(path)].append(path)
+    writers = sorted(paths_by_writer)[i_shard::k_shard]
+    if args.only_writers:
+        writers = [w for w in sorted(paths_by_writer) if w in set(args.only_writers)]
     if args.max_writers:
         writers = writers[: args.max_writers]
+    by_writer = {
+        w: [load_page(p) for p in paths_by_writer[w]] for w in writers
+    }  # 担当の書き手のページだけ
     forget_pages = {
         Path(d).name: [load_page(p) for p in list_pages(d)[: args.forget_limit]]
         for d in args.forget_data
@@ -145,7 +194,7 @@ def main() -> int:
                 ms, charset = global_models()
                 rec_t = {}
                 for width, columns in WIDTH_COLUMNS.items():
-                    samples = samples_from_pages(train_pool[:n], columns)
+                    samples = samples_from_pages(train_pool[:n], columns, args.label_mode, eng0)
                     if not samples:
                         continue
                     epochs = int(np.clip(round(args.steps_samples / len(samples)), 3, 40))
