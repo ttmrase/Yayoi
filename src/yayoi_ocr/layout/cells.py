@@ -44,6 +44,10 @@ class PageInk:
     owner: np.ndarray  # int32: 成分ごとの帰属セル id(-1 = 位置で決める)
     cell_id: np.ndarray  # int16: 画素ごとの位置上のセル id(-1 = 表の外)
     faint: np.ndarray | None = None  # bool: 薄い記入を含む高感度のインク(空欄判定用)
+    # 認識用: gray から罫線の濃淡(線に沿った百分位)を割って打ち消したもの。罫線に重なった筆跡
+    # (ベースライン上のピリオド・桁の下端)を残す。罫線の位置が不確実な区間だけは白で塗る。
+    gray_nl: np.ndarray | None = None
+    band_zone: np.ndarray | None = None  # bool: 見出し帯(黒ベタ)の領域
     threshold: float = 0.0
     notes: list[str] = field(default_factory=list)
 
@@ -75,6 +79,55 @@ def ink_response(gray: np.ndarray, canon_width: int) -> np.ndarray:
     return cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, se).astype(np.float32)
 
 
+LINE_PERCENTILE = (
+    65.0  # 罫線の濃淡を推定する百分位(筆跡は罫線より暗いので、中央値よりやや明るい側を採る)
+)
+
+
+def _line_profile_divide(
+    gray: np.ndarray,
+    ys: list[int],
+    hw_h: list[int],
+    xs: list[int],
+    hw_v: list[int],
+    extent: tuple[int, int, int, int],
+    win: int,
+) -> np.ndarray:
+    """罫線の帯ごとに、線に沿った百分位(筆跡の影響を受けない罫線そのものの濃淡)で割って罫線を打ち消す。
+
+    筆跡が罫線に重なっていても、罫線の濃淡で割れば筆跡だけが残る(乗算モデル: 観測 = 筆跡 x 罫線)。
+    横罫線 → 縦罫線の順に行う(交点は 2 回目で打ち消される)。
+    """
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    out = gray.astype(np.float32)
+    h, w = out.shape
+    tx0, ty0, tx1, ty1 = extent
+    win = max(5, win | 1)
+    half = win // 2
+
+    def divide(band: np.ndarray, axis: int) -> np.ndarray:
+        # axis=1: 行ごとに x 方向(横罫線)/ axis=0: 列ごとに y 方向(縦罫線)に、窓内の百分位を取る
+        b = band if axis == 1 else band.T
+        padded = np.pad(b, ((0, 0), (half, half)), mode="edge")
+        prof = np.percentile(sliding_window_view(padded, win, axis=1), LINE_PERCENTILE, axis=2)
+        prof = np.maximum(prof, 1.0)
+        res = np.minimum(b * 255.0 / prof, 255.0)
+        return res if axis == 1 else res.T
+
+    for y, hw in zip(ys, hw_h, strict=True):
+        m = hw + 3
+        y0, y1 = max(0, y - m), min(h, y + m + 1)
+        if y1 - y0 >= 3 and tx1 > tx0:
+            out[y0:y1, tx0 : tx1 + 1] = divide(out[y0:y1, tx0 : tx1 + 1], 1)
+    for x, hw in zip(xs, hw_v, strict=True):
+        m = hw + 3
+        x0, x1 = max(0, x - m), min(w, x + m + 1)
+        if x1 - x0 >= 3 and ty1 > ty0:
+            out[ty0 : ty1 + 1, x0:x1] = divide(out[ty0 : ty1 + 1, x0:x1], 0)
+    return out
+
+
 def analyze_page_ink(rect_color: np.ndarray, geom: PageGeometry) -> PageInk:
     """正準ページ画像から、罫線を除いたインク画素と連結成分の帰属を求める。"""
     tpl = geom.tpl
@@ -101,6 +154,7 @@ def analyze_page_ink(rect_color: np.ndarray, geom: PageGeometry) -> PageInk:
     tx0, tx1 = xs[0] - max(hw_v[0], 3), xs[-1] + max(hw_v[-1], 3)
     ty0, ty1 = ys[0] - max(hw_h[0], 3), ys[-1] + max(hw_h[-1], 3)
     line_mask = np.zeros((h, w), dtype=bool)
+    uncertain_line = np.zeros((h, w), dtype=bool)  # 罫線の位置が不確実で、広く消した区間
     for y, hw in zip(ys, hw_h, strict=True):
         line_mask[max(0, y - hw) : y + hw + 1, max(0, tx0) : tx1 + 1] = True
     for x, hw in zip(xs, hw_v, strict=True):
@@ -115,12 +169,14 @@ def analyze_page_ink(rect_color: np.ndarray, geom: PageGeometry) -> PageInk:
             cols = np.nonzero(bad)[0]
             cols = cols[(cols >= tx0) & (cols <= tx1)]
             line_mask[max(0, y - wide) : y + wide + 1, cols] = True
+            uncertain_line[max(0, y - wide) : y + wide + 1, cols] = True
     for vl, x in zip(geom.vlines, xs, strict=True):
         if not vl.good.all():
             bad = ~vl.good[np.abs(v_rows[:, None] - vl.centers[None, :]).argmin(axis=1)]
             rows = np.nonzero(bad)[0]
             rows = rows[(rows >= ty0) & (rows <= ty1)]
             line_mask[rows, max(0, x - wide) : x + wide + 1] = True
+            uncertain_line[rows, max(0, x - wide) : x + wide + 1] = True
     # 見出し帯(黒ベタ)は丸ごとインクではない: 帯の領域は除外
     bx0, by0, bx1, by1 = geom.box_to_px(tpl.band)
     band_zone = np.zeros((h, w), dtype=bool)
@@ -188,7 +244,24 @@ def analyze_page_ink(rect_color: np.ndarray, geom: PageGeometry) -> PageInk:
     smallf = stf[:, cv2.CC_STAT_AREA] < FAINT_MIN_AREA * kw
     smallf[0] = False
     faint &= ~smallf[labfc]
-    return PageInk(gray, cleaned, line_mask, labels, owner, cell_id, faint=faint, threshold=thr)
+    # 認識用グレー: 罫線を濃淡の割り算で打ち消す(帯の残りかすは白、不確実な区間は白で塗る)
+    win = round(0.03 * tpl.canon_width)
+    gnl = _line_profile_divide(gray, ys, hw_h, xs, hw_v, (tx0, ty0, tx1, ty1), win)
+    gnl[line_mask & (gnl > 235.0)] = 255.0
+    gnl[uncertain_line] = 255.0
+    gray_nl = np.clip(gnl, 0, 255).astype(np.uint8)
+    return PageInk(
+        gray,
+        cleaned,
+        line_mask,
+        labels,
+        owner,
+        cell_id,
+        faint=faint,
+        gray_nl=gray_nl,
+        band_zone=band_zone,
+        threshold=thr,
+    )
 
 
 def _assign_owners(labels: np.ndarray, cell_id: np.ndarray, n_lab: int, n_cells: int) -> np.ndarray:
@@ -218,6 +291,8 @@ class CellCrop:
     overflow: bool  # 帰属するインクがセル本体の外へ出ている
     faint_only: bool = False  # 通常のインクは無いが、薄い記入らしいインクがある
     flags: set[CellFlag] = field(default_factory=set)
+    # 認識用: 照明補正済みグレー(紙 = 255)の罫線を打ち消し、他セルのインクを白にしたもの
+    gray: np.ndarray | None = None
 
 
 def _crop(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, fill) -> np.ndarray:
@@ -253,6 +328,19 @@ def extract_region(
         own = pink.owner[lab_win]
         mine = ink_win & ((own == cell_index) | ((own == -1) & (cid_win == cell_index)))
     binary = np.where(mine, 0, 255).astype(np.uint8)
+    # 認識用グレー: 罫線は打ち消し済み(gray_nl)。他セルに帰属するインクの近傍だけを白にする
+    gray = _crop(pink.gray_nl if pink.gray_nl is not None else pink.gray, *win, 255).astype(
+        np.uint8
+    )
+    if cell_index is not None:
+        near_other = cv2.dilate((ink_win & ~mine).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        gray[near_other & ~mine] = 255
+        # セル本体と自セルのインクの近傍(はみ出し)以外は白にする(隣のセルの内容を持ち込まない)
+        zone = cv2.dilate(mine.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+        zone[py : py + (y1 - y0), px : px + (x1 - x0)] = True
+        gray[~zone] = 255
+    elif pink.band_zone is not None:  # タイトル・No. 欄: 見出し帯が写り込まないようにする
+        gray[_crop(pink.band_zone, *win, False)] = 255
     # セル本体のインク量(罫線の内側 inner = (左, 上, 右, 下) px を除く)
     ix0, iy0 = px + inner[0], py + inner[1]
     ix1, iy1 = px + (x1 - x0) - inner[2], py + (y1 - y0) - inner[3]
@@ -289,4 +377,5 @@ def extract_region(
         overflow=overflow,
         faint_only=faint,
         flags=flags,
+        gray=gray,
     )

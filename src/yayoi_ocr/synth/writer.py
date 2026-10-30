@@ -58,6 +58,23 @@ def _usable_fonts() -> list[Path]:
     return fonts
 
 
+def select_fonts(
+    include: tuple[str, ...] | None = None, exclude: tuple[str, ...] = ()
+) -> list[Path]:
+    """書き手が使うフォントを、ファイル名(小文字)の部分一致で絞る。学習用/評価用のフォント分離に使う。"""
+    out = []
+    for f in _usable_fonts():
+        n = f.stem.lower()
+        if include is not None and not any(i.lower() in n for i in include):
+            continue
+        if any(e.lower() in n for e in exclude):
+            continue
+        out.append(f)
+    if not out:
+        raise RuntimeError(f"条件に合うフォントがありません: include={include} exclude={exclude}")
+    return out
+
+
 def make_writer(writer_id: int, fonts: list[Path] | None = None) -> Writer:
     """書き手 ID から決定的に書き手を作る(同じ ID なら常に同じ癖)。"""
     fonts = fonts or _usable_fonts()

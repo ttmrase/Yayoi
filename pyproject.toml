@@ -51,11 +51,10 @@ src = ["src", "tests", "scripts"]
 select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF"]
 ignore = [
     "RUF001", "RUF002", "RUF003",  # 日本語の全角文字を許可
+    "E501",                        # 全角を幅 2 で数えるため、コメント・docstring の長さは見ない(コードは ruff format が折り返す)
     "N803", "N806",                # 画像処理で H, W 等の大文字変数を使う
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# baudm/parseq 由来のコード(`F` は torch.nn.functional の慣用名)と、日本語の長い説明行(全角は幅 2 で数える)
-"src/yayoi_ocr/recognize/parseq/*.py" = ["E501", "N812"]
-"scripts/fetch_models.py" = ["E501"]
-"tests/test_parseq_*.py" = ["E501"]
+# baudm/parseq 由来のコード(`F` は torch.nn.functional の慣用名)
+"src/yayoi_ocr/recognize/parseq/*.py" = ["N812"]

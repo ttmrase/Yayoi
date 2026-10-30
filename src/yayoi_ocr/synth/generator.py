@@ -28,6 +28,7 @@ from .writer import (
     draw_text,
     draw_wave,
     make_writer,
+    select_fonts,
     text_width,
 )
 
@@ -58,6 +59,10 @@ class SynthConfig:
     fill_rows: int | None = None  # 埋まる行数(None なら 10〜29 から)
     canvas_scale: float = 1500.0  # 白紙の描画解像度(px / 単位)
     cut_prob: float = 0.15  # 用紙の端が写っていない(表が画像から切れる)撮影の割合
+    font_include: tuple[str, ...] | None = (
+        None  # 書き手が使うフォント(ファイル名の部分一致。None = すべて)
+    )
+    font_exclude: tuple[str, ...] = ()  # 使わないフォント(学習用/評価用のフォント分離)
 
 
 @dataclass
@@ -310,7 +315,12 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
         raise RuntimeError(
             "日本語フォントが見つかりません(`python scripts/fetch_fonts.py` を実行してください)"
         )
-    writer = make_writer(cfg.writer_id if cfg.writer_id is not None else cfg.seed)
+    fonts = (
+        select_fonts(cfg.font_include, cfg.font_exclude)
+        if (cfg.font_include or cfg.font_exclude)
+        else None
+    )
+    writer = make_writer(cfg.writer_id if cfg.writer_id is not None else cfg.seed, fonts)
 
     scale = cfg.canvas_scale
     blank, info = render_blank(tpl, scale, rng)
