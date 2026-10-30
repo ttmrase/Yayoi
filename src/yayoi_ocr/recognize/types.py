@@ -7,7 +7,7 @@ from typing import Protocol
 
 import numpy as np
 
-from .models import ColumnKind
+from ..models import ColumnKind
 
 
 @dataclass

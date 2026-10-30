@@ -18,6 +18,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+# 認識(PyTorch)。アプリ本体の実行・学習に必要。CI の既定には入れない(重いので ml マーカーのテストは skip)
+ml = ["torch>=2.4", "PyYAML>=6"]
+# 開発用: ONNX からの重み復元と NDLOCR-Lite の ONNX との数値一致テスト
+ml-dev = ["onnx>=1.16", "onnxruntime>=1.18"]
 
 [project.scripts]
 yayoi-ocr = "yayoi_ocr.cli:main"
@@ -35,6 +39,7 @@ markers = [
     "samples: 実サンプル画像(YAYOI_PRIVATE_DATA/samples)が必要なテスト。無ければ skip",
     "slow: 時間のかかるテスト",
     "needs_font: 日本語フォントが必要なテスト(合成帳票)。無ければ skip",
+    "ml: PyTorch(と、必要なら models の重み・onnx・onnxruntime)が必要なテスト。無ければ skip",
 ]
 
 [tool.ruff]
@@ -48,3 +53,9 @@ ignore = [
     "RUF001", "RUF002", "RUF003",  # 日本語の全角文字を許可
     "N803", "N806",                # 画像処理で H, W 等の大文字変数を使う
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# baudm/parseq 由来のコード(`F` は torch.nn.functional の慣用名)と、日本語の長い説明行(全角は幅 2 で数える)
+"src/yayoi_ocr/recognize/parseq/*.py" = ["E501", "N812"]
+"scripts/fetch_models.py" = ["E501"]
+"tests/test_parseq_*.py" = ["E501"]

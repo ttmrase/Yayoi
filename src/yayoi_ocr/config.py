@@ -27,6 +27,11 @@ def fonts_dir() -> Path:
     return private_data_dir() / "fonts"
 
 
+def models_dir() -> Path:
+    """学習済みモデルの重み置き場(scripts/fetch_models.py の取得先・学習結果。コミットしない)。"""
+    return private_data_dir() / "models"
+
+
 def debug_dir() -> Path:
     return private_data_dir() / "debug"
 
