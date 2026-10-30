@@ -230,6 +230,36 @@ def samples_from_dump(rows: Iterable[dict]) -> list[Sample]:
     return out
 
 
+def samples_from_confirmed(
+    pages: Iterable[tuple[object, Sequence[object]]],
+) -> tuple[list[Sample], dict[str, int]]:
+    """利用者が確定したページ → 較正用 Sample と、列ごとの全セル数(`fit_confidence` の引数)。
+
+    pages: (`page.PageResult`, 同じ並びの `learning.ConfirmedCell` のリスト)の列。正解 = 認識した値が確定値と一致。
+    Phase 4 は、確定済みの全ページでこれを作り直し、`fit_confidence` で確信度モデルとしきい値を再較正する
+    (初期値は合成データで較正した保守的なもの。確定データが増えるほど、この利用者の字に合ったものになる)。
+    """
+    samples: list[Sample] = []
+    n_cells: dict[str, int] = defaultdict(int)
+    for result, confirmed in pages:
+        page_review = getattr(result, "layout_status", "ok") != "ok"
+        for r, c in zip(result.cells, confirmed, strict=True):
+            n_cells[r.column] += 1
+            hard = (
+                bool(HARD_REASONS & set(r.reasons)) or page_review or r.kind in ALWAYS_REVIEW_KINDS
+            )
+            samples.append(
+                Sample(
+                    r.column,
+                    r.kind,
+                    featurize(r.features, r.cls_probs.get(r.kind, 1.0)),
+                    r.value == c.resolved,
+                    hard,
+                )
+            )
+    return samples, dict(n_cells)
+
+
 def _binom_cdf(k: int, n: int, p: float) -> float:
     """P(X ≤ k), X ~ Binomial(n, p)。k が小さい前提(見逃し件数)で、対数ガンマで直接足し上げる。"""
     if p <= 0.0:

@@ -144,3 +144,41 @@ def test_history_feature_weights_are_never_negative():
     model = fit_confidence(samples, {"amount": 1_000_000})
     lr = model.groups["text:amount"].lr
     assert lr is not None and all(lr.w[FEATURE_NAMES.index(f)] >= 0.0 for f in NONNEG_FEATURES)
+
+
+def test_samples_from_confirmed_counts_cells_and_judges_by_confirmed_value():
+    from types import SimpleNamespace
+
+    from yayoi_ocr.recognize.confidence import samples_from_confirmed
+
+    def cell(col, value, kind="text", reasons=()):
+        return SimpleNamespace(
+            column=col,
+            kind=kind,
+            value=value,
+            reasons=list(reasons),
+            features={"r1_logp": -1.0},
+            cls_probs={kind: 0.9},
+        )
+
+    result = SimpleNamespace(
+        layout_status="ok",
+        cells=[
+            cell("amount", "500"),
+            cell("amount", "800"),
+            cell("description", "", kind="blank"),
+            cell("amount", "100", kind="arrow"),
+        ],
+    )
+    confirmed = [
+        SimpleNamespace(resolved="500"),
+        SimpleNamespace(resolved="900"),
+        SimpleNamespace(resolved=""),
+        SimpleNamespace(resolved="100"),
+    ]
+    samples, n_cells = samples_from_confirmed([(result, confirmed)])
+    assert n_cells == {"amount": 3, "description": 1}
+    assert [s.correct for s in samples] == [True, False, True, True]
+    assert [s.hard for s in samples] == [False, False, False, True]  # 矢印は常に確認
+    flagged = SimpleNamespace(layout_status="needs_review", cells=result.cells[:1])
+    assert samples_from_confirmed([(flagged, confirmed[:1])])[0][0].hard  # 要確認ページは対象外
