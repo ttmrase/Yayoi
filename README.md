@@ -79,7 +79,13 @@ python scripts/fetch_models.py                         # NDLOCR-Lite の PARSeq(
 python scripts/build_synth_cells.py --out ~/yayoi_private/datasets/train --n 300 --preset typical --jobs 4
 python scripts/train_celltype.py --train DIR --calib DIR --out ~/yayoi_private/models/celltype.pt
 python scripts/eval_recognize.py --data DIR --classifier ~/yayoi_private/models/celltype.pt --dump OUT.jsonl
-python scripts/fit_confidence.py --dump OUT.jsonl --out ~/yayoi_private/models/confidence.json
+python scripts/fit_confidence.py --dump OUT.jsonl --out ~/yayoi_private/models/confidence.json \
+    --margin 0.6 --margins amount=0.4 --column-dump description=OOV.jsonl   # 出荷設定(docs/recognition.md)
+python scripts/check_calibration.py --dump OUT.jsonl --margin 0.6            # 書き手で分けた交差検証
+# ドメイン適応(合成データで追加学習。素の重みは変えず models/adapted/ に出力)
+python scripts/train_adapt.py --train DIR1 DIR2 --out-dir ~/yayoi_private/models/adapted
+python scripts/compare_dumps.py base=A.jsonl adapted=B.jsonl                 # 列別の素 → 適応済み(摘要の文字一致率が下がれば不合格)
+python scripts/sim_learning.py --data SEQ_DIR --classifier ... --dictionary --memory   # 学習曲線(静的 / 辞書 / 辞書 + メモリ)
 ```
 
 出典・ライセンス・SHA256 は `docs/dependencies.md`、処理の流れと評価指標は `docs/recognition.md`。
