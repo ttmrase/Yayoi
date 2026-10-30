@@ -45,3 +45,144 @@ body {
 main {
   padding: 16px;
 }
+
+/* ---- 確認画面 ---- */
+.statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: #fff;
+  border-bottom: 1px solid #d5d9e0;
+}
+.statusbar progress {
+  width: 160px;
+}
+.banner {
+  margin: 8px 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #eef3fb;
+  border: 1px solid #c4d3ee;
+}
+.banner.ng {
+  background: #fdeceb;
+  border-color: #f0b8b3;
+}
+.grid {
+  padding: 0 12px 60vh;
+}
+.row {
+  display: grid;
+  grid-template-columns: 32px 1.1fr 1fr 2fr 1.2fr;
+  gap: 8px;
+  align-items: start;
+  padding: 6px 0;
+  border-bottom: 1px solid #e3e6ec;
+}
+.row.head {
+  font-weight: 600;
+}
+.rowno {
+  color: #6a7385;
+  text-align: right;
+  padding-top: 24px;
+}
+.cell {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  padding: 3px;
+}
+.cell.review {
+  background: #fffbe9;
+}
+.cell.passed {
+  background: #f1f8f2;
+}
+.cell.focused {
+  border-color: var(--accent);
+  background: #eef4ff;
+}
+.cell.ambig {
+  border-color: var(--ng);
+  background: #fff1f0;
+}
+.crop {
+  background: #fff;
+  border: 1px solid #d5d9e0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+.cell.amount .crop {
+  height: 84px; /* 金額は拡大して、末尾の「-」/ 数字を見分けやすくする */
+}
+.crop img {
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  object-position: left center;
+}
+.cell input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 3px;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 1.05rem;
+}
+.cell.edited input {
+  background: #fff6d6;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 18px;
+  margin-top: 2px;
+  font-size: 0.75rem;
+}
+.badge {
+  background: #dfeaff;
+  border: 1px solid #aac4f5;
+  border-radius: 10px;
+  padding: 0 6px;
+}
+.chip {
+  background: #eceff4;
+  border-radius: 10px;
+  padding: 0 6px;
+  color: #4b5568;
+}
+.warn {
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--ng);
+  color: #fff;
+  font-weight: 600;
+}
+.warn button,
+.cands button {
+  margin-left: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+.cands {
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+.jobs {
+  border-collapse: collapse;
+}
+.jobs th,
+.jobs td {
+  padding: 4px 12px;
+  border-bottom: 1px solid #d5d9e0;
+  text-align: left;
+}

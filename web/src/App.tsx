@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { ApiError, api, hasToken } from "./api";
+import JobsScreen from "./JobsScreen";
+import ReviewScreen from "./ReviewScreen";
 
-type Health = { ok: boolean; version: string; schema: number };
+type Health = { ok: boolean; version: string; schema: number; dev: boolean };
 type Profile = { id: number; name: string };
 
 const TABS = ["ジョブ", "確認", "設定", "出力", "学習"] as const;
@@ -11,6 +13,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [tab, setTab] = useState<(typeof TABS)[number]>("ジョブ");
+  const [pageId, setPageId] = useState<number | null>(null); // 確認中のページ(確認タブ)
 
   useEffect(() => {
     if (!hasToken()) {
@@ -49,8 +52,27 @@ export default function App() {
         </span>
       </header>
       <main>
-        <h1>{tab}</h1>
-        <p>この画面は未実装です(M0: 骨組み)。</p>
+        {tab === "ジョブ" && (
+          <JobsScreen
+            dev={health?.dev ?? false}
+            onOpenPage={(id) => {
+              setPageId(id);
+              setTab("確認");
+            }}
+          />
+        )}
+        {tab === "確認" &&
+          (pageId === null ? (
+            <p>ジョブ一覧から開いてください。</p>
+          ) : (
+            <ReviewScreen pageId={pageId} onOpenPage={setPageId} onExit={() => setTab("ジョブ")} />
+          ))}
+        {tab !== "ジョブ" && tab !== "確認" && (
+          <>
+            <h1>{tab}</h1>
+            <p>この画面は未実装です。</p>
+          </>
+        )}
       </main>
     </div>
   );

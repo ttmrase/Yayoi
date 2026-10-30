@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -20,6 +21,8 @@ from .server import close_app, create_app
 
 def _bind_localhost(port: int = 0) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if port and os.name != "nt":  # 固定ポート(開発・E2E)の再起動で TIME_WAIT に引っかからないように
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", port))  # 127.0.0.1 だけ(0.0.0.0 にしない)
     sock.listen(64)
     return sock

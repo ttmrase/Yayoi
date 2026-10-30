@@ -261,7 +261,7 @@ def _propagate_ditto(con: sqlite3.Connection, page_id: int, src: sqlite3.Row, va
             continue
         reasons = json.loads(d["reasons"])
         if R_DITTO_SOURCE_CHANGED not in reasons:
-            reasons.append(R_DITTO_SOURCE_CHANGED)
+            reasons.insert(0, R_DITTO_SOURCE_CHANGED)  # 先頭(画面では先頭の理由から表示する)
         con.execute(
             "UPDATE cells SET resolved_value = ?, confirmed_value = NULL, edit_kind = 'none', review = 1,"
             " passed = 0, reasons = ? WHERE id = ?",
@@ -307,10 +307,11 @@ def patch_cell(
             _set_value(con, page_id, cell, value, "unchanged" if same else "corrected")
             _bump(con, page_id)
         elif action == "confirm":
-            if R_AMBIGUITY in json.loads(cell["reasons"]) and cell["edit_kind"] not in (
-                "candidate",
-                "corrected",
-            ):
+            # 末尾「-」の両仮説で 10 倍違う金額は、利用者が明示的に選ぶ(候補)か、値を入力するまで確認済みにしない
+            explicit = cell["edit_kind"] in ("candidate", "corrected") or (
+                value is not None and value != cell["resolved_value"]
+            )
+            if R_AMBIGUITY in json.loads(cell["reasons"]) and not explicit:
                 raise StoreError(409, "ambiguity_unresolved")
             if value is None:
                 value = (
