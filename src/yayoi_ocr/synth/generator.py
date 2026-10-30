@@ -69,6 +69,8 @@ class SynthConfig:
     writer_strength: float = 1.0
     # 摘要の語彙: "base"(既定の少数語)/ "general-train" / "general-eval"(一般語彙。学習用と評価用で語を分ける。vocab.py)
     vocab: str = "base"
+    # 書き手ごとの摘要の語彙の大きさ(0 = 全体から一様に選ぶ)。>0 なら、書き手の ID で決まる K 個の語を、順位に反比例する頻度(Zipf)で繰り返し使う
+    writer_pool: int = 0
 
 
 @dataclass
@@ -324,6 +326,21 @@ def _desc_pool(vocab: str) -> list[str] | None:
     return general_pool(split) + (DESCRIPTIONS[:0] if split == "eval" else list(DESCRIPTIONS) * 2)
 
 
+def _writer_pool(
+    pool: list[str] | None, k: int, writer_id: int
+) -> tuple[list[str] | None, np.ndarray | None]:
+    """書き手ごとの摘要の語彙: 語彙全体から K 語を書き手の ID で決め、頻度は順位に反比例(同じ書き手の全ページで同じ)。"""
+    if k <= 0:
+        return pool, None
+    from .content import DESCRIPTIONS
+
+    full = list(pool if pool is not None else DESCRIPTIONS)
+    r = np.random.default_rng(writer_id * 7919 + 17)
+    sel = r.choice(len(full), size=min(k, len(full)), replace=False)
+    w = 1.0 / np.arange(1, len(sel) + 1)
+    return [full[i] for i in sel], w / w.sum()
+
+
 def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = None) -> SynthSample:
     cfg = cfg or SynthConfig()
     tpl = tpl or load_template()
@@ -345,7 +362,8 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
     blank, info = render_blank(tpl, scale, rng)
     to_px = info["to_px"]
     cw, ch = info["size"]
-    plan = plan_page(rng, tpl.n_rows, cfg.fill_rows, _desc_pool(cfg.vocab))
+    pool, weights = _writer_pool(_desc_pool(cfg.vocab), cfg.writer_pool, writer.writer_id)
+    plan = plan_page(rng, tpl.n_rows, cfg.fill_rows, pool, weights)
     fill_form(blank, tpl, to_px, rng, writer, plan)
 
     use = set(ALL_DEGRADATIONS if cfg.degradations is None else cfg.degradations)

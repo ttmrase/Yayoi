@@ -120,6 +120,7 @@ def plan_page(
     n_rows: int = 29,
     fill_rows: int | None = None,
     desc_pool: list[str] | None = None,
+    desc_weights: np.ndarray | None = None,
 ) -> PagePlan:
     """1 ページ分の内容を作る。`fill_rows` 行が埋まり、残りは空行(途中の空行も少し混ぜる)。"""
     if fill_rows is None:
@@ -179,7 +180,9 @@ def plan_page(
             new_desc = desc
         else:
             pool = desc_pool or DESCRIPTIONS
-            new_desc = str(rng.choice(pool)).replace("{m}", str(int(rng.integers(1, 13))))
+            new_desc = str(rng.choice(pool, p=desc_weights)).replace(
+                "{m}", str(int(rng.integers(1, 13)))
+            )
         if i > 0 and desc and new_desc == desc and rng.random() < 0.9:
             row["description"] = CellPlan("description", "ditto", DITTO, desc)
         elif desc_history and u > 0.95:

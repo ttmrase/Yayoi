@@ -85,3 +85,28 @@ def test_amounts_are_random_not_a_fixed_list():
         if c.resolved
     }
     assert len(amounts) > 100  # 固定の候補リストではなく乱数で作っている
+
+
+def test_writer_pool_is_deterministic_zipf_and_subset():
+    import numpy as np
+
+    from yayoi_ocr.synth.content import plan_page
+    from yayoi_ocr.synth.generator import _writer_pool
+
+    full = [f"語{i}" for i in range(200)]
+    p1, w1 = _writer_pool(full, 30, 5)
+    p2, _ = _writer_pool(full, 30, 5)
+    p3, _ = _writer_pool(full, 30, 6)
+    assert p1 == p2 and p1 != p3 and len(p1) == 30 and set(p1) <= set(full)
+    assert abs(float(w1.sum()) - 1.0) < 1e-9 and w1[0] > 5 * w1[-1]  # 先頭ほど頻繁に使う
+    assert _writer_pool(full, 0, 5) == (full, None)
+    # 全ページで同じ語彙から選ばれる
+    seen = set()
+    for seed in range(4):
+        plan = plan_page(np.random.default_rng(seed), 29, 29, p1, w1)
+        seen |= {
+            r["description"].raw
+            for r in plan.rows
+            if r.get("description") and r["description"].kind == "text"
+        }
+    assert seen <= set(p1)

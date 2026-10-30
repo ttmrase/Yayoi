@@ -48,6 +48,12 @@ def main() -> int:
     )
     ap.add_argument("--strength", type=float, default=1.0)
     ap.add_argument("--fill-rows", type=int, default=None)
+    ap.add_argument(
+        "--writer-pool",
+        type=int,
+        default=0,
+        help="書き手ごとの摘要の語彙の大きさ(Zipf で繰り返す。0 = 全体から一様に選ぶ)",
+    )
     ap.add_argument("--vocab", default="base", choices=["base", "general-train", "general-eval"])
     ap.add_argument(
         "--strength-range",
@@ -70,6 +76,8 @@ def main() -> int:
         kw["writer_strength"] = args.writer_strength
     if args.vocab != "base":
         kw["vocab"] = args.vocab
+    if args.writer_pool:
+        kw["writer_pool"] = args.writer_pool
     if args.fill_rows:
         kw["fill_rows"] = args.fill_rows
     if args.font_include:
