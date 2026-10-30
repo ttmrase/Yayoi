@@ -55,6 +55,10 @@ def main() -> int:
     ap.add_argument("--max-writers", type=int, default=0)
     ap.add_argument("--refine-mode", choices=["onnx", "cloze", "none"], default="onnx")
     ap.add_argument("--threads", type=int, default=0)
+    ap.add_argument(
+        "--models-dir",
+        help="PARSeq の重みの場所(既定: $YAYOI_PRIVATE_DATA/models。適応済みは models/adapted)",
+    )
     ap.add_argument("--dump")
     ap.add_argument("--curve-out", help="ページ番号ごとの集計を JSON で保存(リポジトリの外)")
     args = ap.parse_args()
@@ -77,7 +81,7 @@ def main() -> int:
         k: float(v)
         for k, _, v in (kv.partition("=") for kv in args.column_thresholds.split(",") if kv)
     }
-    engine = ParseqEngine(refine_mode=args.refine_mode)
+    engine = ParseqEngine(models_dir=args.models_dir, refine_mode=args.refine_mode)
     clf = CellTypeClassifier.load(args.classifier)
     cal = ConfidenceModel.load(args.confidence) if args.confidence else None
     rec = PageRecognizer(engine, clf, calibrator=cal)

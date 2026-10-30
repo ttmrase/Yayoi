@@ -33,6 +33,11 @@ def main() -> int:
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--l2", type=float, default=3.0)
+    ap.add_argument(
+        "--stages",
+        default="",
+        help="書き手ごとの連続ページ(学習が進む)のデータ用: ページ番号の区間ごとに見逃し率を出す(例: 1-3,4-8,9-99)",
+    )
     args = ap.parse_args()
     rows = []
     for d in args.dump:
@@ -43,6 +48,15 @@ def main() -> int:
     fold_of = {w: i % args.folds for i, w in enumerate(writers)}
     folds = np.array([fold_of[r["writer"]] for r in rows])
     cols = np.array([r["column"] for r in rows])
+    stages = [tuple(int(x) for x in g.split("-")) for g in args.stages.split(",") if g]
+    rank: dict[tuple[int, int], int] = {}
+    for w in writers:
+        for i, pg in enumerate(sorted({r["page"] for r in rows if r["writer"] == w}), 1):
+            rank[(w, pg)] = i
+    st_cells: Counter = Counter()
+    st_miss: Counter = Counter()
+    st_rev: Counter = Counter()
+    st_nb: Counter = Counter()
     miss = Counter()
     wrong_all = Counter()
     n_cells = Counter()
@@ -70,6 +84,13 @@ def main() -> int:
             if not s.correct:
                 wrong_all[s.column] += 1
                 miss[s.column] += int(not review)
+            for a, b in stages:
+                if a <= rank[(r["writer"], r["page"])] <= b:
+                    st_cells[(a, b, s.column)] += 1
+                    st_miss[(a, b, s.column)] += int((not s.correct) and (not review))
+                    if r["gt_kind"] != "blank":
+                        st_nb[(a, b, s.column)] += 1
+                        st_rev[(a, b, s.column)] += int(review)
     print(
         f"書き手 {len(writers)} 人を {args.folds} fold に分けた交差検証(較正 {1 - 1 / args.folds:.0%} → 残りで測定)"
     )
@@ -88,6 +109,15 @@ def main() -> int:
         f"{'全体':12s} {tot_n:7d} {sum(wrong_all.values()):6d} {tot_k:6d} {100 * tot_k / max(tot_n, 1):7.3f}% "
         f"{100 * cp_upper(tot_k, tot_n, args.alpha):7.3f}%"
     )
+    for a, b in stages:
+        print(f"\nページ {a}〜{b}(書き手ごとの通し番号)")
+        for col in ("date", "account", "description", "amount"):
+            n, k = st_cells[(a, b, col)], st_miss[(a, b, col)]
+            print(
+                f"  {col:12s} セル {n:6d} 見逃し {k:4d} ({100 * k / max(n, 1):.3f}%, 95%上限 "
+                f"{100 * cp_upper(k, n, args.alpha):.3f}%)  要確認率(nb) "
+                f"{st_rev[(a, b, col)] / max(st_nb[(a, b, col)], 1):.3f}"
+            )
     return 0
 
 
