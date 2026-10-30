@@ -383,4 +383,19 @@ def fit_confidence(
     return model
 
 
+def replace_columns(
+    base: ConfidenceModel, other: ConfidenceModel, columns: Iterable[str]
+) -> ConfidenceModel:
+    """`base` の指定した列の群(とそのしきい値)を `other` のものに差し替えた新しいモデル。
+
+    列ごとに較正に使うデータを変えたいとき(例: 摘要の列だけ、辞書に無い語の多いデータで較正する)に使う。
+    """
+    cols = set(columns)
+    groups = dict(base.groups)
+    for k in [k for k in groups if k.split(":")[1] in cols]:
+        del groups[k]
+    groups.update({k: g for k, g in other.groups.items() if k.split(":")[1] in cols})
+    return ConfidenceModel(groups, base.default_threshold)
+
+
 Calibrator = Callable[[object], float]

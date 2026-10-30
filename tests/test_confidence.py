@@ -182,3 +182,27 @@ def test_samples_from_confirmed_counts_cells_and_judges_by_confirmed_value():
     assert [s.hard for s in samples] == [False, False, False, True]  # 矢印は常に確認
     flagged = SimpleNamespace(layout_status="needs_review", cells=result.cells[:1])
     assert samples_from_confirmed([(flagged, confirmed[:1])])[0][0].hard  # 要確認ページは対象外
+
+
+def test_replace_columns_swaps_only_the_given_columns():
+    from yayoi_ocr.recognize.confidence import GroupModel, replace_columns
+
+    a = ConfidenceModel(
+        {
+            "text:date": GroupModel(None, 0.9, 0.5, 10),
+            "text:description": GroupModel(None, 0.9, 0.5, 10),
+            "ditto:description": GroupModel(None, 0.9, 0.5, 10),
+        },
+        default_threshold=0.9,
+    )
+    b = ConfidenceModel(
+        {
+            "text:date": GroupModel(None, 0.1, 1.1, 99),
+            "text:description": GroupModel(None, 0.1, 1.1, 99),
+        }
+    )
+    m = replace_columns(a, b, ["description"])
+    assert m.groups["text:date"].n_train == 10  # 差し替えない列はそのまま
+    assert m.groups["text:description"].n_train == 99
+    assert "ditto:description" not in m.groups  # 差し替え元に無い群は消える(古い群を残さない)
+    assert m.default_threshold == 0.9 and a.groups["text:description"].n_train == 10  # 元は変えない
