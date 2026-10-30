@@ -12,9 +12,12 @@ Windows 向け・完全オフラインのアプリです。書き手本人の字
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 0 | 骨組み・データモデル・様式テンプレート・合成帳票生成器(書き手シミュレーション) | 完了 |
-| 1 | 前処理・表の位置合わせ・セル切り出し | 進行中 |
-| 2 | 認識エンジン・後処理(同上記号の展開など)・弥生 CSV | 未着手 |
-| 3 | 確認フェーズ(Web UI)・インクリメンタル学習 | 未着手 |
+| 1 | 前処理・表の位置合わせ・セル切り出し | 完了 |
+| 2 | 認識(セル種別・PARSeq・後処理・見覚えメモリ・確信度の較正) | 進行中(`docs/recognition.md`) |
+| 3 | 確認フェーズ(Web UI) | 未着手 |
+| 4 | バックグラウンド学習(世代管理・巻き戻し) | 未着手 |
+| 5 | 弥生 CSV 出力 | 未着手 |
+| 6 | インストーラ・ログ・精度レポート | 未着手 |
 
 ## セットアップ
 
@@ -66,6 +69,21 @@ python scripts/eval_layout.py --n 120 --jobs 4 # セル境界 IoU と黙った�
 波線による省略・セル上部の小さな注記・はみ出し記入)・金額(`3,456-`)・ページタイトル・No. を含み、
 正解 JSON(raw / resolved。`docs/ground_truth_schema.json`)も一緒に出力します。
 
+## 認識(Phase 2)の開発用スクリプト
+
+認識モデルの重み・合成データセットはすべて `$YAYOI_PRIVATE_DATA`(既定 `~/yayoi_private`)に置きます(コミットしない)。
+
+```sh
+pip install -e ".[dev,ml,ml-dev]"                      # PyTorch・onnx・onnxruntime(開発用)
+python scripts/fetch_models.py                         # NDLOCR-Lite の PARSeq(CC BY 4.0)を固定コミットから取得・変換
+python scripts/build_synth_cells.py --out ~/yayoi_private/datasets/train --n 300 --preset typical --jobs 4
+python scripts/train_celltype.py --train DIR --calib DIR --out ~/yayoi_private/models/celltype.pt
+python scripts/eval_recognize.py --data DIR --classifier ~/yayoi_private/models/celltype.pt --dump OUT.jsonl
+python scripts/fit_confidence.py --dump OUT.jsonl --out ~/yayoi_private/models/confidence.json
+```
+
+出典・ライセンス・SHA256 は `docs/dependencies.md`、処理の流れと評価指標は `docs/recognition.md`。
+
 ## テスト
 
 ```sh
@@ -81,8 +99,7 @@ src/yayoi_ocr/
   ingest.py       取り込み(PDF / PNG / JPEG / TIFF / EXIF 回転)
   preprocess.py   前処理(照明補正・コントラスト正規化・ノイズ除去)
   layout/         表の位置合わせ・セル切り出し(見出し帯 → 外枠 → 罫線 1 本ずつ)
-  recognize.py    認識エンジンのインターフェース
-  postprocess.py  後処理(Phase 2)
+  recognize/      認識(セル種別・PARSeq・列ごとの解決・ページ単位の解決・確信度)
   review.py       確認フェーズ(Phase 3)
   learn.py        インクリメンタル学習(Phase 3)
   export.py       CSV 出力(Phase 2)

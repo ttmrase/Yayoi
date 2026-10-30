@@ -183,3 +183,21 @@ def test_engine_embeddings_are_normalized(engine):
     e = engine.embed_many([_crop(i) for i in range(3)], width=256)
     assert e.shape == (3, 32)
     assert np.allclose(np.linalg.norm(e, axis=1), 1.0, atol=1e-4)
+
+
+def test_engine_refine_modes_are_selectable():
+    with pytest.raises(ValueError):
+        ParseqEngine(refine_mode="bogus")
+    crop = _crop(9)
+    models = {256: _tiny(256, 8), 384: _tiny(384, 10, seed=2)}
+    texts = {}
+    for mode in ("onnx", "cloze", "none"):
+        eng = ParseqEngine.from_models(models, CHARSET)
+        eng.refine_mode = mode
+        texts[mode] = eng.recognize(crop, "account", beam=1).best.text
+    # 反復修正なしは、自己回帰の貪欲デコード(beam=1 の探索)と同じ文字列になる
+    eng = ParseqEngine.from_models(models, CHARSET)
+    eng.refine_mode = "none"
+    ar = eng.recognize(crop, "account", beam=1).best
+    assert ar.text == texts["none"]
+    assert all(isinstance(t, str) for t in texts.values())

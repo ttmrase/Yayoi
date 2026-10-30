@@ -159,7 +159,6 @@ class RecognizerConfig:
     cls_min_conf: float = 0.7  # 種別の確率がこれ未満なら class_uncertain(確認)
     run_r1_min_p: float = 0.15  # text/wave の確率がこれ以上なら R1 を走らせる
     review_conf: float = 0.9  # 確信度がこれ未満なら確認(confidence.py で較正した値に置き換える)
-    annotation_split: bool = True
 
 
 Calibrator = Callable[[CellResult], float]

@@ -35,6 +35,9 @@ MODEL_FILES: dict[int, str] = {
     384: "parseq-ndl-24x384-50-tiny.pt",
 }
 HEIGHT = 24
+# 推論モード(設定): onnx = NDLOCR-Lite 配布版と同じ反復修正 / cloze = baudm/parseq の反復修正 / none = 自己回帰のみ。
+# Phase 4 の追加学習の後も、ホールドアウトで再評価して選べるように設定として持つ。
+REFINE_MODES = ("onnx", "cloze", "none")
 
 
 @dataclass
@@ -88,10 +91,14 @@ class ParseqEngine:
         models_dir: str | Path | None = None,
         device: str | None = None,
         widths: Sequence[int] = (256, 384),
+        refine_mode: str = "onnx",
     ) -> None:
+        if refine_mode not in REFINE_MODES:
+            raise ValueError(f"refine_mode は {REFINE_MODES} のいずれか: {refine_mode}")
         self.models_dir = Path(models_dir) if models_dir else default_models_dir()
         self.device = pick_device(device)
         self.widths = tuple(widths)
+        self.refine_mode = refine_mode
         self._models: dict[int, PARSeq] = {}
         self._charset: str | None = None
         self._tok: dict[str, int] = {}
@@ -268,7 +275,8 @@ class ParseqEngine:
         memory = model.encode(x)
         n = len(crops)
         # 貪欲 + 反復修正(ONNX と同じ計算)
-        logits = model(x, vocab_mask=vmask)
+        model.refine_mask = "cloze" if self.refine_mode == "cloze" else "onnx"
+        logits = model(x, vocab_mask=vmask, refine=self.refine_mode != "none")
         limit = model.max_label_length  # EOS が出ないまま最大長に達したら、文字数の上限で切る
         greedy_ids = [self._ids_until_eos(row)[:limit] for row in logits.argmax(-1).tolist()]
         cand_ids: list[list[tuple[list[int], str]]] = [[(g, "greedy")] for g in greedy_ids]

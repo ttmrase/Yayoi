@@ -54,16 +54,19 @@ def main() -> int:
     ap.add_argument("--dump")
     ap.add_argument("--threads", type=int, default=0)
     ap.add_argument("--confidence", help="fit_confidence.py の出力(較正した確信度モデルの JSON)")
-    ap.add_argument("--refine-mask", choices=["onnx", "cloze"], default="onnx")
+    ap.add_argument(
+        "--refine-mode",
+        choices=["onnx", "cloze", "none"],
+        default="onnx",
+        help="PARSeq の推論モード: onnx(配布版)/ cloze(元実装)/ none(自己回帰のみ)",
+    )
     args = ap.parse_args()
 
     import torch
 
     if args.threads:
         torch.set_num_threads(args.threads)
-    engine = ParseqEngine()
-    for w in engine.widths:
-        engine._model(w).refine_mask = args.refine_mask
+    engine = ParseqEngine(refine_mode=args.refine_mode)
     clf = CellTypeClassifier.load(args.classifier) if args.classifier else None
     calibrator = ConfidenceModel.load(args.confidence) if args.confidence else None
     rec = PageRecognizer(engine, clf, calibrator=calibrator)

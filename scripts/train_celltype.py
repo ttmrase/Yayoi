@@ -90,6 +90,12 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--threads", type=int, default=0)
+    ap.add_argument(
+        "--blank-keep",
+        type=float,
+        default=0.35,
+        help="エポックごとに空欄セルをこの割合だけ使う(自明なので間引く)",
+    )
     args = ap.parse_args()
     out = Path(args.out)
     assert_safe_output_dir(out.parent)
@@ -110,11 +116,18 @@ def main() -> int:
     w = torch.tensor((counts.sum() / np.maximum(counts, 1)) ** 0.5, dtype=torch.float32)
     w = w / w.mean()
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
-    steps = args.epochs * ((len(y) + args.batch - 1) // args.batch)
+    n_epoch = int(
+        (y != CLASSES.index("blank")).sum() + args.blank_keep * (y == CLASSES.index("blank")).sum()
+    )
+    steps = args.epochs * ((n_epoch + args.batch - 1) // args.batch + 2)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps)
     for ep in range(args.epochs):
         net.train()
         perm = torch.randperm(len(y), generator=gen).numpy()
+        keep = (y[perm] != CLASSES.index("blank")) | (
+            torch.rand(len(perm), generator=gen).numpy() < args.blank_keep
+        )
+        perm = perm[keep]
         tot, n = 0.0, 0
         for b in range(0, len(perm), args.batch):
             idx = np.sort(perm[b : b + args.batch])
@@ -126,11 +139,11 @@ def main() -> int:
             loss.backward()
             opt.step()
             sched.step()
-            tot += float(loss) * len(idx)
+            tot += loss.item() * len(idx)
             n += len(idx)
         _, acc = evaluate(net, xc, sc, yc)
         print(
-            f"epoch {ep + 1}/{args.epochs} loss {tot / n:.4f} calib acc {acc:.4f} ({time.time() - t0:.0f}s)",
+            f"epoch {ep + 1}/{args.epochs} loss {tot / max(n, 1):.4f} calib acc {acc:.4f} ({time.time() - t0:.0f}s)",
             flush=True,
         )
     logits, acc = evaluate(net, xc, sc, yc)

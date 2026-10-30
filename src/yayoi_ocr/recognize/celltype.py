@@ -70,11 +70,15 @@ class CellTypeNet(nn.Module):
                 nn.MaxPool2d(pool),
             )
 
+        # 入力は 64 x 448。計算量を抑えるため最初に 1/2 に平均プーリングする(〃・矢印・波線の形は 32 x 224 でも保たれる)
         self.features = nn.Sequential(
-            block(1, 16, (2, 2)),  # 32 x 224
-            block(16, 32, (2, 2)),  # 16 x 112
-            block(32, 64, (2, 2)),  # 8 x 56
-            block(64, 96, (2, 2)),  # 4 x 28
+            nn.AvgPool2d(2),  # 32 x 224
+            block(1, 16, (2, 2)),  # 16 x 112
+            block(16, 32, (2, 2)),  # 8 x 56
+            block(32, 64, (2, 2)),  # 4 x 28
+            nn.Conv2d(64, 96, 3, padding=1, bias=False),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True),
         )
         self.pool_avg = nn.AdaptiveAvgPool2d((1, 7))  # 横方向の位置(左・中・右)を粗く残す
         self.pool_max = nn.AdaptiveMaxPool2d((1, 1))
