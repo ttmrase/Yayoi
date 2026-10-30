@@ -12,6 +12,7 @@ from yayoi_ocr.recognize.variants import (
     VariantScore,
     available_variants,
     choose_variant,
+    confidence_path,
     count_page,
     default_variant,
     score_counts,
@@ -29,6 +30,8 @@ def _touch_models(d, widths=(256, 384)):
 def test_variant_dirs_and_defaults(tmp_path):
     assert variant_dir("base", tmp_path) == tmp_path
     assert variant_dir("adapted", tmp_path) == tmp_path / "adapted"
+    assert confidence_path("base", tmp_path) == tmp_path / "confidence.json"
+    assert confidence_path("adapted", tmp_path) == tmp_path / "adapted" / "confidence.json"
     assert available_variants(tmp_path) == [] and default_variant(tmp_path) == "base"
     _touch_models(tmp_path)
     assert available_variants(tmp_path) == ["base"] and default_variant(tmp_path) == "base"

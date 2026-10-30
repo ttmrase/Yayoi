@@ -26,6 +26,11 @@ def variant_dir(name: str, root: Path | None = None) -> Path:
     return root if name == "base" else root / name
 
 
+def confidence_path(name: str, root: Path | None = None) -> Path:
+    """その重み専用の確信度モデル(`fit_confidence.py` の出力)。確信度は重みごとに較正し直す(予測の分布が変わるため)。"""
+    return variant_dir(name, root) / "confidence.json"
+
+
 def available_variants(root: Path | None = None) -> list[str]:
     out = []
     for v in VARIANTS:
