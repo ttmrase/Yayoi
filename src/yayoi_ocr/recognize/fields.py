@@ -113,12 +113,21 @@ class FieldResult:
     char_confidences: list[float] = field(default_factory=list)
 
 
-def _posterior_features(logps: dict[str, float], prefix: str = "") -> dict[str, float]:
-    """値 → 対数尤度 から、事後確率・差・質量などの特徴量。"""
+def _posterior_features(
+    logps: dict[str, float], prefix: str = "", chosen: str | None = None
+) -> dict[str, float]:
+    """値 → 対数尤度 から、事後確率・差・質量などの特徴量。
+
+    `chosen` を渡すと、その値についての特徴量にする(最大でなくてもよい)。見覚えメモリの票は採る値を変えるだけで、
+    確信度の特徴量には入れない(票で水増しした尤度で確信度を上げると、較正した見逃し率が守れない)。
+    """
     items = sorted(logps.items(), key=lambda kv: -kv[1])
     total = logsumexp([v for _, v in items])
-    top = items[0][1]
-    second = items[1][1] if len(items) > 1 else NEG_INF
+    if chosen is None or chosen not in logps:
+        chosen = items[0][0]
+    top = logps[chosen]
+    others = [v for k, v in items if k != chosen]
+    second = others[0] if others else NEG_INF
     post_top = math.exp(top - total) if total != NEG_INF else 0.0
     post_second = math.exp(second - total) if second != NEG_INF else 0.0
     return {
@@ -171,11 +180,14 @@ def resolve_date(
         )
     vals = list(cands)
     logps = dict(zip(vals, _marginal_logps(scorer, out, vals, date_surfaces, "date"), strict=True))
+    base_logps = logps  # 見覚えメモリの票を足す前(確信度の特徴量はこちらから作る)
     if vote_md:
         logps = {v: lp + mb * vote_md.get((v.month, v.day), 0.0) for v, lp in logps.items()}
     named = {v.format(): lp for v, lp in logps.items()}
-    feats.update(_posterior_features(named))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(
+        _posterior_features({v.format(): lp for v, lp in base_logps.items()}, chosen=top.format())
+    )
     feats.update(_mem_features(votes, max_sim, vote_md.get((top.month, top.day), 0.0)))
     feats["direct"] = float(repair_date(best.text)[:1] == [top])
     feats["explicit_year"] = float(top.explicit_year)
@@ -243,11 +255,12 @@ def resolve_amount(
             strict=True,
         )
     )  # fmt: skip
+    base_logps = logps
     if vote_v:
         logps = {v: lp + mb * vote_v.get(v, 0.0) for v, lp in logps.items()}
     named = {str(v): lp for v, lp in logps.items()}
-    feats.update(_posterior_features(named))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_posterior_features({str(v): lp for v, lp in base_logps.items()}, chosen=str(top)))
     feats.update(_mem_features(votes, max_sim, vote_v.get(top, 0.0)))
     direct = repair_amount(best.text)[:1] == [top]
     feats["direct"] = float(direct)
@@ -311,18 +324,17 @@ def resolve_closed(
     per: dict[int, list[float]] = {}
     for o, sc in zip(owner, scores, strict=True):
         per.setdefault(o, []).append(sc.logprob)
-    logps = {}
+    base_logps: dict[str, float] = {}  # 見覚えメモリの票を足す前(確信度の特徴量はこちらから作る)
     for i, v in enumerate(vocab):
         lp = logsumexp(per[i])
         if prior is not None and v in prior and prior[v] > 0:
             lp += math.log(prior[v])
-        if votes:
-            lp += mb * votes.get(v, 0.0)
-        logps[v] = lp
-    feats.update(_posterior_features(logps))
+        base_logps[v] = lp
+    logps = {v: lp + mb * (votes or {}).get(v, 0.0) for v, lp in base_logps.items()}
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_posterior_features(base_logps, chosen=top))
     feats.update(_mem_features(votes, max_sim, (votes or {}).get(top, 0.0)))
-    fit = logps[top] - best.logprob  # 自由認識に対する、語彙内の最良の尤度の差(≦ 0 が普通)
+    fit = base_logps[top] - best.logprob  # 自由認識に対する、語彙内の最良の尤度の差(≦ 0 が普通)
     feats["vocab_fit"] = max(min(fit, 5.0), -50.0)
     feats["free_agree"] = float(norm_text(best.text) == norm_text(top))
     reasons = []
@@ -378,11 +390,13 @@ def resolve_description(
     for c in out.candidates[:5]:
         if c.text and c.text not in logps and norm_text(c.text) not in dict_keys:
             logps[c.text] = c.logprob + free_prior_logp
+    base_logps = logps  # 見覚えメモリの票を足す前(確信度の特徴量はこちらから作る)
     if votes:  # 見覚えメモリ: 近い見た目の確定テキストを候補に加え、票の割合を事前として足す
         extra = [t for t in votes if t not in logps and norm_text(t) not in dict_keys]
         if extra:
             for t, r in zip(extra, scorer.score_output(out, extra, None), strict=True):
                 logps[t] = r.logprob + free_prior_logp
+        base_logps = dict(logps)
         for t, w in votes.items():
             if t in logps:
                 logps[t] += mb * w
@@ -390,8 +404,8 @@ def resolve_description(
         return FieldResult(
             "", best.text, False, [], feats, ["no_valid_candidate"], None, best.char_confidences
         )
-    feats.update(_posterior_features(logps))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_posterior_features(base_logps, chosen=top))
     feats.update(_mem_features(votes, max_sim, (votes or {}).get(top, 0.0)))
     feats["from_dict"] = float(bool(dictionary) and top in dictionary)
     feats["free_agree"] = float(norm_text(best.text) == norm_text(top))

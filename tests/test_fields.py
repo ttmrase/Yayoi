@@ -159,6 +159,19 @@ def test_memory_votes_amount_and_closed_and_description():
     assert r.value == "切手代"
 
 
+def test_memory_votes_do_not_inflate_confidence_features():
+    # 票は採る値を変えるだけ。確信度の特徴量は、票を足す前の画像の尤度から作る
+    sc = FakeScorer({"現金": -1.0, "普通預金": -3.5})
+    plain = resolve_closed(sc, _out("現金", lp=-1.0), ["現金", "普通預金"])
+    voted = resolve_closed(
+        sc, _out("現金", lp=-1.0), ["現金", "普通預金"], votes={"普通預金": 1.0}, max_sim=0.99
+    )
+    assert plain.value == "現金" and voted.value == "普通預金"  # 票が十分に強ければ採る値は変わる
+    assert voted.features["top_logp"] == -3.5  # 票の分(+3.0)は入らない
+    assert voted.features["post_top"] < 0.1 < plain.features["post_top"]  # 画像の証拠では劣勢のまま
+    assert voted.features["post_gap"] < 0.0  # 第 1 候補でない値を採ったことが特徴に出る
+
+
 def test_amount_dash_hypothesis_forces_review_when_both_readings_are_plausible():
     # R1 は「5000」と読むが、最後の 0 は「-」(= 500)かもしれない。両方の表記が同程度に尤もらしい
     sc = FakeScorer({"5000": -1.0, "500-": -1.1, "5,000": -3.0})
