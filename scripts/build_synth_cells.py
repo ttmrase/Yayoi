@@ -48,6 +48,9 @@ def main() -> int:
     )
     ap.add_argument("--strength", type=float, default=1.0)
     ap.add_argument("--fill-rows", type=int, default=None)
+    ap.add_argument(
+        "--writer-strength", type=float, default=1.0, help="書き手の崩しの倍率(1.0 = 標準)"
+    )
     ap.add_argument("--font-include", nargs="*", default=None)
     ap.add_argument("--font-exclude", nargs="*", default=[])
     ap.add_argument("--jobs", type=int, default=1)
@@ -55,6 +58,8 @@ def main() -> int:
     out = assert_safe_output_dir(args.out)
     out.mkdir(parents=True, exist_ok=True)
     kw: dict = {"degrade_strength": args.strength}
+    if args.writer_strength != 1.0:
+        kw["writer_strength"] = args.writer_strength
     if args.fill_rows:
         kw["fill_rows"] = args.fill_rows
     if args.font_include:

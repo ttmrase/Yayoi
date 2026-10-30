@@ -450,6 +450,76 @@ class PARSeq(nn.Module):
         picked = torch.where(valid, picked, torch.zeros_like(picked))
         return picked, valid
 
+    # ------------------------------------------------------------------ 追加学習(ファインチューニング)
+
+    def freeze_for_finetune(self, n_frozen_blocks: int) -> list[nn.Parameter]:
+        """エンコーダの最初の n 個のブロック(とパッチ埋め込み)を凍結し、学習するパラメータを返す。"""
+        for p in self.parameters():
+            p.requires_grad = False
+        train: list[nn.Parameter] = []
+        mods = [
+            *list(self.encoder.blocks)[n_frozen_blocks:],
+            self.encoder.norm,
+            self.decoder,
+            self.head,
+            self.text_embed,
+        ]
+        for m in mods:
+            for p in m.parameters():
+                p.requires_grad = True
+                train.append(p)
+        self.pos_queries.requires_grad = True
+        train.append(self.pos_queries)
+        self._n_frozen = n_frozen_blocks
+        return train
+
+    def encode_ft(self, img: Tensor) -> Tensor:
+        """凍結したブロックは勾配なしで流し、残りを勾配つきで流すエンコーダ。"""
+        n = getattr(self, "_n_frozen", 0)
+        x = self.encoder.patch_embed(img) + self.encoder.pos_embed
+        blocks = list(self.encoder.blocks)
+        with torch.no_grad():
+            for b in blocks[:n]:
+                x = b(x)
+        for b in blocks[n:]:
+            x = b(x)
+        return self.encoder.norm(x)
+
+    def training_logits(
+        self, images: Tensor, token_ids: list[list[int]]
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """学習用: 正解のトークン列で (自己回帰の教師強制の logits, 反復修正の logits, 目標トークン) を返す。
+
+        目標は [文字…, EOS, PAD…]。反復修正は推論と同じマスク(`refine_mask`)で、文脈に正解を与える。
+        """
+        n = len(token_ids)
+        max_len = max(len(t) for t in token_ids)
+        length = max_len + 1
+        dev = images.device
+        kv = self.project_memory(self.encode_ft(images))
+        tgt = torch.full((n, length), self.pad_id, dtype=torch.long, device=dev)
+        tgt[:, 0] = self.bos_id
+        out = torch.full((n, length), self.pad_id, dtype=torch.long, device=dev)
+        for k, ids in enumerate(token_ids):
+            if ids:
+                t = torch.as_tensor(ids, dtype=torch.long, device=dev)
+                tgt[k, 1 : 1 + len(ids)] = t
+                out[k, : len(ids)] = t
+            out[k, len(ids)] = self.eos_id
+        ar_mask = torch.triu(torch.ones((length, length), dtype=torch.bool, device=dev), 1)
+        ar = self.head(self.decode(tgt, kv, ar_mask, tgt_query_mask=ar_mask))
+        # 反復修正: 文脈 = [BOS, 目標の先頭 length-1 個](推論の `_refine` と同じ形)
+        ref_in = torch.cat([tgt[:, :1], out[:, :-1]], dim=1)
+        pad_mask = (ref_in == self.eos_id).int().cumsum(-1) > 0
+        cloze = ar_mask.clone()
+        cloze[torch.triu(torch.ones(length, length, dtype=torch.bool, device=dev), 2)] = False
+        if self.refine_mask == "onnx":
+            cloze = cloze.float()
+            pad_mask = torch.zeros(pad_mask.shape, device=dev).masked_fill(pad_mask, float("-inf"))
+        queries = self.pos_queries[:, :length].expand(n, -1, -1)
+        ref = self.head(self.decode(ref_in, kv, ar_mask, pad_mask, queries, cloze))
+        return ar, ref, out
+
     def score_logprob(self, memory: Tensor, token_ids: list[list[int]], vocab_mask=None) -> Tensor:
         """系列の対数尤度(文字 + 終端 EOS)。(N, 2)… [合計の対数尤度, 文字数 + 1]。"""
         picked, valid = self.token_logprobs(memory, token_ids, vocab_mask)

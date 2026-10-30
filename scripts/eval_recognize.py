@@ -53,6 +53,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="データセットごとの最大ページ数")
     ap.add_argument("--dump")
     ap.add_argument("--threads", type=int, default=0)
+    ap.add_argument(
+        "--models-dir",
+        help="PARSeq の重みの場所(既定: $YAYOI_PRIVATE_DATA/models。微調整後の評価用)",
+    )
     ap.add_argument("--confidence", help="fit_confidence.py の出力(較正した確信度モデルの JSON)")
     ap.add_argument(
         "--refine-mode",
@@ -66,7 +70,7 @@ def main() -> int:
 
     if args.threads:
         torch.set_num_threads(args.threads)
-    engine = ParseqEngine(refine_mode=args.refine_mode)
+    engine = ParseqEngine(models_dir=args.models_dir, refine_mode=args.refine_mode)
     clf = CellTypeClassifier.load(args.classifier) if args.classifier else None
     calibrator = ConfidenceModel.load(args.confidence) if args.confidence else None
     rec = PageRecognizer(engine, clf, calibrator=calibrator)
@@ -104,6 +108,11 @@ def main() -> int:
                                 "col": c.col,
                                 "column": c.column,
                                 "gt_kind": j.gt_kind,
+                                "gt_raw": c.raw,
+                                "gt_resolved": c.resolved,
+                                "r1_text": r.text,
+                                "pred_value": r.value,
+                                "review": j.review,
                                 "pred_kind": j.pred_kind,
                                 "correct": j.correct,
                                 "page_review": page_review,

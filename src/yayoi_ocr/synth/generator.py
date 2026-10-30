@@ -28,6 +28,7 @@ from .writer import (
     draw_text,
     draw_wave,
     make_writer,
+    scale_writer,
     select_fonts,
     text_width,
 )
@@ -63,6 +64,9 @@ class SynthConfig:
         None  # 書き手が使うフォント(ファイル名の部分一致。None = すべて)
     )
     font_exclude: tuple[str, ...] = ()  # 使わないフォント(学習用/評価用のフォント分離)
+    # 書き手の癖の強さ(1.0 = 標準)。弾性変形・回転/拡大のゆらぎ・字間/ベースラインのゆらぎにかかる倍率。
+    # 合成の書き手が実際の手書きより極端すぎないかを、強さの段階ごとの正解率で確かめるための設定
+    writer_strength: float = 1.0
 
 
 @dataclass
@@ -321,6 +325,8 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
         else None
     )
     writer = make_writer(cfg.writer_id if cfg.writer_id is not None else cfg.seed, fonts)
+    if cfg.writer_strength != 1.0:
+        writer = scale_writer(writer, cfg.writer_strength)
 
     scale = cfg.canvas_scale
     blank, info = render_blank(tpl, scale, rng)

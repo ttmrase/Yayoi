@@ -75,6 +75,21 @@ def select_fonts(
     return out
 
 
+def scale_writer(w: Writer, k: float) -> Writer:
+    """書き手の「崩し」(弾性変形・回転/拡大のゆらぎ・字間とベースラインのゆらぎ)を k 倍にする。"""
+    from dataclasses import replace
+
+    return replace(
+        w,
+        elastic=w.elastic * k,
+        rot_sigma=w.rot_sigma * k,
+        scale_sigma=w.scale_sigma * k,
+        spacing_jitter=w.spacing_jitter * k,
+        baseline_jitter=w.baseline_jitter * k,
+        baseline_drift=w.baseline_drift * k,
+    )
+
+
 def make_writer(writer_id: int, fonts: list[Path] | None = None) -> Writer:
     """書き手 ID から決定的に書き手を作る(同じ ID なら常に同じ癖)。"""
     fonts = fonts or _usable_fonts()
