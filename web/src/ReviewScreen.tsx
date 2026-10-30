@@ -12,6 +12,7 @@ import {
   putPosition,
   redoPage,
   reopenPage,
+  retryPage,
   undoPage,
   type CellAction,
 } from "./pageApi";
@@ -35,6 +36,7 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
   const [focusId, setFocusId] = useState<number | null>(null);
   const [prompt, setPrompt] = useState(false); // 最後のセルで Enter → 「ページを確定」の確認
   const [block, setBlock] = useState<Summary | null>(null); // 確定を拒否された理由
+  const [reloadKey, setReloadKey] = useState(0); // 認識が終わった・再試行したときに読み直す
   const inputs = useRef(new Map<number, HTMLInputElement>());
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const timers = useRef(new Map<number, number>());
@@ -84,7 +86,18 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
     return () => {
       alive = false;
     };
-  }, [pageId]);
+  }, [pageId, reloadKey]);
+
+  // ---- 認識待ちのページ: できるまで待つ(先読みで認識されている最中に開いたとき)
+  useEffect(() => {
+    if (page?.status !== "processing") return;
+    const t = window.setInterval(() => {
+      void fetchPage(pageId)
+        .then((p) => p.status !== "processing" && setReloadKey((k) => k + 1))
+        .catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [page?.status, pageId]);
 
   // ---- 位置の保存(中断・再開)
   useEffect(() => {
@@ -288,6 +301,33 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
 
   if (error) return <p role="alert">{error}</p>;
   if (!page) return <p>読み込み中…</p>;
+  if (page.status === "processing" || page.status === "failed") {
+    return (
+      <div className="review pending" data-testid="review-pending">
+        <p data-testid="page-no">
+          ページ {page.idx + 1} / {page.n_pages}
+        </p>
+        {page.status === "processing" ? (
+          <p role="status">このページを認識しています…(終わると自動で開きます)</p>
+        ) : (
+          <div role="alert" className="banner ng">
+            このページの認識に失敗しました({page.error ?? "原因不明"})。
+            <button
+              data-testid="retry-page"
+              onClick={() => void retryPage(page.id).then(() => setReloadKey((k) => k + 1))}
+            >
+              もう一度認識する
+            </button>
+          </div>
+        )}
+        <p>
+          {page.prev_page_id !== null && <button onClick={() => onOpenPage(page.prev_page_id!)}>前のページ</button>}{" "}
+          {page.next_page_id !== null && <button onClick={() => onOpenPage(page.next_page_id!)}>次のページ</button>}{" "}
+          <button onClick={onExit}>ジョブ一覧へ</button>
+        </p>
+      </div>
+    );
+  }
   const s = page.summary;
   const confirmed = page.status === "confirmed";
 

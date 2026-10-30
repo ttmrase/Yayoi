@@ -16,9 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, store
+from . import db, store, uploads
 from .paths import AppPaths
+from .runner import JobRunner
 from .security import SecurityMiddleware
+from .worker import Backend, FakeBackend
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -41,6 +43,17 @@ class PositionBody(BaseModel):
     cell: int | None = None
 
 
+class JobBody(BaseModel):
+    name: str = Field(default="", max_length=200)
+    upload_ids: list[str] = Field(min_length=1, max_length=50)
+    profile_id: int = db.DEFAULT_PROFILE_ID
+
+
+class DevFakeBody(BaseModel):
+    delay: float = Field(default=0.0, ge=0, le=30)
+    fail_next: int = Field(default=0, ge=0, le=100)
+
+
 class DevJobBody(BaseModel):
     pages: int = Field(default=2, ge=1, le=10)
     seed: int = 0
@@ -57,10 +70,15 @@ def create_app(
     static_dir: Path | None = None,
     images_dir: Path | None = None,
     dev: bool = False,
+    backend: Backend | None = None,
+    uploads_dir: Path | None = None,
 ) -> FastAPI:
+    """`backend` が None のときは認識を行わない(ジョブの作成は 503。M0・M1 のテストと合成ジョブだけ)。"""
     db_path = Path(db_path)
     images = images_dir if images_dir is not None else AppPaths(db_path.parent).images
     images.mkdir(parents=True, exist_ok=True)
+    uploads_root = uploads_dir if uploads_dir is not None else AppPaths(db_path.parent).uploads
+    uploads_root.mkdir(parents=True, exist_ok=True)
     con = db.connect(db_path)
     db.migrate(con)
     lock = threading.RLock()  # 1 接続を複数スレッドで共有するので直列化する
@@ -68,6 +86,8 @@ def create_app(
     app = FastAPI(title="yayoi-ocr", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db = con
     app.state.db_lock = lock
+    runner = JobRunner(con, lock, images, uploads_root, backend) if backend is not None else None
+    app.state.runner = runner  # 起動は launcher(テストは run_job を直接呼ぶ)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -90,6 +110,31 @@ def create_app(
         with lock:
             return store.list_jobs(con)
 
+    @app.post("/api/uploads")
+    async def upload(request: Request, name: str = "") -> dict:
+        return await uploads.save_upload(con, lock, uploads_root, name, request.stream())
+
+    @app.delete("/api/uploads/{upload_id}")
+    def upload_delete(upload_id: str) -> dict:
+        uploads.delete_upload(con, lock, uploads_root, upload_id)
+        return {"ok": True}
+
+    @app.post("/api/jobs")
+    def job_create(body: JobBody) -> dict:
+        if runner is None:
+            raise store.StoreError(503, "recognition_disabled")
+        with lock:
+            pages = uploads.pages_for_job(con, body.upload_ids)
+            first = con.execute(
+                "SELECT name FROM uploads WHERE id = ?", (body.upload_ids[0],)
+            ).fetchone()["name"]
+            name = body.name.strip() or Path(first).stem
+            job_id, page_ids = store.create_pending_job(
+                con, name, body.profile_id, [store.PendingPage(u, i) for u, i in pages]
+            )
+        runner.submit(job_id)
+        return {"job_id": job_id, "page_ids": page_ids}
+
     @app.get("/api/jobs/{job_id}")
     def job(job_id: int) -> dict:
         with lock:
@@ -111,6 +156,15 @@ def create_app(
         with lock:
             path = store.cell_image_path(con, images, page_id, cell_id)
         return FileResponse(path, media_type="image/png")
+
+    @app.post("/api/pages/{page_id}/retry")
+    def page_retry(page_id: int) -> dict:
+        if runner is None:
+            raise store.StoreError(503, "recognition_disabled")
+        with lock:
+            job_id = store.retry_page(con, page_id)
+        runner.submit(job_id)
+        return {"ok": True}
 
     @app.patch("/api/pages/{page_id}/cells/{cell_id}")
     def patch_cell(page_id: int, cell_id: int, body: CellPatch) -> dict:
@@ -147,6 +201,13 @@ def create_app(
             return store.approve_layout(con, page_id)
 
     if dev:  # 開発・E2E 専用: 合成した認識結果のジョブを作る(正解つき)。本番の起動では登録しない
+
+        @app.post("/api/dev/fake")
+        def dev_fake(body: DevFakeBody) -> dict:
+            if not isinstance(backend, FakeBackend):
+                raise store.StoreError(409, "not_fake_backend")
+            backend.delay, backend.fail_next = body.delay, body.fail_next
+            return {"ok": True}
 
         @app.post("/api/dev/jobs")
         def dev_jobs(body: DevJobBody) -> dict:
@@ -192,5 +253,8 @@ def create_app(
 
 
 def close_app(app: FastAPI) -> None:
+    runner: JobRunner | None = app.state.runner
+    if runner is not None:
+        runner.stop()
     con: sqlite3.Connection = app.state.db
     con.close()

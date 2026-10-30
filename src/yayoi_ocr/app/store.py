@@ -62,10 +62,33 @@ def _j(x) -> str:
 # ------------------------------------------------------------------ ジョブの作成
 
 
+def _insert_cells(
+    con: sqlite3.Connection, images_dir: Path, page_id: int, cells: list[CellSpec]
+) -> None:
+    for c in cells:
+        cur = con.execute(
+            "INSERT INTO cells (page_id, row, col, column_kind, kind, recognized_text, resolved_value,"
+            " expansion, reasons, candidates, review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                page_id, c.row, c.col, c.column, c.kind, c.recognized_text, c.resolved_value,
+                _j(c.expansion) if c.expansion else None, _j(c.reasons),
+                _j([[v, p] for v, p in c.candidates]), int(c.review),
+            ),
+        )  # fmt: skip
+        if c.crop is not None:
+            path = images_dir / str(page_id) / f"{int(cur.lastrowid)}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(c.crop)
+            con.execute(
+                "UPDATE cells SET crop_path = ? WHERE id = ?",
+                (str(path.relative_to(images_dir)), int(cur.lastrowid)),
+            )
+
+
 def create_job(
     con: sqlite3.Connection, images_dir: Path, name: str, profile_id: int, pages: list[PageSpec]
 ) -> tuple[int, list[int]]:
-    """ジョブとページ・セルを作る。返り値は (ジョブ ID, ページ ID のリスト)。"""
+    """認識済みのページからジョブを作る(テスト・開発用の合成ジョブ)。返り値は (ジョブ ID, ページ ID のリスト)。"""
     page_ids: list[int] = []
     with transaction(con):
         cur = con.execute(
@@ -81,25 +104,125 @@ def create_job(
             )
             page_id = int(cur.lastrowid)
             page_ids.append(page_id)
-            for c in spec.cells:
-                cur = con.execute(
-                    "INSERT INTO cells (page_id, row, col, column_kind, kind, recognized_text, resolved_value,"
-                    " expansion, reasons, candidates, review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        page_id, c.row, c.col, c.column, c.kind, c.recognized_text, c.resolved_value,
-                        _j(c.expansion) if c.expansion else None, _j(c.reasons),
-                        _j([[v, p] for v, p in c.candidates]), int(c.review),
-                    ),
-                )  # fmt: skip
-                if c.crop is not None:
-                    path = images_dir / str(page_id) / f"{int(cur.lastrowid)}.png"
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(c.crop)
-                    con.execute(
-                        "UPDATE cells SET crop_path = ? WHERE id = ?",
-                        (str(path.relative_to(images_dir)), int(cur.lastrowid)),
-                    )
+            _insert_cells(con, images_dir, page_id, spec.cells)
     return job_id, page_ids
+
+
+@dataclass
+class PendingPage:
+    """これから認識するページ(アップロードしたファイルの何ページ目か)。"""
+
+    upload_id: str
+    source_index: int
+
+
+def create_pending_job(
+    con: sqlite3.Connection, name: str, profile_id: int, pages: list[PendingPage]
+) -> tuple[int, list[int]]:
+    """認識前のジョブを作る。ページは 'processing'(runner が順に認識して `fill_page` で埋める)。"""
+    if not pages:
+        raise StoreError(422, "no_pages")
+    page_ids: list[int] = []
+    with transaction(con):
+        if con.execute("SELECT 1 FROM profiles WHERE id = ?", (profile_id,)).fetchone() is None:
+            raise StoreError(422, "profile_not_found")
+        cur = con.execute(
+            "INSERT INTO jobs (name, profile_id, status, created_at) VALUES (?, ?, 'processing', ?)",
+            (name, profile_id, time.time()),
+        )
+        job_id = int(cur.lastrowid)
+        for idx, pg in enumerate(pages):
+            up = con.execute("SELECT sha256 FROM uploads WHERE id = ?", (pg.upload_id,)).fetchone()
+            if up is None:
+                raise StoreError(422, "upload_not_found")
+            cur = con.execute(
+                "INSERT INTO pages (job_id, idx, image_sha256, status, upload_id, source_index)"
+                " VALUES (?, ?, ?, 'processing', ?, ?)",
+                (job_id, idx, up["sha256"], pg.upload_id, pg.source_index),
+            )
+            page_ids.append(int(cur.lastrowid))
+    return job_id, page_ids
+
+
+def _refresh_job_status(con: sqlite3.Connection, job_id: int) -> None:
+    n = con.execute(
+        "SELECT SUM(status = 'processing') AS proc, SUM(status != 'confirmed') AS open_"
+        " FROM pages WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    status = "processing" if n["proc"] else "done" if not n["open_"] else "ready"
+    con.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
+
+
+def fill_page(
+    con: sqlite3.Connection,
+    images_dir: Path,
+    page_id: int,
+    spec: PageSpec,
+    last_year: int | None = None,
+    seconds: float | None = None,
+) -> None:
+    """認識結果をページに書き込んで 'review' にする(再実行しても同じ結果になるよう、既存のセルは作り直す)。"""
+    with transaction(con):
+        p = con.execute("SELECT job_id, status FROM pages WHERE id = ?", (page_id,)).fetchone()
+        if p is None:
+            raise StoreError(404, "page_not_found")
+        if p["status"] != "processing":
+            raise StoreError(409, "page_not_processing")
+        con.execute("DELETE FROM cells WHERE page_id = ?", (page_id,))
+        _insert_cells(con, images_dir, page_id, spec.cells)
+        con.execute(
+            "UPDATE pages SET status = 'review', layout_status = ?, layout_reasons = ?, last_year = ?,"
+            " error = NULL, recognized_at = ?, recognize_seconds = ?, revision = revision + 1 WHERE id = ?",
+            (spec.layout_status, _j(spec.layout_reasons), last_year, time.time(), seconds, page_id),
+        )
+        _refresh_job_status(con, p["job_id"])
+
+
+def fail_page(con: sqlite3.Connection, page_id: int, code: str) -> None:
+    """認識に失敗したページ(例外の型名だけを残す。値は残さない)。"""
+    with transaction(con):
+        p = con.execute("SELECT job_id FROM pages WHERE id = ?", (page_id,)).fetchone()
+        if p is None:
+            return
+        con.execute(
+            "UPDATE pages SET status = 'failed', error = ? WHERE id = ? AND status = 'processing'",
+            (code[:80], page_id),
+        )
+        _refresh_job_status(con, p["job_id"])
+
+
+def retry_page(con: sqlite3.Connection, page_id: int) -> int:
+    """失敗したページをもう一度認識に回す。ジョブ ID を返す。"""
+    with transaction(con):
+        p = con.execute("SELECT job_id, status FROM pages WHERE id = ?", (page_id,)).fetchone()
+        if p is None:
+            raise StoreError(404, "page_not_found")
+        if p["status"] != "failed":
+            raise StoreError(409, "page_not_failed")
+        con.execute("UPDATE pages SET status = 'processing', error = NULL WHERE id = ?", (page_id,))
+        _refresh_job_status(con, p["job_id"])
+    return int(p["job_id"])
+
+
+def processing_pages(con: sqlite3.Connection, job_id: int) -> list[sqlite3.Row]:
+    """認識待ちのページ(アップロード順)。runner が 1 つずつ取り出す。"""
+    return con.execute(
+        "SELECT p.id, p.idx, p.upload_id, p.source_index, u.path AS upload_path"
+        " FROM pages p JOIN uploads u ON u.id = p.upload_id"
+        " WHERE p.job_id = ? AND p.status = 'processing' ORDER BY p.idx",
+        (job_id,),
+    ).fetchall()
+
+
+def previous_year(con: sqlite3.Connection, job_id: int, idx: int) -> int | None:
+    """直前までのページで最後に分かった年(前のページの最後の行の年。年を書かない行が継承する)。"""
+    r = con.execute(
+        "SELECT last_year FROM pages WHERE job_id = ? AND idx < ? AND last_year IS NOT NULL"
+        " ORDER BY idx DESC LIMIT 1",
+        (job_id, idx),
+    ).fetchone()
+    return None if r is None else int(r["last_year"])
 
 
 # ------------------------------------------------------------------ 読み出し
@@ -109,7 +232,9 @@ def list_jobs(con: sqlite3.Connection) -> list[dict]:
     rows = con.execute(
         "SELECT j.id, j.name, j.status, j.profile_id, j.created_at, j.last_page_id, j.last_cell,"
         " (SELECT COUNT(*) FROM pages p WHERE p.job_id = j.id) AS n_pages,"
-        " (SELECT COUNT(*) FROM pages p WHERE p.job_id = j.id AND p.status = 'confirmed') AS n_confirmed"
+        " (SELECT COUNT(*) FROM pages p WHERE p.job_id = j.id AND p.status = 'confirmed') AS n_confirmed,"
+        " (SELECT COUNT(*) FROM pages p WHERE p.job_id = j.id AND p.status = 'processing') AS n_processing,"
+        " (SELECT COUNT(*) FROM pages p WHERE p.job_id = j.id AND p.status = 'failed') AS n_failed"
         " FROM jobs j ORDER BY j.id DESC"
     ).fetchall()
     return [dict(r) for r in rows]
@@ -120,7 +245,8 @@ def get_job(con: sqlite3.Connection, job_id: int) -> dict:
     if r is None:
         raise StoreError(404, "job_not_found")
     pages = con.execute(
-        "SELECT id, idx, status, layout_status FROM pages WHERE job_id = ? ORDER BY idx", (job_id,)
+        "SELECT id, idx, status, layout_status, error FROM pages WHERE job_id = ? ORDER BY idx",
+        (job_id,),
     ).fetchall()
     out = dict(r)
     out["pages"] = [dict(p) for p in pages]
@@ -158,7 +284,7 @@ def get_page(con: sqlite3.Connection, page_id: int) -> dict:
         "id": p["id"], "job_id": p["job_id"], "idx": p["idx"], "n_pages": len(ids),
         "prev_page_id": ids[pos - 1] if pos > 0 else None,
         "next_page_id": ids[pos + 1] if pos + 1 < len(ids) else None,
-        "status": p["status"], "layout_status": p["layout_status"],
+        "status": p["status"], "error": p["error"], "layout_status": p["layout_status"],
         "layout_reasons": json.loads(p["layout_reasons"]), "layout_approved": bool(p["layout_approved"]),
         "revision": p["revision"], "cells": cells, "summary": summarize(cells),
         "can_undo": _has_edit(con, page_id, undone=False), "can_redo": _has_edit(con, page_id, undone=True),
@@ -224,6 +350,8 @@ def _require_open(con: sqlite3.Connection, page_id: int) -> sqlite3.Row:
         raise StoreError(404, "page_not_found")
     if p["status"] == "confirmed":
         raise StoreError(409, "page_confirmed")
+    if p["status"] in ("processing", "failed"):
+        raise StoreError(409, "page_not_ready")
     return p
 
 

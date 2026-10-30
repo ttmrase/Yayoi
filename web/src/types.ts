@@ -4,7 +4,8 @@ export type EditKind = "none" | "unchanged" | "corrected" | "candidate" | "expan
 
 export interface Expansion {
   kind: "ditto" | "year" | "arrow" | "wave";
-  source: [number, number];
+  /** 参照元のセル(行, 列)。前のページから年を継承した行など、このページ内に無いときは null */
+  source: [number, number] | null;
 }
 
 export interface Candidate {
@@ -54,7 +55,9 @@ export interface Page {
   n_pages: number;
   prev_page_id: number | null;
   next_page_id: number | null;
-  status: "processing" | "review" | "reviewing" | "confirmed";
+  status: "processing" | "failed" | "review" | "reviewing" | "confirmed";
+  /** 認識に失敗したときの原因(例外の型名。値は含まない) */
+  error: string | null;
   layout_status: string;
   layout_reasons: string[];
   layout_approved: boolean;
@@ -72,12 +75,21 @@ export interface JobSummary {
   profile_id: number;
   n_pages: number;
   n_confirmed: number;
+  n_processing: number;
+  n_failed: number;
   last_page_id: number | null;
   last_cell: number | null;
 }
 
 export interface JobDetail extends JobSummary {
-  pages: { id: number; idx: number; status: string; layout_status: string }[];
+  pages: { id: number; idx: number; status: Page["status"]; layout_status: string; error: string | null }[];
+}
+
+export interface Upload {
+  id: string;
+  name: string;
+  size: number;
+  n_pages: number;
 }
 
 export const COLUMN_LABEL: Record<Column, string> = {

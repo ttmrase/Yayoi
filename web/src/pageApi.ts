@@ -1,5 +1,5 @@
-import { api, apiBlobUrl } from "./api";
-import type { JobDetail, JobSummary, Page } from "./types";
+import { api, apiBlobUrl, apiUpload } from "./api";
+import type { JobDetail, JobSummary, Page, Upload } from "./types";
 
 export const fetchJobs = () => api<JobSummary[]>("/api/jobs");
 export const fetchJob = (id: number) => api<JobDetail>(`/api/jobs/${id}`);
@@ -10,6 +10,12 @@ const json = (method: string, body: unknown): RequestInit => ({
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body),
 });
+
+export const uploadFile = (file: File) => apiUpload<Upload>(`/api/uploads?name=${encodeURIComponent(file.name)}`, file);
+export const deleteUpload = (id: string) => api<{ ok: boolean }>(`/api/uploads/${id}`, { method: "DELETE" });
+export const createJob = (uploadIds: string[], name: string) =>
+  api<{ job_id: number; page_ids: number[] }>("/api/jobs", json("POST", { upload_ids: uploadIds, name }));
+export const retryPage = (pageId: number) => api<{ ok: boolean }>(`/api/pages/${pageId}/retry`, json("POST", {}));
 
 export type CellAction = "pass" | "edit" | "confirm" | "candidate" | "revert";
 

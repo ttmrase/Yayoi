@@ -101,6 +101,24 @@ MIGRATIONS: list[str] = [
     CREATE INDEX idx_cells_page ON cells(page_id, row, col);
     CREATE INDEX idx_edits_page ON edits(page_id, id);
     """,
+    # --- v2: 取り込み(M2)。アップロードしたファイル・ページの元画像の位置・認識の失敗
+    """
+    CREATE TABLE uploads (            -- 受け取ったファイル(アプリのデータ置き場の中。利用者が指したパスは読まない)
+        id TEXT PRIMARY KEY,          -- ランダムな ID(ファイル名にも使う。利用者のファイル名は使わない)
+        name TEXT NOT NULL,           -- 表示用の元のファイル名
+        path TEXT NOT NULL,           -- uploads ディレクトリからの相対パス
+        size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        n_pages INTEGER NOT NULL,
+        created_at REAL NOT NULL
+    );
+    ALTER TABLE pages ADD COLUMN upload_id TEXT REFERENCES uploads(id);
+    ALTER TABLE pages ADD COLUMN source_index INTEGER NOT NULL DEFAULT 0;  -- アップロード内のページ番号(0 始まり)
+    ALTER TABLE pages ADD COLUMN last_year INTEGER;                        -- このページの最後の行の年(次のページが継承する)
+    ALTER TABLE pages ADD COLUMN error TEXT;                               -- 認識の失敗(例外の型名だけ。値は入れない)
+    ALTER TABLE pages ADD COLUMN recognized_at REAL;
+    ALTER TABLE pages ADD COLUMN recognize_seconds REAL;
+    """,
 ]
 
 

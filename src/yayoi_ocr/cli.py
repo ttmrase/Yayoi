@@ -60,11 +60,9 @@ def _cmd_synth(args: argparse.Namespace) -> int:
 
 
 def _cmd_app(args: argparse.Namespace) -> int:
-    from .app.launcher import run
+    from .app.__main__ import run_args
 
-    return run(
-        args.data_dir, window=not args.no_window, port=args.port, token=args.token, dev=args.dev
-    )
+    return run_args(args)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,15 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--clean", action="store_true", help="撮影による劣化を与えない")
     q.set_defaults(func=_cmd_synth)
     a = sub.add_parser("app", help="確認 UI(ローカルサーバ + ウィンドウ)を起動する")
-    a.add_argument("--data-dir", type=Path, help="DB・画像の置き場")
-    a.add_argument(
-        "--no-window", action="store_true", help="ウィンドウを開かず URL を表示する(開発・E2E 用)"
-    )
-    a.add_argument("--port", type=int, default=0, help="開発・E2E 専用")
-    a.add_argument("--token", help="開発・E2E 専用")
-    a.add_argument(
-        "--dev", action="store_true", help="開発・E2E 専用: 合成ジョブを作る API を有効にする"
-    )
+    from .app.__main__ import add_arguments
+
+    add_arguments(a)
     a.set_defaults(func=_cmd_app)
     args = parser.parse_args(argv)
     try:

@@ -17,6 +17,7 @@ import uvicorn
 from .paths import AppPaths, app_data_dir
 from .security import allowed_hosts_for, new_token
 from .server import close_app, create_app
+from .worker import make_backend
 
 
 def _bind_localhost(port: int = 0) -> socket.socket:
@@ -35,6 +36,7 @@ class RunningServer:
         port: int = 0,
         token: str | None = None,
         dev: bool = False,
+        backend: str = "real",
     ) -> None:
         self.paths = AppPaths(data_dir or app_data_dir()).ensure()
         self.sock = _bind_localhost(port)
@@ -46,6 +48,8 @@ class RunningServer:
             allowed_hosts_for(self.port),
             images_dir=self.paths.images,
             dev=dev,
+            backend=make_backend(backend),
+            uploads_dir=self.paths.uploads,
         )
         config = uvicorn.Config(self.app, log_level="warning", access_log=False, lifespan="off")
         self.server = uvicorn.Server(config)
@@ -58,6 +62,9 @@ class RunningServer:
         return f"http://127.0.0.1:{self.port}/#token={self.token}"
 
     def start(self) -> RunningServer:
+        runner = self.app.state.runner
+        if runner is not None:
+            runner.start()  # 前回中断した認識の続きもここで始まる
         self.thread.start()
         deadline = time.time() + 15
         while not self.server.started:
@@ -79,8 +86,9 @@ def run(
     port: int = 0,
     token: str | None = None,
     dev: bool = False,
+    backend: str = "real",
 ) -> int:
-    srv = RunningServer(data_dir, port, token, dev).start()
+    srv = RunningServer(data_dir, port, token, dev, backend).start()
     try:
         if window:
             try:

@@ -55,6 +55,19 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** ファイルの中身をそのまま送る(アップロード)。サーバは利用者のパスを読まない。 */
+export async function apiUpload<T>(path: string, file: Blob): Promise<T> {
+  if (token === null) throw new ApiError(401, "no token");
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    body: file,
+    credentials: "omit",
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return (await res.json()) as T;
+}
+
 /** 画像などのバイナリ。<img src> にはトークンを付けられないので、fetch → blob URL にする。 */
 export async function apiBlobUrl(path: string): Promise<string> {
   if (token === null) throw new ApiError(401, "no token");

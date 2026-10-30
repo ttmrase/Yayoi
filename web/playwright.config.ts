@@ -20,7 +20,7 @@ export default defineConfig({
     launchOptions: process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
   },
   webServer: {
-    command: `python -m yayoi_ocr.app --no-window --dev --port ${PORT} --token ${TOKEN} --data-dir "${dataDir}"`,
+    command: `python -m yayoi_ocr.app --no-window --dev --backend fake --port ${PORT} --token ${TOKEN} --data-dir "${dataDir}"`,
     url: `http://127.0.0.1:${PORT}/`,
     timeout: 60_000,
     reuseExistingServer: false,

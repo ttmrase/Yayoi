@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image, ImageOps, ImageSequence
+from PIL import Image, ImageOps
 
 SUPPORTED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 PDF_RENDER_DPI = 300
@@ -61,65 +62,97 @@ def _dpi_of(pil: Image.Image) -> float | None:
     return None
 
 
-def _load_raster(path: Path) -> list[LoadedPage]:
-    pages: list[LoadedPage] = []
+def _iter_raster(path: Path, only: int | None = None) -> Iterator[LoadedPage]:
     sha = file_sha256(path)
     with Image.open(path) as im:
         n = getattr(im, "n_frames", 1)
-        for idx, frame in enumerate(ImageSequence.Iterator(im)):
-            _check_size(*frame.size)
-            frame = frame.copy()
+        if only is not None and not 0 <= only < n:
+            raise IndexError(f"ページ {only} はありません(全 {n} ページ)")
+        for idx in range(n) if only is None else [only]:
+            im.seek(idx)
+            _check_size(*im.size)
+            frame = im.copy()
             frame.info.update(im.info)
             oriented = ImageOps.exif_transpose(frame) or frame  # EXIF の回転情報を反映
-            pages.append(
-                LoadedPage(
-                    image=_pil_to_bgr(oriented),
-                    source_path=str(path),
-                    source_page_index=idx,
-                    dpi_hint=_dpi_of(frame),
-                    sha256=sha,
-                )
+            yield LoadedPage(
+                image=_pil_to_bgr(oriented),
+                source_path=str(path),
+                source_page_index=idx,
+                dpi_hint=_dpi_of(frame),
+                sha256=sha,
             )
-            if idx + 1 >= n:
-                break
-    return pages
 
 
-def _load_pdf(path: Path) -> list[LoadedPage]:
+def _iter_pdf(path: Path, only: int | None = None) -> Iterator[LoadedPage]:
     import pypdfium2 as pdfium  # 重いので遅延 import
 
     sha = file_sha256(path)
-    pages: list[LoadedPage] = []
     pdf = pdfium.PdfDocument(str(path))
     try:
-        for idx in range(len(pdf)):
+        if only is not None and not 0 <= only < len(pdf):
+            raise IndexError(f"ページ {only} はありません(全 {len(pdf)} ページ)")
+        for idx in range(len(pdf)) if only is None else [only]:
             page = pdf[idx]
             w_pt, h_pt = page.get_size()
             scale = PDF_RENDER_DPI / 72.0
             _check_size(int(w_pt * scale), int(h_pt * scale))
             bitmap = page.render(scale=scale, rotation=0)
-            pages.append(
-                LoadedPage(
-                    image=_pil_to_bgr(bitmap.to_pil()),
-                    source_path=str(path),
-                    source_page_index=idx,
-                    dpi_hint=float(PDF_RENDER_DPI),
-                    sha256=sha,
-                )
+            yield LoadedPage(
+                image=_pil_to_bgr(bitmap.to_pil()),
+                source_path=str(path),
+                source_page_index=idx,
+                dpi_hint=float(PDF_RENDER_DPI),
+                sha256=sha,
             )
     finally:
         pdf.close()
-    return pages
 
 
-def load_pages(path: str | Path) -> list[LoadedPage]:
-    """ファイルを 1 ページずつの BGR 画像に分解して返す。"""
+def page_count(path: str | Path) -> int:
+    """ページ数だけを数える(画像の展開はしない)。壊れたファイルは例外。"""
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".pdf":
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(str(p))
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
+    if suffix in SUPPORTED_SUFFIXES:
+        with Image.open(p) as im:
+            _check_size(*im.size)  # ヘッダーの寸法だけ見る(全画素の展開はしない)
+            return int(getattr(im, "n_frames", 1))
+    raise ValueError(f"未対応の形式です: {p.suffix}")
+
+
+def iter_pages(path: str | Path) -> Iterator[LoadedPage]:
+    """ファイルを 1 ページずつ、必要になったときに BGR 画像へ展開する(複数ページの PDF でメモリを使い切らない)。"""
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(p)
     suffix = p.suffix.lower()
     if suffix == ".pdf":
-        return _load_pdf(p)
+        return _iter_pdf(p)
     if suffix in SUPPORTED_SUFFIXES:
-        return _load_raster(p)
+        return _iter_raster(p)
     raise ValueError(f"未対応の形式です: {p.suffix}")
+
+
+def load_page(path: str | Path, index: int) -> LoadedPage:
+    """ファイルの `index` ページ目(0 始まり)だけを展開する(認識待ちのページを 1 枚ずつ処理するときに使う)。"""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(p)
+    suffix = p.suffix.lower()
+    if suffix == ".pdf":
+        return next(_iter_pdf(p, index))
+    if suffix in SUPPORTED_SUFFIXES:
+        return next(_iter_raster(p, index))
+    raise ValueError(f"未対応の形式です: {p.suffix}")
+
+
+def load_pages(path: str | Path) -> list[LoadedPage]:
+    """ファイルを 1 ページずつの BGR 画像に分解して返す。"""
+    return list(iter_pages(path))
