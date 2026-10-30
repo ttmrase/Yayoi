@@ -41,6 +41,9 @@ FEATURE_NAMES = (
     "faint",
     "overflow",
     "src_conf",
+    "mem_share",
+    "mem_max_sim",
+    "mem_n",
 )
 # 確認が必須の理由(学習・しきい値の対象外。常に要確認)
 HARD_REASONS = frozenset(
@@ -81,6 +84,7 @@ def featurize(features: dict[str, float], cls_p: float) -> np.ndarray:
     for k in ("r1_logp", "top_logp"):
         f[k] = max(min(f.get(k, -50.0), 0.0), -50.0) / 10.0
     f["vocab_fit"] = max(min(f.get("vocab_fit", 0.0), 5.0), -20.0) / 5.0
+    f["mem_n"] = f.get("mem_n", 0.0) / 5.0
     return np.array([float(f.get(n, 0.0)) for n in FEATURE_NAMES], dtype=np.float64)
 
 

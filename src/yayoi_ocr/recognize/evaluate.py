@@ -139,3 +139,32 @@ def format_table(summary: dict[str, dict[str, float]], title: str) -> str:
             f"{int(s['miss']):5d} {100 * s['miss_rate']:7.2f} {100 * s['miss_rate_nonblank']:9.2f}"
         )
     return "\n".join(lines)
+
+
+def dump_row(meta: dict, c: CellRecord, r: CellResult, j: Judged) -> dict:
+    """較正用のセル 1 件の記録(合成データのみ。eval_recognize.py --dump と同じ形)。"""
+    return {
+        "page": meta["seed"],
+        "writer": meta["writer_id"],
+        "row": c.row,
+        "col": c.col,
+        "column": c.column,
+        "gt_kind": j.gt_kind,
+        "gt_raw": c.raw,
+        "gt_resolved": c.resolved,
+        "r1_text": r.text,
+        "pred_value": r.value,
+        "review": j.review,
+        "pred_kind": j.pred_kind,
+        "correct": j.correct,
+        "page_review": j.page_review,
+        "features": r.features,
+        "cls_probs": r.cls_probs,
+        "reasons": r.reasons,
+        "iou": c.iou,
+        "faint": c.faint_only,
+        "overflow_gt": c.overflow_gt,
+        "stray": c.stray,
+        "annotation": bool(c.annotation),
+        "dpi": meta["dpi"],
+    }

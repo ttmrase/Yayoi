@@ -25,6 +25,7 @@ from .fields import (
     resolve_description,
 )
 from .grammar import DateValue, is_valid_date, norm_text
+from .memory import RecognitionMemory
 from .parseq.engine import ParseqEngine, RecognizeOutput
 
 COLUMNS = ("date", "account", "description", "amount")
@@ -150,6 +151,7 @@ class JobContext:
     titles: list[str] = field(default_factory=list)  # タイトル(勘定科目名)の語彙
     dictionary: dict[str, int] = field(default_factory=dict)  # 摘要の頻度辞書(過去の確定値)
     account_prior: dict[str, float] | None = None
+    memory: RecognitionMemory | None = None  # 見覚えメモリ(確定済みセルの埋め込み + 確定テキスト)
 
 
 @dataclass
@@ -285,7 +287,10 @@ class PageRecognizer:
             return  # 候補は _page_pass で(同じページの記入・辞書から)作る
         if r.kind != "text":
             return
-        fr = self._field(c.column, out, ctx)
+        votes, max_sim = None, 0.0
+        if ctx.memory is not None and out.embedding is not None and ctx.memory.size(c.column):
+            votes, max_sim = ctx.memory.votes(c.column, out.embedding)
+        fr = self._field(c.column, out, ctx, votes, max_sim)
         r.text = fr.text
         r.value = fr.value
         r.ok = fr.ok
@@ -295,14 +300,22 @@ class PageRecognizer:
         r.obj = fr.obj
         r.char_confidences = fr.char_confidences
 
-    def _field(self, column: str, out: RecognizeOutput, ctx: JobContext) -> FieldResult:
+    def _field(
+        self,
+        column: str,
+        out: RecognizeOutput,
+        ctx: JobContext,
+        votes: dict[str, float] | None = None,
+        max_sim: float = 0.0,
+    ) -> FieldResult:
+        mem = {"votes": votes, "max_sim": max_sim}
         if column == "date":
-            return resolve_date(self.engine, out)
+            return resolve_date(self.engine, out, **mem)
         if column == "amount":
-            return resolve_amount(self.engine, out)
+            return resolve_amount(self.engine, out, **mem)
         if column == "account":
-            return resolve_closed(self.engine, out, ctx.accounts, ctx.account_prior)
-        return resolve_description(self.engine, out, ctx.dictionary)
+            return resolve_closed(self.engine, out, ctx.accounts, ctx.account_prior, **mem)
+        return resolve_description(self.engine, out, ctx.dictionary, **mem)
 
     def _resolve_title(self, page: PageInput, ctx: JobContext) -> FieldResult | None:
         if page.title_rec is None or not ctx.titles:

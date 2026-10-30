@@ -134,3 +134,26 @@ def test_description_new_text_when_not_in_dictionary():
 def test_description_cold_start():
     r = resolve_description(FakeScorer({}), _out("消耗品代", "消耗品伐"), None)
     assert r.value == "消耗品代" and r.ok
+
+
+def test_memory_votes_break_ties_and_add_features():
+    # 画像だけでは 9.18 と 9.8 が同点。見覚えメモリが「9.18」に投票していれば 9.18 になる
+    sc = FakeScorer({"918": -1.0, "98": -1.0})
+    r0 = resolve_date(sc, _out("918", "98"))
+    assert "mem_share" not in r0.features  # メモリなしでは従来どおり(特徴量も増えない)
+    r = resolve_date(sc, _out("918", "98"), votes={"9.18": 1.0}, max_sim=0.97)
+    assert (
+        r.value == "9.18" and r.features["mem_share"] == 1.0 and r.features["mem_max_sim"] == 0.97
+    )
+
+
+def test_memory_votes_amount_and_closed_and_description():
+    sc = FakeScorer({"500-": -2.0, "5000": -2.0, "現金": -3.0, "普通預金": -3.0})
+    r = resolve_amount(sc, _out("5000"), votes={"500-": 1.0}, max_sim=0.95)
+    assert r.value == "500"
+    r = resolve_closed(sc, _out("現金", lp=-1.0), ["現金", "普通預金"], votes={"普通預金": 1.0})
+    assert r.value == "普通預金"
+    # 摘要: 辞書に無い確定テキストも、メモリの票があれば候補に入る
+    sc2 = FakeScorer({"切手代": -3.0, "切手伐": -2.5})
+    r = resolve_description(sc2, _out("切手伐", lp=-2.5), None, votes={"切手代": 1.0})
+    assert r.value == "切手代"

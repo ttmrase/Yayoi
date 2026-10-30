@@ -75,6 +75,21 @@ def _marginal_logps(
     return [logsumexp(p) for p in per]
 
 
+MEMORY_BONUS = (
+    3.0  # 票の割合 1.0 のとき加える対数尤度(見覚えメモリ。scripts/sim_learning.py で較正する)
+)
+
+
+def _mem_features(votes: dict | None, max_sim: float, chosen_share: float) -> dict[str, float]:
+    if votes is None:
+        return {}
+    return {
+        "mem_share": chosen_share,
+        "mem_max_sim": max_sim,
+        "mem_n": float(len(votes)),
+    }
+
+
 @dataclass
 class FieldResult:
     value: str  # 解決した値(日付は 'R7.11.19'・'11.19'、金額は '3456'、文字列はそのまま)。空 = 決まらなかった
@@ -114,12 +129,30 @@ def _ranked(logps: dict[str, float], k: int = 5) -> list[tuple[str, float]]:
 # ---------------------------------------------------------------- 日付
 
 
-def resolve_date(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> FieldResult:
+def resolve_date(
+    scorer: Scorer,
+    out: RecognizeOutput,
+    max_cands: int = 8,
+    votes: dict[str, float] | None = None,
+    max_sim: float = 0.0,
+    mem_bonus: float | None = None,
+) -> FieldResult:
+    mb = (
+        MEMORY_BONUS if mem_bonus is None else mem_bonus
+    )  # 実行時の値(sim_learning.py が較正で変える)
     best = out.best
     cands: dict[DateValue, None] = {}
     for c in out.candidates[:max_cands]:
         for v in repair_date(c.text):
             cands.setdefault(v, None)
+    vote_md: dict[tuple[int, int], float] = {}
+    for t, w in (
+        votes or {}
+    ).items():  # 見覚えメモリ: 近い見た目の確定テキスト(年は継承なので月日で照合する)
+        vs = repair_date(t)
+        if vs:
+            vote_md[(vs[0].month, vs[0].day)] = vote_md.get((vs[0].month, vs[0].day), 0.0) + w
+            cands.setdefault(vs[0], None)
     feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
     if not cands:
         return FieldResult(
@@ -127,9 +160,12 @@ def resolve_date(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> Fi
         )
     vals = list(cands)
     logps = dict(zip(vals, _marginal_logps(scorer, out, vals, date_surfaces, "date"), strict=True))
+    if vote_md:
+        logps = {v: lp + mb * vote_md.get((v.month, v.day), 0.0) for v, lp in logps.items()}
     named = {v.format(): lp for v, lp in logps.items()}
     feats.update(_posterior_features(named))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_mem_features(votes, max_sim, vote_md.get((top.month, top.day), 0.0)))
     feats["direct"] = float(repair_date(best.text)[:1] == [top])
     feats["explicit_year"] = float(top.explicit_year)
     reasons = []
@@ -143,12 +179,28 @@ def resolve_date(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> Fi
 # ---------------------------------------------------------------- 金額
 
 
-def resolve_amount(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> FieldResult:
+def resolve_amount(
+    scorer: Scorer,
+    out: RecognizeOutput,
+    max_cands: int = 8,
+    votes: dict[str, float] | None = None,
+    max_sim: float = 0.0,
+    mem_bonus: float | None = None,
+) -> FieldResult:
+    mb = (
+        MEMORY_BONUS if mem_bonus is None else mem_bonus
+    )  # 実行時の値(sim_learning.py が較正で変える)
     best = out.best
     cands: dict[int, None] = {}
     for c in out.candidates[:max_cands]:
         for v in repair_amount(c.text):
             cands.setdefault(v, None)
+    vote_v: dict[int, float] = {}
+    for t, w in (votes or {}).items():
+        vs = repair_amount(t)
+        if vs:
+            vote_v[vs[0]] = vote_v.get(vs[0], 0.0) + w
+            cands.setdefault(vs[0], None)
     feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
     if not cands:
         return FieldResult(
@@ -158,9 +210,12 @@ def resolve_amount(scorer: Scorer, out: RecognizeOutput, max_cands: int = 8) -> 
     logps = dict(
         zip(vals, _marginal_logps(scorer, out, vals, amount_surfaces, "amount"), strict=True)
     )
+    if vote_v:
+        logps = {v: lp + mb * vote_v.get(v, 0.0) for v, lp in logps.items()}
     named = {str(v): lp for v, lp in logps.items()}
     feats.update(_posterior_features(named))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_mem_features(votes, max_sim, vote_v.get(top, 0.0)))
     feats["direct"] = float(repair_amount(best.text)[:1] == [top])
     reasons = []
     if feats["top_p"] < 1e-3:
@@ -185,8 +240,14 @@ def resolve_closed(
     vocab: Sequence[str],
     prior: dict[str, float] | None = None,
     oov_gap: float = 4.0,
+    votes: dict[str, float] | None = None,
+    max_sim: float = 0.0,
+    mem_bonus: float | None = None,
 ) -> FieldResult:
     """語彙の中で最も尤度の高い値。自由認識より `oov_gap`(対数尤度)以上悪いときは語彙外の疑い。"""
+    mb = (
+        MEMORY_BONUS if mem_bonus is None else mem_bonus
+    )  # 実行時の値(sim_learning.py が較正で変える)
     best = out.best
     feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
     if not vocab:
@@ -208,9 +269,12 @@ def resolve_closed(
         lp = logsumexp(per[i])
         if prior is not None and v in prior and prior[v] > 0:
             lp += math.log(prior[v])
+        if votes:
+            lp += mb * votes.get(v, 0.0)
         logps[v] = lp
     feats.update(_posterior_features(logps))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_mem_features(votes, max_sim, (votes or {}).get(top, 0.0)))
     fit = logps[top] - best.logprob  # 自由認識に対する、語彙内の最良の尤度の差(≦ 0 が普通)
     feats["vocab_fit"] = max(min(fit, 5.0), -50.0)
     feats["free_agree"] = float(norm_text(best.text) == norm_text(top))
@@ -232,11 +296,17 @@ def resolve_description(
     max_dict: int = 400,
     dict_weight: float = 0.9,
     free_prior_logp: float = -5.0,
+    votes: dict[str, float] | None = None,
+    max_sim: float = 0.0,
+    mem_bonus: float | None = None,
 ) -> FieldResult:
     """過去に確定した摘要(頻度辞書)と自由認識の比較。
 
     事後 ∝ 画像の尤度 x 事前。辞書の事前は頻度 x `dict_weight`、辞書に無い自由認識の事前は `free_prior_logp`。
     """
+    mb = (
+        MEMORY_BONUS if mem_bonus is None else mem_bonus
+    )  # 実行時の値(sim_learning.py が較正で変える)
     best = out.best
     feats = {"r1_logp": max(best.logprob, -50.0), "r1_min_char": best.min_char_confidence}
     logps: dict[str, float] = {}
@@ -261,12 +331,21 @@ def resolve_description(
     for c in out.candidates[:5]:
         if c.text and c.text not in logps and norm_text(c.text) not in dict_keys:
             logps[c.text] = c.logprob + free_prior_logp
+    if votes:  # 見覚えメモリ: 近い見た目の確定テキストを候補に加え、票の割合を事前として足す
+        extra = [t for t in votes if t not in logps and norm_text(t) not in dict_keys]
+        if extra:
+            for t, r in zip(extra, scorer.score_output(out, extra, None), strict=True):
+                logps[t] = r.logprob + free_prior_logp
+        for t, w in votes.items():
+            if t in logps:
+                logps[t] += mb * w
     if not logps:
         return FieldResult(
             "", best.text, False, [], feats, ["no_valid_candidate"], None, best.char_confidences
         )
     feats.update(_posterior_features(logps))
     top = max(logps, key=lambda v: logps[v])
+    feats.update(_mem_features(votes, max_sim, (votes or {}).get(top, 0.0)))
     feats["from_dict"] = float(bool(dictionary) and top in dictionary)
     feats["free_agree"] = float(norm_text(best.text) == norm_text(top))
     return FieldResult(top, best.text, True, _ranked(logps), feats, [], top, best.char_confidences)
