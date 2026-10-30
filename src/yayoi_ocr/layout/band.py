@@ -125,6 +125,8 @@ def _edge_lines(pts: np.ndarray, u: np.ndarray, n: np.ndarray, origin: np.ndarra
 MIN_TABLE_PEAKS = 4  # 帯の表側に必要な罫線らしいピークの最少本数(これ未満は帯と認めない)
 MAX_CANDIDATES = 6
 OPEN_KERNEL_SIZES = (9, 15, 21)  # 帯に接した筆跡を切り離す開演算のカーネル径(px)
+MIN_THICKNESS_RATIO = 0.032  # 帯の太さ/長さの下限。様式の帯は 0.044 前後(遠近で多少変わる)
+MAX_THICKNESS_RATIO = 0.065  # 同上限(帯が画像端で切れていない場合)。断片は太さに対して短い
 MIN_FAR_BRIGHTNESS = 170  # 帯の反対側(紙の余白)の明るさの下限
 MAX_FIRST_LINE_RATIO = 2.5  # 最初の罫線は帯の下辺から帯の太さのこの倍数以内に始まる
 
@@ -166,7 +168,16 @@ def find_header_band(flat: np.ndarray) -> BandResult | None:
                     continue
                 band, peaks, first, far = res
                 far_dark = np.isfinite(far) and far < MIN_FAR_BRIGHTNESS
-                if peaks >= MIN_TABLE_PEAKS and first <= MAX_FIRST_LINE_RATIO and not far_dark:
+                ratio = band.thickness / max(band.length, 1.0)
+                shape_ok = ratio >= MIN_THICKNESS_RATIO and (
+                    band.clipped or ratio <= MAX_THICKNESS_RATIO
+                )
+                if (
+                    peaks >= MIN_TABLE_PEAKS
+                    and first <= MAX_FIRST_LINE_RATIO
+                    and not far_dark
+                    and shape_ok
+                ):
                     band.far_known = bool(np.isfinite(far))
                     valid.append(band)
                 elif fallback is None:

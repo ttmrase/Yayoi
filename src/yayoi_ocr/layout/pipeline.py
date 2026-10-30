@@ -36,8 +36,8 @@ from .warp import PageGeometry, make_geometry, rectify
 # 要確認の判定しきい値
 MIN_BAND_CONFIDENCE = 0.45
 MIN_GOOD_H = 0.80
-MIN_GOOD_V = 0.60
-MAX_RESID_UNITS = 0.012  # 交点の残差(表の幅に対する比)
+MIN_GOOD_V = 0.80
+MAX_RESID_UNITS = 0.02  # 交点の残差(表の幅に対する比)。紙のたわみ分は変位場が吸収する
 
 
 @dataclass

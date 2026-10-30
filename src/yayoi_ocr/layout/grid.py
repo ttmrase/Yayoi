@@ -138,10 +138,12 @@ def _track_line(
     half_window: int,
     ref: float,
     smooth: float = 0.12,
+    prior: float = 0.3,
 ) -> tuple[np.ndarray, np.ndarray]:
     """区間ごとの断面プロファイル(K x L)から、滑らかに連なる線の位置(px)と信頼度を求める。
 
     `expected_px` は区間ごとの期待位置(K,)。`ref` は「この線の典型的な応答の強さ」。
+    `prior` は期待位置からの距離に対するペナルティの強さ。
     戻り値: (位置 px (K,), 信頼度 0〜1 (K,))。
     """
     k_seg, length = profiles.shape
@@ -154,7 +156,9 @@ def _track_line(
     idx = np.clip(raw_idx, 0, length - 1)
     score = np.minimum(profiles[np.arange(k_seg)[:, None], idx] / max(ref, 1e-6), 1.5)
     score = np.where(in_range, score, 0.0)
-    cost = -score
+    # 期待位置からの距離に比例する事前ペナルティ(窓の端で `prior`)。同程度に強い別の特徴
+    # (紙の端・文字の縁)より、期待位置に近い罫線を選ぶ。
+    cost = -score + prior * np.abs(offs)[None, :] / max(half_window, 1)
     dp = np.zeros((k_seg, n_states))
     bp = np.zeros((k_seg, n_states), dtype=np.int32)
     dp[0] = cost[0]
@@ -381,7 +385,9 @@ def _global_vertical_lines_fit(
     xs_exp = [(x - view.x0) * s for x in tpl.vline_x]
     win = round(0.05 * s)
     slopes = np.arange(-0.12, 0.1201, 0.004)
-    results = [[-1.0, 0.0, 0.0] for _ in tpl.vline_x]  # (score, x_at_top, slope)
+    results = [[-1.0, 0.0, 0.0] for _ in tpl.vline_x]  # (score, x_at_top, slope): 全体の最良
+    near = [[-1.0, 0.0, 0.0] for _ in tpl.vline_x]  # 恒等に近い(位置 ±0.008・傾き ±0.02)中での最良
+    near_win = round(0.008 * s)
     for sl in slopes:
         # 傾き sl の線 x = x0 + sl*(y - y_top) を垂直にするシア: x' = x - sl*(y - y_top)
         m = np.array([[1.0, -sl, sl * y_top], [0.0, 1.0, 0.0]])
@@ -395,6 +401,17 @@ def _global_vertical_lines_fit(
             k = int(np.argmax(seg))
             if seg[k] > results[i][0]:
                 results[i] = [float(seg[k]), float(lo + k), float(sl)]
+            if abs(sl) <= 0.02:
+                nlo, nhi = max(0, round(xe) - near_win), min(w, round(xe) + near_win + 1)
+                if nhi - nlo >= 3:
+                    nseg = prof[nlo:nhi]
+                    kk = int(np.argmax(nseg))
+                    if nseg[kk] > near[i][0]:
+                        near[i] = [float(nseg[kk]), float(nlo + kk), float(sl)]
+    # 恒等に近い解が全体の最良の 80% 以上なら、そちらを採る(文字の縁などへの誤った吸着を防ぐ)
+    results = [
+        n if n[0] >= 0.8 * r[0] and n[0] > 0 else r for n, r in zip(near, results, strict=True)
+    ]
     out = []
     for score, x_top, sl in results:
         x_bot = x_top + sl * (y_bot - y_top)
@@ -568,9 +585,11 @@ def fit_grid(
 
     # 2〜3. 1 本ずつの検出と射影変換の再推定(探索幅を狭めながら)
     pitch = float(np.median(np.diff(tpl.hline_y)))
+    # 探索幅は、紙のたわみで射影変換だけでは吸収できない残差(縦罫線で ±0.03 単位程度)を
+    # 変位場に取り込めるよう、後段でも狭めすぎない(縦罫線の間隔は 0.16 以上なので ±0.05 まで安全)。
     schedule = [
-        (_Params(h_window_units=0.30 * pitch, v_window_units=0.030), 0.006),
-        (_Params(h_window_units=0.18 * pitch, v_window_units=0.014), 0.003),
+        (_Params(h_window_units=0.30 * pitch, v_window_units=0.045), 0.012),
+        (_Params(h_window_units=0.20 * pitch, v_window_units=0.035), 0.008),
     ]
     rms = float("nan")
     for params, thr in schedule:
@@ -588,7 +607,7 @@ def fit_grid(
     # 最終検出(変位場用)
     img = warp_to_view(flat, H, view)
     hl, vl = detect_lines(
-        img, view, tpl, _Params(h_window_units=0.14 * pitch, v_window_units=0.010)
+        img, view, tpl, _Params(h_window_units=0.15 * pitch, v_window_units=0.030)
     )
     src_p, dst_p, _ = _intersections(hl, vl)
     if len(src_p):
