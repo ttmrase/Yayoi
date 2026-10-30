@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from yayoi_ocr.recognize.memory import RecognitionMemory
-from yayoi_ocr.recognize.parseq.engine import ParseqEngine
+from yayoi_ocr.recognize.parseq.engine import EMBED_BINS, ParseqEngine
 from yayoi_ocr.synth.dataset import list_pages, load_page
 
 THRESHOLDS = (0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99)
@@ -47,7 +47,7 @@ def main() -> int:
         for pg in sorted(by_writer[w], key=lambda p: p.meta["seed"]):
             idx = [i for i, c in enumerate(pg.cells) if c.kind == "text" and i in pg.rec]
             cols = [pg.cells[i].column for i in idx]
-            embs = np.zeros((len(idx), 192), np.float32)
+            embs = np.zeros((len(idx), 192 * EMBED_BINS), np.float32)
             for width in (256, 384):
                 sel = [j for j, c in enumerate(cols) if eng.default_width(c) == width]
                 if sel:

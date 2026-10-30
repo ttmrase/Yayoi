@@ -35,6 +35,7 @@ MODEL_FILES: dict[int, str] = {
     384: "parseq-ndl-24x384-50-tiny.pt",
 }
 HEIGHT = 24
+EMBED_BINS = 4  # 見覚えメモリの埋め込みで、横方向を何個に分けて平均するか(1 = 全体の平均)
 # 推論モード(設定): onnx = NDLOCR-Lite 配布版と同じ反復修正 / cloze = baudm/parseq の反復修正 / none = 自己回帰のみ。
 # Phase 4 の追加学習の後も、ホールドアウトで再評価して選べるように設定として持つ。
 REFINE_MODES = ("onnx", "cloze", "none")
@@ -69,7 +70,9 @@ class ParseqResult:
 class RecognizeOutput:
     candidates: list[ParseqResult]
     width: int
-    embedding: np.ndarray | None = None  # エンコーダ出力の平均 → L2 正規化(見覚えメモリ用)
+    embedding: np.ndarray | None = (
+        None  # エンコーダ出力の横方向ビン平均 → L2 正規化(見覚えメモリ用)
+    )
     memory: torch.Tensor | None = field(default=None, repr=False)  # (1, T, C) 再採点用に保持
 
     @property
@@ -199,8 +202,17 @@ class ParseqEngine:
         return torch.stack([full if m is None else m for m in masks])
 
     @staticmethod
-    def _embed(memory: torch.Tensor) -> np.ndarray:
-        e = memory.mean(dim=1)
+    def _embed(model: PARSeq, memory: torch.Tensor) -> np.ndarray:
+        """エンコーダ出力 (B, 行 x 列, C) → 縦方向に平均 → 横方向を EMBED_BINS 個に分けて平均 → 連結 → L2 正規化。
+
+        全体の平均より、文字の並び(横方向の位置)を残せるので、同じ筆者が同じ語を書いたときの照合に強い。"""
+        gh, gw = model.encoder.patch_embed.grid_size
+        b, _, c = memory.shape
+        cols = memory.reshape(b, gh, gw, c).mean(dim=1)  # (B, gw, C)
+        e = torch.nn.functional.adaptive_avg_pool1d(
+            cols.transpose(1, 2), EMBED_BINS
+        )  # (B, C, bins)
+        e = e.reshape(b, -1)
         e = e / e.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         return e.float().cpu().numpy()
 
@@ -301,7 +313,7 @@ class ParseqEngine:
         picked, valid = model.token_logprobs(kv_rep, [ids for _, ids, _ in flat], mask_rep)
         picked = picked.cpu()
         valid = valid.cpu()
-        emb = self._embed(memory) if with_embedding else None
+        emb = self._embed(model, memory) if with_embedding else None
         outs: list[RecognizeOutput] = []
         pos = 0
         for b in range(n):
@@ -417,9 +429,11 @@ class ParseqEngine:
     def embed_many(
         self, crops: Sequence[np.ndarray], width: int = 256, batch_size: int = 64
     ) -> np.ndarray:
-        """エンコーダ出力の平均を L2 正規化した埋め込み (N, 192)。見覚えメモリ用。"""
+        """見覚えメモリ用の埋め込み (N, 192 x EMBED_BINS)(`_embed`)。"""
         model = self._model(width)
         outs = []
         for s in range(0, len(crops), batch_size):
-            outs.append(self._embed(model.encode(self._batch(crops[s : s + batch_size], width))))
-        return np.concatenate(outs, axis=0) if outs else np.zeros((0, 192), np.float32)
+            outs.append(
+                self._embed(model, model.encode(self._batch(crops[s : s + batch_size], width)))
+            )
+        return np.concatenate(outs, axis=0) if outs else np.zeros((0, 192 * EMBED_BINS), np.float32)

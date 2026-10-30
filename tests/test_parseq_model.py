@@ -14,7 +14,7 @@ pytestmark = pytest.mark.ml
 torch = pytest.importorskip("torch")
 
 from yayoi_ocr.recognize.parseq.charset import column_charset, normalize_width  # noqa: E402
-from yayoi_ocr.recognize.parseq.engine import ParseqEngine  # noqa: E402
+from yayoi_ocr.recognize.parseq.engine import EMBED_BINS, ParseqEngine  # noqa: E402
 from yayoi_ocr.recognize.parseq.model import PARSeq  # noqa: E402
 from yayoi_ocr.recognize.parseq.preprocess import ndl_preprocess  # noqa: E402
 
@@ -181,7 +181,7 @@ def test_engine_batch_equals_single(engine):
 
 def test_engine_embeddings_are_normalized(engine):
     e = engine.embed_many([_crop(i) for i in range(3)], width=256)
-    assert e.shape == (3, 32)
+    assert e.shape == (3, 32 * EMBED_BINS)
     assert np.allclose(np.linalg.norm(e, axis=1), 1.0, atol=1e-4)
 
 
