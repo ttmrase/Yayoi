@@ -127,6 +127,26 @@ def test_month_decreased_and_year_jump_are_flagged():
     assert "year_jump" in res.cell(2, 0).reasons and res.cell(2, 0).review
 
 
+def test_dates_going_back_are_only_flagged_never_rewritten():
+    """日付は単調とは限らない(戻る・年をまたいで遡ることがある)。順序は要確認の理由にするだけで、値を変えない。"""
+    res = run(
+        [
+            {"date": "text:R8 10.8", "amount": "text:100-"},
+            {"date": "text:R8 3.2", "amount": "text:100-"},  # 同じ年のまま月が戻る
+            {"date": "text:R7 12.30", "amount": "text:100-"},  # 前の年へ遡る(年をまたいで戻る)
+            {
+                "date": "text:2.3",
+                "amount": "text:100-",
+            },  # 年を書かない行は、直前の年(R7)を継承するだけ
+        ]
+    )
+    assert [res.cell(r, 0).value for r in range(4)] == ["R8.10.8", "R8.3.2", "R7.12.30", "R7.2.3"]
+    assert "year_jump" in res.cell(2, 0).reasons and "month_decreased" not in res.cell(1, 0).reasons
+    assert all(res.cell(r, 0).value != "" for r in range(4))
+    # 値のぶんだけ、候補も順序で並べ替えない(認識の第 1 候補がそのまま値になる)
+    assert res.cell(1, 0).value == "R8.3.2"
+
+
 def test_ditto_in_first_row_and_gap():
     res = run([{"account": "ditto"}, {}, {}, {"account": "text:現金"}, {}, {"account": "ditto"}])
     assert "ditto_first_row" in res.cell(0, 1).reasons and res.cell(0, 1).review
