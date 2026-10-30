@@ -1,25 +1,53 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Yayoi OCR ground truth (1 page)",
-  "description": "実サンプルの正解データ。実データ(値)は $YAYOI_PRIVATE_DATA/ground_truth/*.json にのみ置き、リポジトリにはこのスキーマだけをコミットする。",
+  "title": "Yayoi OCR ground truth (1 page, synthetic)",
+  "description": "合成帳票(yayoi_ocr.synth)の正解データ(1 ページ)。開発中は実データの文字起こしは作らない。表記規則: (1) raw は書かれた通りの文字列。日付・金額は描いた文字列そのまま(例: 「R7 11.19」「9,900-」)。同上記号は「〃」、下の行へ続く矢印は「→」、波線による省略は「頭〜尾」。(2) resolved は展開後の値。日付は R<元号年>.<月>.<日>(元号は直前の明示がある行から引き継ぐ)、金額は数字のみ(カンマ・末尾の「-」を除く)、「〃」「→」「〜」は元の記入に展開する。空欄は両方とも空文字。",
   "type": "object",
-  "required": ["schema_version", "image", "title", "number", "rows"],
+  "required": [
+    "schema_version",
+    "image",
+    "title",
+    "number",
+    "rows"
+  ],
   "properties": {
-    "schema_version": {"const": 1},
-    "image": {"type": "string", "description": "samples/ 配下のファイル名"},
-    "title": {"$ref": "#/$defs/field"},
-    "number": {"$ref": "#/$defs/field"},
+    "schema_version": {
+      "const": 1
+    },
+    "image": {
+      "type": "string",
+      "description": "対応する画像のファイル名"
+    },
+    "title": {
+      "$ref": "#/$defs/field"
+    },
+    "number": {
+      "$ref": "#/$defs/field"
+    },
     "rows": {
       "type": "array",
       "description": "明細 29 行(様式の行数)。空行も含め、全行を順番に並べる。",
       "items": {
         "type": "object",
-        "required": ["date", "account", "description", "amount"],
+        "required": [
+          "date",
+          "account",
+          "description",
+          "amount"
+        ],
         "properties": {
-          "date": {"$ref": "#/$defs/field"},
-          "account": {"$ref": "#/$defs/field"},
-          "description": {"$ref": "#/$defs/field"},
-          "amount": {"$ref": "#/$defs/field"}
+          "date": {
+            "$ref": "#/$defs/field"
+          },
+          "account": {
+            "$ref": "#/$defs/field"
+          },
+          "description": {
+            "$ref": "#/$defs/field"
+          },
+          "amount": {
+            "$ref": "#/$defs/field"
+          }
         },
         "additionalProperties": false
       }
@@ -28,7 +56,10 @@
   "$defs": {
     "field": {
       "type": "object",
-      "required": ["raw", "resolved"],
+      "required": [
+        "raw",
+        "resolved"
+      ],
       "properties": {
         "raw": {
           "type": "string",
@@ -38,8 +69,14 @@
           "type": "string",
           "description": "同上・矢印などを展開した後の値。空欄は空文字。"
         },
-        "uncertain": {"type": "boolean", "description": "読み取りに自信がない場合 true"},
-        "note": {"type": "string", "description": "補足(実データの値を含めないこと。値は raw/resolved にのみ書く)"}
+        "uncertain": {
+          "type": "boolean",
+          "description": "読み取りに自信がない場合 true"
+        },
+        "note": {
+          "type": "string",
+          "description": "補足(実データの値を含めないこと。値は raw/resolved にのみ書く)"
+        }
       },
       "additionalProperties": false
     }

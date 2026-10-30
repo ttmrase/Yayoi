@@ -134,25 +134,26 @@ def _ridge_maps(view_img: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarra
 
 def _track_line(
     profiles: np.ndarray,
-    expected_px: float,
+    expected_px: np.ndarray,
     half_window: int,
     ref: float,
     smooth: float = 0.12,
 ) -> tuple[np.ndarray, np.ndarray]:
     """区間ごとの断面プロファイル(K x L)から、滑らかに連なる線の位置(px)と信頼度を求める。
 
-    `ref` は「この線の典型的な応答の強さ」。戻り値: (位置 px, 信頼度 0〜1)。
+    `expected_px` は区間ごとの期待位置(K,)。`ref` は「この線の典型的な応答の強さ」。
+    戻り値: (位置 px (K,), 信頼度 0〜1 (K,))。
     """
     k_seg, length = profiles.shape
+    expected_px = np.broadcast_to(np.asarray(expected_px, dtype=np.float64), (k_seg,))
+    centers = np.round(expected_px).astype(int)
     offs = np.arange(-half_window, half_window + 1)
     n_states = len(offs)
-    idx = np.clip(np.round(expected_px).astype(int) + offs, 0, length - 1)
-    in_range = ((np.round(expected_px).astype(int) + offs) >= 0) & (
-        (np.round(expected_px).astype(int) + offs) < length
-    )
-    score = np.minimum(profiles[:, idx] / max(ref, 1e-6), 1.5)  # K x S
-    score = np.where(in_range[None, :], score, 0.0)
-    # Viterbi(L1 平滑ペナルティ)
+    raw_idx = centers[:, None] + offs[None, :]  # K x S
+    in_range = (raw_idx >= 0) & (raw_idx < length)
+    idx = np.clip(raw_idx, 0, length - 1)
+    score = np.minimum(profiles[np.arange(k_seg)[:, None], idx] / max(ref, 1e-6), 1.5)
+    score = np.where(in_range, score, 0.0)
     cost = -score
     dp = np.zeros((k_seg, n_states))
     bp = np.zeros((k_seg, n_states), dtype=np.int32)
@@ -169,17 +170,15 @@ def _track_line(
     pos = np.zeros(k_seg)
     conf = np.zeros(k_seg)
     for k in range(k_seg):
-        s = path[k]
-        p0 = score[k, s]
-        # 放物線補間でサブピクセル化
-        if 0 < s < n_states - 1:
-            a, b, c = score[k, s - 1], score[k, s], score[k, s + 1]
+        st = path[k]
+        p0 = score[k, st]
+        sub = 0.0
+        if 0 < st < n_states - 1:  # 放物線補間でサブピクセル化
+            a, b, c = score[k, st - 1], score[k, st], score[k, st + 1]
             den = a - 2 * b + c
-            sub = 0.5 * (a - c) / den if den < -1e-9 else 0.0
-            sub = float(np.clip(sub, -0.5, 0.5))
-        else:
-            sub = 0.0
-        pos[k] = expected_px + offs[s] + sub
+            if den < -1e-9:
+                sub = float(np.clip(0.5 * (a - c) / den, -0.5, 0.5))
+        pos[k] = centers[k] + offs[st] + sub
         conf[k] = float(np.clip(p0 / 0.6, 0.0, 1.0))
     return pos, conf
 
@@ -213,20 +212,32 @@ class _Params:
     n_v_seg_per_row: int = 1
 
 
+def _smooth_pitch(pitch: np.ndarray) -> np.ndarray:
+    """区間ごとの行間隔を、x に対して直線あてはめで滑らかにする(遠近による一次変化を許す)。"""
+    k = np.arange(len(pitch))
+    if len(pitch) >= 3:
+        coef = np.polyfit(k, pitch, 1)
+        return np.polyval(coef, k)
+    return pitch
+
+
 def detect_lines(
     view_img: np.ndarray,
     view: View,
     tpl: FormTemplate,
     params: _Params,
 ) -> tuple[list[LineTrack], list[LineTrack]]:
+    """横罫線は上から 1 本ずつ(直前の行間隔から次を予測)、縦罫線は期待位置の近くで追跡する。"""
     rh, rv, step = _ridge_maps(view_img)
     s = view.scale
+    pitch_u = float(np.median(np.diff(tpl.hline_y)))
     # --- 横罫線
     x_edges_u = np.linspace(0.02, 0.98, params.n_h_seg + 1)
     x_edges_px = (x_edges_u - view.x0) * s
     prof_h = _segment_profiles(rh, x_edges_px, axis=1)  # K x Hpx
     prof_step = _segment_profiles(step, x_edges_px, axis=1)
     centers_x = 0.5 * (x_edges_u[:-1] + x_edges_u[1:])
+    k_h = len(centers_x)
     hw_h = max(2, round(params.h_window_units * s))
     # 典型的な線の強さ: 期待位置周辺の最大値の中央値(線が大半なので頑健)
     peaks = []
@@ -236,24 +247,38 @@ def detect_lines(
         if hi > lo:
             peaks.append(prof_h[:, lo:hi].max(axis=1))
     ref_h = float(np.median(np.concatenate(peaks))) if peaks else 1.0
-    hlines: list[LineTrack] = []
-    for j, y in enumerate(tpl.hline_y):
-        exp_px = (y - view.y0) * s
-        if j == 0:  # 帯の下辺: 段差として探す
-            ref0 = max(float(np.median(prof_step[:, int(exp_px) - 2 : int(exp_px) + 3])), 1e-3)
-            pos, conf = _track_line(prof_step, exp_px, hw_h, max(ref0, 0.5 * ref_h), smooth=0.12)
+    n_h = len(tpl.hline_y)
+    pos = np.zeros((n_h, k_h))
+    conf = np.zeros((n_h, k_h))
+    # j = 0: 帯の下辺(段差)。位置は帯の検出から ±数 px で分かっているので窓を狭める
+    # (帯の中の白抜き文字の上端も同じ向きの段差になるため、広い窓では吸われる)
+    exp0 = np.full(k_h, (tpl.hline_y[0] - view.y0) * s)
+    c0 = round(exp0[0])
+    ref0 = max(float(np.median(prof_step[:, max(0, c0 - 2) : c0 + 3])), 1e-3)
+    hw0 = max(2, round(min(params.h_window_units, 0.16 * pitch_u) * s))
+    pos[0], conf[0] = _track_line(prof_step, exp0, hw0, max(ref0, 0.5 * ref_h))
+    pos[0] = np.where(conf[0] >= 0.3, pos[0], exp0)
+    for j in range(1, n_h):
+        if j == 1:
+            pitch = np.full(k_h, (tpl.hline_y[1] - tpl.hline_y[0]) * s)
         else:
-            pos, conf = _track_line(prof_h, exp_px, hw_h, ref_h)
-        hlines.append(
-            LineTrack(
-                expected=y,
-                centers=centers_x,
-                offset=(pos - exp_px) / s,
-                conf=conf,
-                good=conf >= 0.45,
-            )
+            lo = max(0, j - 4)
+            pitch = _smooth_pitch((pos[j - 1] - pos[lo]) / (j - 1 - lo))
+        pred = pos[j - 1] + pitch
+        p, c = _track_line(prof_h, pred, hw_h, ref_h)
+        pos[j] = np.where(c >= 0.3, p, pred)  # 見つからない区間は予測で繋ぐ(次の予測のため)
+        conf[j] = c
+    hlines = [
+        LineTrack(
+            expected=y,
+            centers=centers_x,
+            offset=(pos[j] - (y - view.y0) * s) / s,
+            conf=conf[j],
+            good=conf[j] >= 0.45,
         )
-    # --- 縦罫線
+        for j, y in enumerate(tpl.hline_y)
+    ]
+    # --- 縦罫線(各行 1 区間)
     ys = np.array(tpl.hline_y)
     y_edges_u = np.concatenate(
         [np.linspace(ys[i], ys[i + 1], params.n_v_seg_per_row + 1)[:-1] for i in range(tpl.n_rows)]
@@ -272,51 +297,166 @@ def detect_lines(
     ref_v = float(np.median(np.concatenate(peaks))) if peaks else 1.0
     vlines: list[LineTrack] = []
     for x in tpl.vline_x:
-        exp_px = (x - view.x0) * s
-        pos, conf = _track_line(prof_v, exp_px, hw_v, ref_v)
+        exp_px = np.full(len(centers_y), (x - view.x0) * s)
+        p, c = _track_line(prof_v, exp_px, hw_v, ref_v)
         vlines.append(
             LineTrack(
                 expected=x,
                 centers=centers_y,
-                offset=(pos - exp_px) / s,
-                conf=conf,
-                good=conf >= 0.45,
+                offset=(p - exp_px) / s,
+                conf=c,
+                good=c >= 0.45,
             )
         )
     return hlines, vlines
 
 
-# ------------------------------------------------ 全体の縦倍率の照合(周期の取り違え防止)
-
-
-def _global_vertical_fit(
+def _vertical_pattern_fit(
     view_img: np.ndarray, view: View, tpl: FormTemplate
-) -> tuple[float, float, float, float]:
-    """左右それぞれで、横罫線 30 本の周期パターンを照合して y = oy + sy*y_j を求める。
+) -> tuple[float, float, float] | None:
+    """縦罫線 5 本の配置パターン(間隔が不等)を、表の上半分で全体照合する。
 
-    戻り値: (左の (oy, sy) …は使わず) → (sy_left, oy_left, sy_right, oy_right)
+    見出し帯の端が画像の外に切れていると、帯から決めた左端・倍率がずれる。縦罫線の並びは
+    不等間隔で特徴的なので、スケール・オフセット・傾きをまとめて探す(x = a + b*u + sl*y)。
+    戻り値: (a, b, sl) 正準単位。見つからなければ None。
     """
-    rh, _, _ = _ridge_maps(view_img)
-    s = view.scale
-    pitch = float(np.median(np.diff(tpl.hline_y)))
-    res = []
-    for lo_u, hi_u in ((0.03, 0.5), (0.5, 0.97)):
-        a, b = int((lo_u - view.x0) * s), int((hi_u - view.x0) * s)
-        prof = np.median(rh[:, a:b], axis=1)
-        prof = np.convolve(prof, np.ones(3) / 3, mode="same")
-        ys = np.array(tpl.hline_y[1:])  # 帯の下辺(j=0)は別扱い
-        best = (-1.0, 1.0, 0.0)
-        for sy in np.arange(0.84, 1.19, 0.002):
-            for oy_u in np.arange(-0.35 * pitch, 0.35 * pitch + 1e-9, 1.0 / s):
-                pos = (oy_u + sy * ys - view.y0) * s
-                ok = (pos >= 0) & (pos < prof.shape[0] - 1)
-                if ok.sum() < 0.7 * len(ys):
-                    continue
-                v = np.interp(pos[ok], np.arange(prof.shape[0]), prof).sum() / len(ys)
-                if v > best[0]:
-                    best = (v, sy, oy_u)
-        res.append(best)
-    return res[0][1], res[0][2], res[1][1], res[1][2]
+    _, rv, _ = _ridge_maps(view_img)
+    f = 0.5
+    small = cv2.resize(rv, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    s = view.scale * f
+    h, w = small.shape
+    y0 = (0.03 * tpl.table_height - view.y0) * s
+    y1 = (0.55 * tpl.table_height - view.y0) * s
+    r0, r1 = round(y0), round(y1)
+    if r1 - r0 < 20:
+        return None
+    ymid = 0.5 * (y0 + y1)
+    xs = np.array(tpl.vline_x)
+    a_grid = np.arange(-0.22, 0.22, 1.0 / s)  # 単位
+    idx = np.arange(w, dtype=np.float64)
+    best = (-1.0, 0.0, 1.0, 0.0)  # 全体の最良 (score, a, b, sl)
+    near = (-1.0, 0.0, 1.0, 0.0)  # 恒等に近い解の最良(帯から決めた倍率・左端がほぼ正しい場合)
+    for sl in np.arange(-0.16, 0.1601, 0.008):
+        m = np.array([[1.0, -sl, sl * ymid], [0.0, 1.0, 0.0]])
+        sh = cv2.warpAffine(small, m, (w, h), flags=cv2.INTER_LINEAR)
+        prof = np.mean(np.minimum(sh[r0:r1], 40.0), axis=0)
+        for b in np.arange(0.82, 1.2001, 0.01):
+            # 行の中央(ymid)での線位置(単位)= a + b*x_i。ビュー px へ。
+            pos = ((a_grid[:, None] + b * xs[None, :]) - view.x0) * s  # A x 5
+            ok = (pos >= 0) & (pos <= w - 1)
+            score = np.where(ok, np.interp(pos, idx, prof), 0.0).sum(axis=1)
+            k = int(np.argmax(score))
+            if score[k] > best[0]:
+                best = (float(score[k]), float(a_grid[k]), float(b), float(sl))
+            if abs(b - 1.0) <= 0.03:
+                near_ok = np.abs(a_grid) <= 0.03
+                if near_ok.any():
+                    kk = int(np.argmax(np.where(near_ok, score, -1.0)))
+                    if score[kk] > near[0]:
+                        near = (float(score[kk]), float(a_grid[kk]), float(b), float(sl))
+    if best[0] <= 0:
+        return None
+    # 恒等に近い解が全体の最良の 85% 以上なら、そちらを採る(誤った周期への飛びつきを防ぐ)
+    _, a, b, sl = near if near[0] >= 0.85 * best[0] else best
+    y_mid_units = (ymid / s) + view.y0
+    return a - (sl * y_mid_units), b, sl
+
+
+def _global_vertical_lines_fit(
+    view_img: np.ndarray, view: View, tpl: FormTemplate
+) -> list[tuple[float, float, float]]:
+    """縦罫線 5 本それぞれについて、傾きとオフセットを全体照合(Hough 的)で求める。
+
+    戻り値: 各線の (スコア, x(y=0), x(y=table_height)) 正準単位。強い遠近・回転が残っていても、
+    1 本ずつの追跡に入る前に大きなずれを取り除くための処理。
+    """
+    _, rv, _ = _ridge_maps(view_img)
+    f = 0.5  # 計算量削減のため半分に縮小して探索
+    small = cv2.resize(rv, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    s = view.scale * f
+    h, w = small.shape
+    y_top = (0.0 - view.y0) * s
+    y_bot = (tpl.table_height - view.y0) * s
+    r0, r1 = round(y_top), round(y_bot)
+    xs_exp = [(x - view.x0) * s for x in tpl.vline_x]
+    win = round(0.05 * s)
+    slopes = np.arange(-0.12, 0.1201, 0.004)
+    results = [[-1.0, 0.0, 0.0] for _ in tpl.vline_x]  # (score, x_at_top, slope)
+    for sl in slopes:
+        # 傾き sl の線 x = x0 + sl*(y - y_top) を垂直にするシア: x' = x - sl*(y - y_top)
+        m = np.array([[1.0, -sl, sl * y_top], [0.0, 1.0, 0.0]])
+        sh = cv2.warpAffine(small, m, (w, h), flags=cv2.INTER_LINEAR)
+        prof = np.mean(np.minimum(sh[r0:r1], 40.0), axis=0)  # 手書きの強い応答を抑える
+        for i, xe in enumerate(xs_exp):
+            lo, hi = max(0, round(xe) - win), min(w, round(xe) + win + 1)
+            if hi - lo < 5:
+                continue
+            seg = prof[lo:hi]
+            k = int(np.argmax(seg))
+            if seg[k] > results[i][0]:
+                results[i] = [float(seg[k]), float(lo + k), float(sl)]
+    out = []
+    for score, x_top, sl in results:
+        x_bot = x_top + sl * (y_bot - y_top)
+        out.append((score, x_top / s + view.x0, x_bot / s + view.x0))
+    return out
+
+
+def _robust_line(
+    x: np.ndarray, y: np.ndarray, w: np.ndarray, thr: float
+) -> tuple[float, float] | None:
+    """重み付き直線 y = a + b x。残差が thr を超える点を順に除く(最低 3 点)。"""
+    keep = np.ones(len(x), bool)
+    for _ in range(len(x)):
+        if keep.sum() < 3:
+            return None
+        coef = np.polyfit(x[keep], y[keep], 1, w=np.sqrt(w[keep]))
+        res = np.abs(np.polyval(coef, x) - y)
+        worst = int(np.argmax(np.where(keep, res, -1)))
+        if res[worst] <= thr:
+            return float(coef[1]), float(coef[0])
+        keep[worst] = False
+    return None
+
+
+def _vertical_corner_correction(vfit, tpl: FormTemplate) -> np.ndarray | None:
+    """縦罫線の全体照合の結果を 5 本の整合性(直線性)で確かめ、4 隅の x を求めて補正射影を返す。"""
+    xs = np.array(tpl.vline_x)
+    sc = np.array([v[0] for v in vfit])
+    xt = np.array([v[1] for v in vfit])
+    xb = np.array([v[2] for v in vfit])
+    good = sc >= 0.5 * sc.max()
+    if good.sum() < 3 or sc.max() <= 0:
+        return None
+    wts = np.where(good, sc, 1e-3)
+    # 同じ線が上下の両方で整合する必要がある: 上と下を同時に除外
+    keep = good.copy()
+    ft = fb = None
+    for _ in range(3):
+        if keep.sum() < 3:
+            return None
+        ft = _robust_line(xs[keep], xt[keep], wts[keep], 0.02)
+        fb = _robust_line(xs[keep], xb[keep], wts[keep], 0.02)
+        if ft is None or fb is None:
+            return None
+        res = np.maximum(np.abs(ft[0] + ft[1] * xs - xt), np.abs(fb[0] + fb[1] * xs - xb))
+        new_keep = keep & (res < 0.02)
+        if (new_keep == keep).all():
+            break
+        keep = new_keep
+    ht = tpl.table_height
+    src = np.array([[xs[0], 0.0], [xs[-1], 0.0], [xs[0], ht], [xs[-1], ht]])
+    dst = np.array(
+        [
+            [ft[0] + ft[1] * xs[0], 0.0],
+            [ft[0] + ft[1] * xs[-1], 0.0],
+            [fb[0] + fb[1] * xs[0], ht],
+            [fb[0] + fb[1] * xs[-1], ht],
+        ]
+    )
+    if np.any(np.abs(dst - src) > 0.2):
+        return None
+    return _homography_units(src, dst)
 
 
 # ---------------------------------------------------------------- 射影変換の推定
@@ -343,6 +483,14 @@ def _intersections(
     if not src:
         return np.zeros((0, 2)), np.zeros((0, 2)), np.zeros(0)
     return np.array(src), np.array(dst), np.array(wts)
+
+
+def _homography_units(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """正準単位の 4 点対応 → 射影変換(単位座標系のまま)。"""
+    k = 1000.0
+    h = cv2.getPerspectiveTransform((src * k).astype(np.float32), (dst * k).astype(np.float32))
+    sc = np.diag([k, k, 1.0])
+    return np.linalg.inv(sc) @ h.astype(np.float64) @ sc
 
 
 def _fit_homography(
@@ -383,7 +531,11 @@ def _outer_ok(hl: list[LineTrack], vl: list[LineTrack]) -> bool:
 
 
 def fit_grid(
-    flat: np.ndarray, band: BandResult, tpl: FormTemplate, det_width: int = 1200
+    flat: np.ndarray,
+    band: BandResult,
+    tpl: FormTemplate,
+    det_width: int = 1200,
+    trace: list | None = None,
 ) -> GridFit:
     """作業画像 `flat` と帯の検出結果から、罫線格子への位置合わせを行う。"""
     notes: list[str] = []
@@ -391,24 +543,28 @@ def fit_grid(
     margin = 0.06
     view = View(-margin, -0.07, 1 + margin, tpl.table_height + 0.06, float(det_width))
 
-    # 0〜1. 縦方向の倍率・オフセットの全体照合 → 4 点(上下 × 左右)で射影変換を補正
+    # 0a. 縦罫線の配置パターンの全体照合(帯の端が画像の外に切れていてもスケール・左端を合わせる)
     img = warp_to_view(flat, H, view)
-    sy_l, oy_l, sy_r, oy_r = _global_vertical_fit(img, view, tpl)
-    ht = tpl.table_height
-    xl, xr = 0.265, 0.735
-    src = np.array([[xl, 0.0], [xr, 0.0], [xl, ht], [xr, ht]])
-    dst = np.array(
-        [
-            [xl, 0.0],  # 上端(帯の下辺)は帯から得た位置を信じる
-            [xr, 0.0],
-            [xl, oy_l + sy_l * ht],
-            [xr, oy_r + sy_r * ht],
-        ]
-    )
-    Hc = cv2.getPerspectiveTransform(src.astype(np.float32) * 1000, dst.astype(np.float32) * 1000)
-    S = np.diag([1000.0, 1000.0, 1.0])
-    Hc = np.linalg.inv(S) @ Hc @ S
-    H = H @ Hc
+    # 帯の端が画像の端で切れているときだけ使う(切れていなければ帯の倍率・左端を信頼する。
+    # 強い遠近で縦罫線が扇状に開いていると、全体照合が誤った周期に飛びつくため)
+    pat = _vertical_pattern_fit(img, view, tpl) if band.clipped else None
+    if pat is not None:
+        a, b, sl = pat
+        # 単位座標のアフィン: x' = a + b*x + sl*y, y' = y(スケール b は x 方向のみ)
+        A = np.array([[b, sl, a], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        if abs(b - 1.0) > 0.015 or abs(a) > 0.01 or abs(sl) > 0.01:
+            H = H @ A
+            notes.append("縦罫線の配置から倍率・左端を補正")
+        if trace is not None:
+            trace.append(("vpattern", H.copy()))
+    # 0b. 縦罫線の傾き・位置の全体照合(強い遠近・回転が残っていても外れないように)
+    img = warp_to_view(flat, H, view)
+    corr = _vertical_corner_correction(_global_vertical_lines_fit(img, view, tpl), tpl)
+    if corr is not None:
+        H = H @ corr
+        notes.append("縦罫線の傾きを補正")
+    if trace is not None:
+        trace.append(("vlines-global", H.copy()))
 
     # 2〜3. 1 本ずつの検出と射影変換の再推定(探索幅を狭めながら)
     pitch = float(np.median(np.diff(tpl.hline_y)))
@@ -427,6 +583,8 @@ def fit_grid(
             continue
         Hu, _ = fit
         H = H @ Hu
+        if trace is not None:
+            trace.append((f"iter-{params.v_window_units}", H.copy()))
     # 最終検出(変位場用)
     img = warp_to_view(flat, H, view)
     hl, vl = detect_lines(

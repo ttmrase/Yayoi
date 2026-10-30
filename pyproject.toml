@@ -34,6 +34,7 @@ addopts = "-q"
 markers = [
     "samples: 実サンプル画像(YAYOI_PRIVATE_DATA/samples)が必要なテスト。無ければ skip",
     "slow: 時間のかかるテスト",
+    "needs_font: 日本語フォントが必要なテスト(合成帳票)。無ければ skip",
 ]
 
 [tool.ruff]

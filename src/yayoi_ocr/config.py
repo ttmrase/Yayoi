@@ -22,8 +22,9 @@ def samples_dir() -> Path:
     return private_data_dir() / "samples"
 
 
-def ground_truth_dir() -> Path:
-    return private_data_dir() / "ground_truth"
+def fonts_dir() -> Path:
+    """合成帳票用の手書き風フォント置き場(scripts/fetch_fonts.py の取得先。コミットしない)。"""
+    return private_data_dir() / "fonts"
 
 
 def debug_dir() -> Path:

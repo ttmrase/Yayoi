@@ -27,6 +27,7 @@ class BandResult:
     down_vec: np.ndarray  # 正しい向きでの「下」方向の単位ベクトル(帯 → 表)
     rotation_cw: int  # 画像を時計回りに何度回すと正立するか(0/90/180/270)
     confidence: float  # 0〜1
+    clipped: bool  # 帯が画像の端に接している(表の隅が写っていない可能性)
     length: float  # 帯の長さ(px)
     thickness: float  # 帯の太さ(px)
 
@@ -117,13 +118,52 @@ def _edge_lines(pts: np.ndarray, u: np.ndarray, n: np.ndarray, origin: np.ndarra
     return s_min, s_max, lo, hi
 
 
+MIN_TABLE_PEAKS = 4  # 帯の表側に必要な罫線らしいピークの最少本数(これ未満は帯と認めない)
+MAX_CANDIDATES = 6
+
+
 def find_header_band(flat: np.ndarray) -> BandResult | None:
-    """作業画像(照明補正済みグレー)から見出し帯を探す。見つからなければ None。"""
+    """作業画像(照明補正済みグレー)から見出し帯を探す。見つからなければ None。
+
+    候補(黒く横長の塊)を、(1) 画像の端に接していないもの、(2) スコアの高いもの の順に調べ、
+    表側に罫線らしい周期(MIN_TABLE_PEAKS 本以上)が確認できた最初の候補を帯とする。
+    紙の外の暗い縁・影は横長でも、その先に罫線の周期がないので帯とは認めない。
+    確認できる候補がなければ、スコア最良の候補を自信の低い結果として返す。
+    """
     mask = _dark_mask(flat)
-    cands = _candidates(mask)
+    cands = _candidates(mask)[:MAX_CANDIDATES]
     if not cands:
         return None
-    _, pts = cands[0]
+    h_img, w_img = flat.shape
+    margin = 3  # 帯の画素がこの距離以内まで画像の端に達していたら「切れている」
+
+    def touches(pts: np.ndarray) -> bool:
+        return bool(
+            pts[:, 0].min() <= margin
+            or pts[:, 1].min() <= margin
+            or pts[:, 0].max() >= w_img - 1 - margin
+            or pts[:, 1].max() >= h_img - 1 - margin
+        )
+
+    ordered = sorted(cands, key=lambda c: (touches(c[1]), -c[0]))
+    fallback: BandResult | None = None
+    for _, pts in ordered:
+        res = _band_from_points(flat, pts, touches(pts))
+        if res is None:
+            continue
+        band, peaks = res
+        if peaks >= MIN_TABLE_PEAKS:
+            return band
+        if fallback is None:
+            fallback = band
+            fallback.confidence = min(fallback.confidence, 0.3)  # 罫線の周期が確認できない
+    return fallback
+
+
+def _band_from_points(
+    flat: np.ndarray, pts: np.ndarray, clipped: bool
+) -> tuple[BandResult, float] | None:
+    """候補の点群から帯の幾何を求める。戻り値: (帯, 表側の罫線ピーク数)。"""
     # 主軸(長軸)
     mean = pts.mean(axis=0)
     cov = np.cov((pts - mean).T)
@@ -203,7 +243,7 @@ def find_header_band(flat: np.ndarray) -> BandResult | None:
     conf = float(
         np.clip(0.35 + 0.15 * min(aspect / 12.0, 2.0) + 0.5 * min(sep / 6.0, 1.0), 0.0, 1.0)
     )
-    return BandResult(
+    band = BandResult(
         top_left=tl,
         top_right=tr,
         bottom_left=bl,
@@ -212,9 +252,11 @@ def find_header_band(flat: np.ndarray) -> BandResult | None:
         down_vec=down,
         rotation_cw=rotation_cw,
         confidence=conf,
+        clipped=clipped,
         length=length,
         thickness=thickness,
     )
+    return band, max(dens_a, dens_b)
 
 
 def _rotation_to_upright(down: np.ndarray) -> int:
