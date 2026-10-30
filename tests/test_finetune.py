@@ -5,8 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from yayoi_ocr.recognize.parseq.engine import MODEL_FILES
-from yayoi_ocr.recognize.variants import (
+torch = pytest.importorskip("torch")  # 重み選択の単体テストも ml extra(torch・yaml)が必要
+
+from yayoi_ocr.recognize.parseq.engine import MODEL_FILES  # noqa: E402
+from yayoi_ocr.recognize.parseq.finetune import FinetuneConfig, finetune  # noqa: E402
+from yayoi_ocr.recognize.parseq.model import PARSeq  # noqa: E402
+from yayoi_ocr.recognize.variants import (  # noqa: E402
     MIN_CONFIRMED_PAGES,
     PageCounts,
     VariantScore,
@@ -83,11 +87,6 @@ def test_count_page_and_score_counts():
     assert s.accuracy == pytest.approx(6 / 8) and s.miss_rate == pytest.approx(0.2)
     assert s.score == pytest.approx(score_variant(s.accuracy, s.miss_rate))
 
-
-torch = pytest.importorskip("torch")
-
-from yayoi_ocr.recognize.parseq.finetune import FinetuneConfig, finetune  # noqa: E402
-from yayoi_ocr.recognize.parseq.model import PARSeq  # noqa: E402
 
 CHARSET = " 0123456789.-あいうえお"
 
