@@ -124,4 +124,33 @@ export const REASON_LABEL: Record<string, string> = {
   class_uncertain: "種別が不確か",
   page_needs_review: "レイアウトに自信なし",
   layout_uncertain: "レイアウトに自信なし",
+  ruled_lines_low: "罫線の検出率が低い",
+  band_clipped: "見出し帯が画像の端で切れている",
+  table_cut: "表が画像からはみ出している",
 };
+
+export type Pt = [number, number];
+
+export interface LayoutInfo {
+  /** 元画像の大きさ(px)。隅・罫線の座標はこの座標系 */
+  width: number;
+  height: number;
+  /** 検出した表の 4 隅(左上・右上・右下・左下) */
+  corners: Pt[];
+  hlines: Pt[][];
+  vlines: Pt[][];
+  /** 罫線の位置(表の高さ・幅に対する 0〜1 の比) */
+  hfrac: number[];
+  vfrac: number[];
+}
+
+export interface LayoutData {
+  info: LayoutInfo;
+  view_scale: number;
+  status: string;
+  reasons: string[];
+  approved: boolean;
+  /** 利用者が隅を指定した結果か */
+  manual: boolean;
+  override: Pt[] | null;
+}

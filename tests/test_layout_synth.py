@@ -96,3 +96,18 @@ def test_cell_crops_have_two_variants():
     assert crop.color.shape[:2] == crop.binary.shape
     assert set(np.unique(crop.binary)) <= {0, 255}
     assert res.page.rows[3].cells[2].column == ColumnKind.DESCRIPTION
+
+
+def _table_corners(s):
+    p = s.cell_polys
+    return [p[(0, 0)][0], p[(0, 3)][1], p[(28, 3)][2], p[(28, 0)][3]]
+
+
+def test_manual_corners_recover_the_cells_even_when_slightly_off():
+    """確認画面で表の隅を指定して切り直す: 正しい隅ならもちろん、数 px のずれは罫線の微調整で吸収する。"""
+    s = generate_sample(SynthConfig(seed=102, dpi=130))
+    exact = analyze_image(s.image, corners=_table_corners(s))
+    assert _mean_iou(exact, s) > 0.9
+    rng = np.random.default_rng(0)
+    noisy = analyze_image(s.image, corners=[c + rng.normal(0, 6, 2) for c in _table_corners(s)])
+    assert _mean_iou(noisy, s) > 0.9

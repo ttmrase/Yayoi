@@ -27,6 +27,14 @@ describe("key bindings", () => {
     expect(classifyKey({ key: "9", altKey: true })).toEqual({ type: "candidate", index: 8 });
     expect(classifyKey({ key: "0", code: "Digit0", altKey: true })).toEqual({ type: "none" });
   });
+  it("maps mode toggle and review jumps", () => {
+    expect(classifyKey({ key: "l", ctrlKey: true })).toEqual({ type: "toggleMode" });
+    expect(classifyKey({ key: "L", ctrlKey: true })).toEqual({ type: "toggleMode" });
+    expect(classifyKey({ key: "l" })).toEqual({ type: "none" }); // 文字入力は奪わない
+    expect(classifyKey({ key: "ArrowDown", ctrlKey: true })).toEqual({ type: "nextReview" });
+    expect(classifyKey({ key: "ArrowUp", ctrlKey: true })).toEqual({ type: "prevReview" });
+    expect(classifyKey({ key: "l", ctrlKey: true, isComposing: true })).toEqual({ type: "none" });
+  });
   it("maps undo/redo/escape/arrows", () => {
     expect(classifyKey({ key: "z", ctrlKey: true })).toEqual({ type: "undo" });
     expect(classifyKey({ key: "z", ctrlKey: true, shiftKey: true })).toEqual({ type: "redo" });

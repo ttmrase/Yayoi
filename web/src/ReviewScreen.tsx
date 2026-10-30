@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { CellField } from "./CellField";
 import { classifyKey } from "./keys";
-import { initialFocus, nextId, prevId, verticalId } from "./nav";
+import LayoutPanel from "./LayoutPanel";
+import { activeColumn, initialFocus, isNavigable, nextId, nextUnpassedId, prevId, verticalId, type Mode } from "./nav";
 import {
   approveLayout,
   confirmPage,
@@ -37,6 +38,10 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
   const [prompt, setPrompt] = useState(false); // 最後のセルで Enter → 「ページを確定」の確認
   const [block, setBlock] = useState<Summary | null>(null); // 確定を拒否された理由
   const [reloadKey, setReloadKey] = useState(0); // 認識が終わった・再試行したときに読み直す
+  const [mode, setMode] = useState<Mode>("row"); // 行モード(紙の並び)/ 列モード(1 列ずつ)
+  const [layoutOpen, setLayoutOpen] = useState(false); // 罫線の確認・補正のパネル
+  const modeRef = useRef<Mode>("row");
+  modeRef.current = mode;
   const inputs = useRef(new Map<number, HTMLInputElement>());
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const timers = useRef(new Map<number, number>());
@@ -78,7 +83,7 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
         if (!alive) return;
         saved.current = job.last_page_id === pageId ? job.last_cell : null;
         setPage(p);
-        setFocusId(initialFocus(p.cells, saved.current));
+        setFocusId(initialFocus(p.cells, saved.current, modeRef.current));
       } catch (e) {
         if (alive) setError(e instanceof ApiError ? `ページを読み込めません (${e.status})` : "ページを読み込めません");
       }
@@ -117,7 +122,7 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
       const top = row.getBoundingClientRect().top + window.scrollY - window.innerHeight / 3;
       window.scrollTo({ top: Math.max(0, top) });
     }
-  }, [focusId, page?.id]);
+  }, [focusId, page?.id, mode]);
 
   // ---- サーバへの書き込みは 1 本の列にして、順序を守る
   const enqueue = useCallback(<T,>(fn: () => Promise<T>): Promise<T | undefined> => {
@@ -231,7 +236,7 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
           setNotice("末尾が「-」か数字かを、Alt+1 / Alt+2 で選んでください");
           break;
         }
-        const nxt = nextId(p.cells, cell.id);
+        const nxt = nextId(p.cells, cell.id, modeRef.current);
         const timer = timers.current.get(cell.id);
         if (timer !== undefined) window.clearTimeout(timer);
         timers.current.delete(cell.id);
@@ -248,7 +253,7 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
       }
       case "prev": {
         void flushDraft(cell.id);
-        const t = prevId(p.cells, cell.id);
+        const t = prevId(p.cells, cell.id, modeRef.current);
         if (t !== null) setFocusId(t);
         break;
       }
@@ -290,9 +295,26 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
       case "confirmPage":
         void flushDraft(cell.id).then(() => tryConfirmPage());
         break;
+      case "toggleMode":
+        void flushDraft(cell.id);
+        setMode((m) => (m === "row" ? "column" : "row")); // フォーカス中のセルはそのまま
+        break;
+      case "nextReview":
+      case "prevReview": {
+        void flushDraft(cell.id);
+        const t = nextUnpassedId(p.cells, cell.id, action.type === "nextReview" ? 1 : -1, modeRef.current);
+        if (t !== null) setFocusId(t);
+        else setNotice("通過していない要確認のセルはありません");
+        break;
+      }
     }
   };
 
+  const column = activeColumn(page?.cells ?? [], focusId);
+  const columnCells = useMemo(
+    () => (page?.cells ?? []).filter((c) => c.col === column && isNavigable(c)).sort((a, b) => a.row - b.row),
+    [page?.cells, column],
+  );
   const rows = useMemo(() => {
     const m = new Map<number, Cell[]>();
     for (const c of page?.cells ?? []) m.set(c.row, [...(m.get(c.row) ?? []), c]);
@@ -349,6 +371,17 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
           元に戻す
         </button>
         <button
+          data-testid="mode-toggle"
+          aria-pressed={mode === "column"}
+          title="行モード(紙の並び)と列モード(1 列ずつ)を切り替えます"
+          onClick={() => setMode((m) => (m === "row" ? "column" : "row"))}
+        >
+          {mode === "row" ? "列モードへ (Ctrl+L)" : "行モードへ (Ctrl+L)"}
+        </button>
+        <button data-testid="layout-open" onClick={() => setLayoutOpen(true)}>
+          罫線を確認
+        </button>
+        <button
           data-testid="confirm-page"
           disabled={confirmed ? false : !s.can_confirm}
           onKeyDown={(e) => {
@@ -367,8 +400,20 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
       {page.layout_status !== "ok" && (
         <div className="banner" data-testid="layout-banner" role="alert">
           表の罫線の検出に自信がありません({page.layout_reasons.map((r) => REASON_LABEL[r] ?? r).join("、") || "要確認"})。
+          <button onClick={() => setLayoutOpen(true)}>罫線を確認・補正</button>{" "}
           <button onClick={() => void approveLayout(page.id).then(setPage)}>境界は合っている</button>
         </div>
+      )}
+      {layoutOpen && (
+        <LayoutPanel
+          pageId={page.id}
+          onClose={() => setLayoutOpen(false)}
+          onApprove={() => void approveLayout(page.id).then((p) => { setPage(p); setLayoutOpen(false); })}
+          onRecut={() => {
+            setLayoutOpen(false);
+            setReloadKey((k) => k + 1);
+          }}
+        />
       )}
       {notice && (
         <div className="banner ng" role="alert" data-testid="notice">
@@ -389,16 +434,43 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
         </div>
       )}
 
-      <div className="grid" role="grid" aria-label="確認するセル">
-        <div className="row head">
-          <span className="rowno" />
-          {(["date", "account", "description", "amount"] as Column[]).map((c) => (
-            <span key={c} className={`colhead ${c}`}>
-              {COLUMN_LABEL[c]}
-            </span>
-          ))}
+      {mode === "column" && (
+        <div className="coltabs" role="tablist" aria-label="列" data-testid="column-tabs">
+          {(["date", "account", "description", "amount"] as Column[]).map((c, i) => {
+            const todo = page.cells.filter((x) => x.col === i && isNavigable(x) && x.review && !x.passed).length;
+            return (
+              <button
+                key={c}
+                role="tab"
+                aria-selected={i === column}
+                data-testid={`coltab-${i}`}
+                onClick={() => {
+                  const first = page.cells
+                    .filter((x) => x.col === i && isNavigable(x))
+                    .sort((a, b) => a.row - b.row);
+                  const t = first.find((x) => x.review && !x.passed) ?? first[0];
+                  if (t) setFocusId(t.id);
+                }}
+              >
+                {COLUMN_LABEL[c]}
+                {todo > 0 && <span className="todo"> ({todo})</span>}
+              </button>
+            );
+          })}
         </div>
-        {rows.map(([r, cs]) => (
+      )}
+      <div className={`grid${mode === "column" ? " colmode" : ""}`} role="grid" aria-label="確認するセル">
+        {mode === "row" && (
+          <div className="row head">
+            <span className="rowno" />
+            {(["date", "account", "description", "amount"] as Column[]).map((c) => (
+              <span key={c} className={`colhead ${c}`}>
+                {COLUMN_LABEL[c]}
+              </span>
+            ))}
+          </div>
+        )}
+        {(mode === "row" ? rows : columnCells.map((c) => [c.row, [c]] as const)).map(([r, cs]) => (
           <div className="row" data-row={r} key={r}>
             <span className="rowno">{r + 1}</span>
             {cs.map((c) => (

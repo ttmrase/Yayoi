@@ -1,5 +1,5 @@
 import { api, apiBlobUrl, apiUpload } from "./api";
-import type { JobDetail, JobSummary, Page, Upload } from "./types";
+import type { JobDetail, JobSummary, LayoutData, Page, Pt, Upload } from "./types";
 
 export const fetchJobs = () => api<JobSummary[]>("/api/jobs");
 export const fetchJob = (id: number) => api<JobDetail>(`/api/jobs/${id}`);
@@ -35,6 +35,10 @@ export const confirmPage = (pageId: number, reviewSeconds: number) =>
 export const reopenPage = (pageId: number) => api<Page>(`/api/pages/${pageId}/reopen`, json("POST", {}));
 export const approveLayout = (pageId: number) =>
   api<Page>(`/api/pages/${pageId}/layout/approve`, json("POST", {}));
+export const fetchLayout = (pageId: number) => api<LayoutData>(`/api/pages/${pageId}/layout`);
+export const layoutImage = (pageId: number) => apiBlobUrl(`/api/pages/${pageId}/layout/image`);
+export const recutPage = (pageId: number, corners: Pt[]) =>
+  api<{ ok: boolean }>(`/api/pages/${pageId}/layout/recut`, json("POST", { corners }));
 export const putPosition = (jobId: number, pageId: number, cell: number | null) =>
   api<{ ok: boolean }>(`/api/jobs/${jobId}/position`, json("PUT", { page_id: pageId, cell }));
 export const cellImage = (pageId: number, cellId: number) =>

@@ -52,6 +52,13 @@ class JobBody(BaseModel):
 class DevFakeBody(BaseModel):
     delay: float = Field(default=0.0, ge=0, le=30)
     fail_next: int = Field(default=0, ge=0, le=100)
+    layout_ok: bool = True  # False: 隅の指定が無いページはレイアウト要確認で返す
+
+
+class RecutBody(BaseModel):
+    corners: list[list[float]] = Field(
+        min_length=4, max_length=4
+    )  # 表の 4 隅(元画像 px。左上・右上・右下・左下)
 
 
 class DevJobBody(BaseModel):
@@ -195,6 +202,26 @@ def create_app(
         with lock:
             return store.reopen_page(con, page_id)
 
+    @app.get("/api/pages/{page_id}/layout")
+    def layout_info(page_id: int) -> dict:
+        with lock:
+            return store.get_layout(con, page_id)
+
+    @app.get("/api/pages/{page_id}/layout/image")
+    def layout_image(page_id: int) -> FileResponse:
+        with lock:
+            path = store.layout_view_path(con, images, page_id)
+        return FileResponse(path, media_type="image/jpeg")
+
+    @app.post("/api/pages/{page_id}/layout/recut")
+    def layout_recut(page_id: int, body: RecutBody) -> dict:
+        if runner is None:
+            raise store.StoreError(503, "recognition_disabled")
+        with lock:
+            job_id = store.request_recut(con, page_id, body.corners)
+        runner.submit(job_id)
+        return {"ok": True}
+
     @app.post("/api/pages/{page_id}/layout/approve")
     def layout_approve(page_id: int) -> dict:
         with lock:
@@ -207,6 +234,7 @@ def create_app(
             if not isinstance(backend, FakeBackend):
                 raise store.StoreError(409, "not_fake_backend")
             backend.delay, backend.fail_next = body.delay, body.fail_next
+            backend.layout_ok = body.layout_ok
             return {"ok": True}
 
         @app.post("/api/dev/jobs")

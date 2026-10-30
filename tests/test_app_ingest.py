@@ -262,3 +262,109 @@ def test_worker_threads_stays_below_the_core_count(monkeypatch):
     assert worker_threads(64) == 3
     monkeypatch.setenv("YAYOI_TORCH_THREADS", "zero")
     assert worker_threads(8) == 4
+
+
+# ---- レイアウトの確認・補正(重ね表示・表の隅の指定で切り直す)
+
+GOOD_CORNERS = [[80, 150], [620, 150], [620, 900], [80, 900]]
+
+
+def ready_page(c, app, backend_name="fake"):
+    up = upload(c, "a.png", png_bytes()).json()
+    job = create_job(c, [up["id"]])
+    app.state.runner.run_job(job["job_id"])
+    return job["job_id"], job["page_ids"][0]
+
+
+def test_layout_overlay_info_and_image_are_served(tmp_path):
+    fb = FakeBackend()
+    fb.layout_ok = False
+    app = make_app(tmp_path, fb)
+    with client_of(app) as c:
+        _, pid = ready_page(c, app)
+        info = c.get(f"/api/pages/{pid}/layout").json()
+        assert len(info["info"]["corners"]) == 4 and len(info["info"]["hlines"]) == 30
+        assert info["status"] == "needs_review" and not info["approved"] and not info["manual"]
+        img = c.get(f"/api/pages/{pid}/layout/image")
+        assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg"
+        assert img.content[:2] == b"\xff\xd8"
+
+
+def test_layout_is_not_available_when_the_recognizer_gave_no_view(tmp_path):
+    app = make_app(tmp_path, Recording())
+    with client_of(app) as c:
+        _, pid = ready_page(c, app)
+        assert c.get(f"/api/pages/{pid}/layout").status_code == 404
+        assert c.get(f"/api/pages/{pid}/layout/image").status_code == 404
+        r = c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS})
+        assert r.status_code == 409 and r.json()["error"] == "layout_not_available"
+
+
+def test_recut_reprocesses_the_page_with_the_given_corners_and_counts_as_approved(tmp_path):
+    fb = FakeBackend()
+    fb.layout_ok = False
+    app = make_app(tmp_path, fb)
+    with client_of(app) as c:
+        jid, pid = ready_page(c, app)
+        before = c.get(f"/api/pages/{pid}").json()
+        assert before["layout_status"] == "needs_review"
+        assert all("page_needs_review" in x["reasons"] for x in before["cells"])
+        r = c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS})
+        assert r.status_code == 200
+        assert c.get(f"/api/pages/{pid}").json()["status"] == "processing"
+        assert c.get(f"/api/jobs/{jid}").json()["status"] == "processing"
+        app.state.runner.run_job(jid)
+        page = c.get(f"/api/pages/{pid}").json()
+        assert (
+            page["status"] == "review" and page["layout_approved"] and page["layout_status"] == "ok"
+        )
+        assert not any("page_needs_review" in x["reasons"] for x in page["cells"])
+        info = c.get(f"/api/pages/{pid}/layout").json()
+        assert info["manual"] and info["approved"]
+        assert info["override"] == [[float(v) for v in p] for p in GOOD_CORNERS]
+        assert info["info"]["corners"][0] == [80.0, 150.0]  # 指定した隅が重ね表示に反映される
+
+
+def test_recut_passes_the_corners_to_the_recognizer(tmp_path):
+    rec = Recording()
+    app = make_app(tmp_path, rec)
+    with client_of(app) as c:
+        _jid, pid = ready_page(c, app)
+        assert rec.calls[0].corners is None
+        # 重ね表示が無い認識器でも、隅の指定そのものは受け付ける条件(layout_info)を満たさないと断る
+        assert (
+            c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS}).status_code
+            == 409
+        )
+
+
+def test_recut_validates_the_corners_and_the_page_state(tmp_path):
+    app = make_app(tmp_path, FakeBackend())
+    with client_of(app) as c:
+        jid, pid = ready_page(c, app)
+        bad = [[80, 150], [620, 150], [80, 900], [620, 900]]  # ねじれ
+        r = c.post(f"/api/pages/{pid}/layout/recut", json={"corners": bad})
+        assert r.status_code == 422 and r.json()["error"] == "bad_corners"
+        assert (
+            c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS[:3]}).status_code
+            == 422
+        )
+        # 認識中のページは切り直せない / 確定済みも不可(再オープンしてから)
+        assert (
+            c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS}).status_code
+            == 200
+        )
+        assert (
+            c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS}).status_code
+            == 409
+        )
+        app.state.runner.run_job(jid)
+        for x in c.get(f"/api/pages/{pid}").json()["cells"]:
+            if x["review"]:
+                c.patch(f"/api/pages/{pid}/cells/{x['id']}", json={"action": "confirm"})
+        for x in c.get(f"/api/pages/{pid}").json()["cells"]:
+            c.patch(f"/api/pages/{pid}/cells/{x['id']}", json={"action": "revert"})
+        # 確定の条件が満たせないこともあるので、確定済みの状態は DB で作る
+        app.state.db.execute("UPDATE pages SET status = 'confirmed' WHERE id = ?", (pid,))
+        r = c.post(f"/api/pages/{pid}/layout/recut", json={"corners": GOOD_CORNERS})
+        assert r.status_code == 409 and r.json()["error"] == "page_confirmed"

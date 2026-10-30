@@ -47,12 +47,25 @@ class CellSpec:
     crop: bytes | None = None
 
 
+LAYOUT_REASON_CODES = (
+    "page_needs_review",
+    "layout_uncertain",
+    "band_clipped",
+    "ruled_lines_low",
+    "table_cut",
+)
+
+
 @dataclass
 class PageSpec:
     cells: list[CellSpec]
     layout_status: str = "ok"
     layout_reasons: list[str] = field(default_factory=list)
     image_sha256: str | None = None
+    view_jpeg: bytes | None = None  # 確認画面に出す元画像(縮小した JPEG)
+    view_scale: float | None = None  # 表示 px / 元画像 px
+    layout_info: dict | None = None  # 検出した表の 4 隅・罫線(元画像 px)
+    approved: bool = False  # 利用者が表の隅を指定した(レイアウト由来の要確認は付けない)
 
 
 def _j(x) -> str:
@@ -170,11 +183,35 @@ def fill_page(
         if p["status"] != "processing":
             raise StoreError(409, "page_not_processing")
         con.execute("DELETE FROM cells WHERE page_id = ?", (page_id,))
+        if spec.approved:  # 利用者が表の隅を指定した: レイアウト由来の要確認は外す(承認と同じ)
+            for c in spec.cells:
+                kept = [x for x in c.reasons if x not in LAYOUT_REASON_CODES]
+                if kept != c.reasons:
+                    c.reasons, c.review = kept, bool(kept)
         _insert_cells(con, images_dir, page_id, spec.cells)
+        view_path = None
+        if spec.view_jpeg is not None:
+            vp = images_dir / str(page_id) / "view.jpg"
+            vp.parent.mkdir(parents=True, exist_ok=True)
+            vp.write_bytes(spec.view_jpeg)
+            view_path = str(vp.relative_to(images_dir))
         con.execute(
-            "UPDATE pages SET status = 'review', layout_status = ?, layout_reasons = ?, last_year = ?,"
-            " error = NULL, recognized_at = ?, recognize_seconds = ?, revision = revision + 1 WHERE id = ?",
-            (spec.layout_status, _j(spec.layout_reasons), last_year, time.time(), seconds, page_id),
+            "UPDATE pages SET status = 'review', layout_status = ?, layout_reasons = ?, layout_approved = ?,"
+            " last_year = ?, error = NULL, recognized_at = ?, recognize_seconds = ?,"
+            " view_path = COALESCE(?, view_path), view_scale = COALESCE(?, view_scale),"
+            " layout_info = COALESCE(?, layout_info), revision = revision + 1 WHERE id = ?",
+            (
+                "ok" if spec.approved else spec.layout_status,
+                _j([] if spec.approved else spec.layout_reasons),
+                int(spec.approved),
+                last_year,
+                time.time(),
+                seconds,
+                view_path,
+                spec.view_scale,
+                None if spec.layout_info is None else _j(spec.layout_info),
+                page_id,
+            ),
         )
         _refresh_job_status(con, p["job_id"])
 
@@ -208,7 +245,7 @@ def retry_page(con: sqlite3.Connection, page_id: int) -> int:
 def processing_pages(con: sqlite3.Connection, job_id: int) -> list[sqlite3.Row]:
     """認識待ちのページ(アップロード順)。runner が 1 つずつ取り出す。"""
     return con.execute(
-        "SELECT p.id, p.idx, p.upload_id, p.source_index, u.path AS upload_path"
+        "SELECT p.id, p.idx, p.upload_id, p.source_index, p.layout_override, u.path AS upload_path"
         " FROM pages p JOIN uploads u ON u.id = p.upload_id"
         " WHERE p.job_id = ? AND p.status = 'processing' ORDER BY p.idx",
         (job_id,),
@@ -558,13 +595,7 @@ def approve_layout(con: sqlite3.Connection, page_id: int) -> dict:
         con.execute(
             "UPDATE pages SET layout_approved = 1, layout_status = 'ok' WHERE id = ?", (page_id,)
         )
-        layout_codes = (
-            "page_needs_review",
-            "layout_uncertain",
-            "band_clipped",
-            "ruled_lines_low",
-            "table_cut",
-        )
+        layout_codes = LAYOUT_REASON_CODES
         for c in con.execute(
             "SELECT id, reasons FROM cells WHERE page_id = ?", (page_id,)
         ).fetchall():
@@ -576,3 +607,63 @@ def approve_layout(con: sqlite3.Connection, page_id: int) -> dict:
                     (_j(kept), int(bool(kept)), c["id"]),
                 )
     return get_page(con, page_id)
+
+
+# ------------------------------------------------------------------ レイアウトの確認・補正(重ね表示・表の隅の指定)
+
+
+def get_layout(con: sqlite3.Connection, page_id: int) -> dict:
+    """重ね表示に必要な情報(元画像の大きさ・検出した表の隅と罫線)。画像の中身は /layout/image で取る。"""
+    p = con.execute(
+        "SELECT layout_info, view_path, view_scale, layout_status, layout_reasons, layout_approved,"
+        " layout_override, status FROM pages WHERE id = ?",
+        (page_id,),
+    ).fetchone()
+    if p is None:
+        raise StoreError(404, "page_not_found")
+    if p["layout_info"] is None or p["view_path"] is None:
+        raise StoreError(404, "layout_not_available")
+    return {
+        "info": json.loads(p["layout_info"]),
+        "view_scale": p["view_scale"],
+        "status": p["layout_status"],
+        "reasons": json.loads(p["layout_reasons"]),
+        "approved": bool(p["layout_approved"]),
+        "manual": p["layout_override"] is not None,
+        "override": None if p["layout_override"] is None else json.loads(p["layout_override"]),
+    }
+
+
+def layout_view_path(con: sqlite3.Connection, images_dir: Path, page_id: int) -> Path:
+    r = con.execute("SELECT view_path FROM pages WHERE id = ?", (page_id,)).fetchone()
+    if r is None or r["view_path"] is None:
+        raise StoreError(404, "layout_not_available")
+    path = (images_dir / r["view_path"]).resolve()
+    if images_dir.resolve() not in path.parents:
+        raise StoreError(404, "layout_not_available")
+    return path
+
+
+def request_recut(con: sqlite3.Connection, page_id: int, corners: list[list[float]]) -> int:
+    """利用者が指定した表の隅でページを切り直して認識し直す(このページの修正は破棄される)。ジョブ ID を返す。"""
+    from ..layout.pipeline import validate_corners
+
+    with transaction(con):
+        p = _require_open(con, page_id)
+        info = con.execute("SELECT layout_info FROM pages WHERE id = ?", (page_id,)).fetchone()[
+            "layout_info"
+        ]
+        if info is None:
+            raise StoreError(409, "layout_not_available")
+        size = json.loads(info)
+        try:
+            pts = validate_corners(corners, (int(size["height"]), int(size["width"])))
+        except ValueError as exc:
+            raise StoreError(422, "bad_corners", {"detail": str(exc)}) from exc
+        con.execute(
+            "UPDATE pages SET status = 'processing', error = NULL, layout_override = ?,"
+            " revision = revision + 1 WHERE id = ?",
+            (_j(pts.round(1).tolist()), page_id),
+        )
+        _refresh_job_status(con, p["job_id"])
+    return int(p["job_id"])

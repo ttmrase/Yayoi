@@ -119,6 +119,13 @@ MIGRATIONS: list[str] = [
     ALTER TABLE pages ADD COLUMN recognized_at REAL;
     ALTER TABLE pages ADD COLUMN recognize_seconds REAL;
     """,
+    # --- v3: レイアウトの確認・補正(M3)。元画像の縮小版(重ね表示用)・検出した罫線・利用者が指定した表の隅
+    """
+    ALTER TABLE pages ADD COLUMN view_path TEXT;          -- 確認画面に出す元画像(縮小した JPEG)。images ディレクトリからの相対パス
+    ALTER TABLE pages ADD COLUMN view_scale REAL;         -- 表示 px / 元画像 px
+    ALTER TABLE pages ADD COLUMN layout_info TEXT;        -- JSON: 元画像の大きさ・検出した表の 4 隅・罫線の折れ線(元画像 px)
+    ALTER TABLE pages ADD COLUMN layout_override TEXT;    -- JSON: 利用者が指定した表の 4 隅(元画像 px)。再切り出しで使う
+    """,
 ]
 
 

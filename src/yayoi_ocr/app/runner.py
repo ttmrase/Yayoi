@@ -117,6 +117,11 @@ class JobRunner:
                     page_key=f"{row['upload_id']}:{row['source_index']}",
                     prev_year=prev_year,
                     accounts=accounts,
+                    corners=(
+                        None
+                        if row["layout_override"] is None
+                        else tuple(tuple(p) for p in json.loads(row["layout_override"]))
+                    ),
                 )
                 outcome = self.backend.process(payload)
                 with self.lock:

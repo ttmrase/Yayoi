@@ -34,6 +34,9 @@ class PagePayload:
     page_key: str  # ページを識別する文字列(合成の種に使う。値は含まない)
     prev_year: int | None = None  # 前のページの最後の年(年を書かない先頭行が継承する)
     accounts: tuple[str, ...] = ()  # 科目(支払方法)の閉じた語彙。空なら自由認識
+    corners: tuple[tuple[float, float], ...] | None = (
+        None  # 利用者が指定した表の 4 隅(元画像 px)。無ければ自動検出
+    )
 
 
 @dataclass
@@ -53,6 +56,52 @@ class Backend(Protocol):
 # ------------------------------------------------------------------ 合成(開発・E2E)
 
 
+FAKE_VIEW = (700, 990)  # (幅, 高さ)
+
+
+def _attach_fake_view(spec: PageSpec, corners) -> None:
+    """合成の「元画像」(灰色の紙に表の枠を描いただけ)と、その罫線情報を付ける。隅の指定があればそこに枠が描かれる。"""
+    import cv2
+    import numpy as np
+
+    w, h = FAKE_VIEW
+    img = np.full((h, w, 3), 225, np.uint8)
+    tl, tr, br, bl = (
+        [np.array(p, dtype=float) for p in corners]
+        if corners
+        else [np.array(p, dtype=float) for p in ((60, 130), (640, 130), (640, 930), (60, 930))]
+    )
+    cv2.polylines(img, [np.array([tl, tr, br, bl], np.int32)], True, (60, 60, 60), 2)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    spec.view_jpeg, spec.view_scale = buf.tobytes(), 1.0
+
+    def lerp(a, b, t):
+        return a + (b - a) * t
+
+    hl = [
+        [
+            list(map(float, lerp(lerp(tl, bl, k / 29), lerp(tr, br, k / 29), x / 8)))
+            for x in range(9)
+        ]
+        for k in range(30)
+    ]
+    vl = [
+        [list(map(float, lerp(lerp(tl, tr, k / 4), lerp(bl, br, k / 4), y / 8))) for y in range(9)]
+        for k in range(5)
+    ]
+    spec.layout_info = {
+        "width": w,
+        "height": h,
+        "corners": [list(map(float, p)) for p in (tl, tr, br, bl)],
+        "hfrac": [k / 29 for k in range(30)],
+        "vfrac": [0.0, 0.13, 0.33, 0.78, 1.0],
+        "hlines": hl,
+        "vlines": vl,
+    }
+    spec.approved = bool(corners)
+
+
 class FakeBackend:
     """合成の認識結果を返す。`delay` 秒だけ待つ(進捗表示のテスト用)。`fail_next` 回だけ失敗する(失敗の表示・再試行のテスト用)。"""
 
@@ -60,6 +109,9 @@ class FakeBackend:
         self.delay = delay
         self.fill_rows = fill_rows
         self.fail_next = 0
+        self.layout_ok = (
+            True  # False にすると、隅の指定が無いページはレイアウト要確認で返す(E2E 用)
+        )
 
     def process(self, payload: PagePayload) -> PageOutcome:
         from .fake import fake_page
@@ -71,7 +123,14 @@ class FakeBackend:
             self.fail_next -= 1
             raise RuntimeError("fake_failure")
         seed = int(hashlib.sha256(payload.page_key.encode()).hexdigest()[:8], 16)
-        spec, _ = fake_page(seed, fill_rows=self.fill_rows, error_rate=0.15, review_rate=0.6)
+        spec, _ = fake_page(
+            seed,
+            fill_rows=self.fill_rows,
+            error_rate=0.15,
+            review_rate=0.6,
+            layout_status="ok" if payload.corners or self.layout_ok else "needs_review",
+        )
+        _attach_fake_view(spec, payload.corners)
         return PageOutcome(spec, last_year=8, seconds=time.time() - t)
 
     def close(self) -> None:
@@ -179,7 +238,7 @@ def to_page_spec(result, layout) -> PageSpec:
 def process_page_real(payload: PagePayload, variant: str | None = None) -> PageOutcome:
     """別プロセスで呼ばれる(トップレベル関数 = pickle できる)。"""
     from ..ingest import load_page
-    from ..layout.pipeline import analyze_image
+    from ..layout.pipeline import analyze_image, overlay_info, view_jpeg
     from ..recognize import variants
     from ..recognize.inputs import from_layout
     from ..recognize.page import JobContext
@@ -187,12 +246,19 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
     t = time.time()
     lp = load_page(payload.path, payload.source_index)
     layout = analyze_image(
-        lp.image, source_page_index=lp.source_page_index, image_path=None, sha256=lp.sha256
+        lp.image,
+        source_page_index=lp.source_page_index,
+        image_path=None,
+        sha256=lp.sha256,
+        corners=payload.corners,
     )
     rec = _recognizer(variant or variants.default_variant())
     ctx = JobContext(prev_year=payload.prev_year, accounts=list(payload.accounts))
     result = rec.recognize_page(from_layout(layout), ctx)
     spec = to_page_spec(result, layout)
+    spec.view_jpeg, spec.view_scale = view_jpeg(layout)
+    spec.layout_info = overlay_info(layout)
+    spec.approved = payload.corners is not None
     return PageOutcome(spec, last_year=result.last_year, seconds=time.time() - t)
 
 

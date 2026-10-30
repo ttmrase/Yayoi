@@ -218,3 +218,96 @@ main {
 .review.pending {
   padding: 16px;
 }
+
+.coltabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 2;
+}
+.coltabs button[aria-selected="true"] {
+  background: #dce7fb;
+  border-color: #3b6fd4;
+  font-weight: bold;
+}
+.coltabs .todo {
+  color: #b3261e;
+}
+.grid.colmode .row {
+  grid-template-columns: 32px minmax(0, 720px);
+}
+.layout-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  overflow: auto;
+  padding: 12px 16px;
+  background: #fff;
+}
+.layout-head {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.layout-panel .hint {
+  max-width: 70em;
+}
+.layout-svg {
+  display: block;
+  width: 100%;
+  max-width: 960px;
+  max-height: calc(100vh - 190px);
+  background: #ddd;
+  touch-action: none;
+}
+.layout-svg .grid-detected polyline {
+  stroke: #1565c0;
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+.layout-svg .grid-preview polyline {
+  stroke: #e68a00;
+  stroke-width: 1.2;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+.layout-svg .quad {
+  stroke: #1b873f;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.layout-svg .quad.bad {
+  stroke: #b3261e;
+}
+.layout-svg .handle {
+  fill: rgba(27, 135, 63, 0.35);
+  stroke: #1b873f;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+}
+.layout-svg .handle:focus {
+  outline: none;
+  stroke: #000;
+  stroke-width: 3;
+}
+.layout-svg .handle-label {
+  fill: #000;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 3px;
+  pointer-events: none;
+}
+.layout-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+button.danger {
+  background: #fdeceb;
+  border-color: #b3261e;
+}

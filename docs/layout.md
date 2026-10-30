@@ -59,3 +59,13 @@
 `python scripts/eval_layout.py --n 120 --jobs 4` で合成帳票のセル境界 IoU と「黙った失敗」(要確認が付かずに平均 IoU < 0.8)を測る。
 `--by-factor` は劣化の種類(回転・遠近・たわみ・照明・コントラスト・ぼけ・ノイズ・JPEG・低解像度・用紙の端の欠け)ごとに測る。
 評価は、調整に使っていない seed(`--seed0`)でも行うこと。
+
+## 表の 4 隅を指定した再切り出し(確認画面の補正)
+
+`analyze_image(img, corners=[左上, 右上, 右下, 左下])`(元画像 px。左上は見出し帯の下辺の左端)を渡すと、見出し帯の検出と
+縦罫線の全体照合を行わず、4 隅から作った射影変換(`corners_to_homography`)を出発点に、1 本ずつの罫線の検出と再推定だけで微調整する
+(`grid.fit_grid(..., H0=…)`)。形の検査は `validate_corners`(時計回りの凸四角形・小さすぎない・画像から離れすぎない。鏡像は不可)。
+確認画面の重ね表示のために、`overlay_info`(検出した 4 隅と罫線の折れ線)と `view_jpeg`(縮小した元画像)を返す。
+合成ページでの確認(`tests/test_layout_synth.py::test_manual_corners_recover_the_cells_even_when_slightly_off`): 正しい隅で自動検出と同じ精度、
+σ=4〜10 px の隅のずれは元の精度に戻る(σ=20 px では外れることがある)。画像の向き(90°/180°)は補正しない。
+

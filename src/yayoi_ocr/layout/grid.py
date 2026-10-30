@@ -549,14 +549,25 @@ def _outer_ok(hl: list[LineTrack], vl: list[LineTrack]) -> bool:
 
 def fit_grid(
     flat: np.ndarray,
-    band: BandResult,
+    band: BandResult | None,
     tpl: FormTemplate,
     det_width: int = 1200,
     trace: list | None = None,
+    H0: np.ndarray | None = None,
 ) -> GridFit:
-    """作業画像 `flat` と帯の検出結果から、罫線格子への位置合わせを行う。"""
+    """作業画像 `flat` と帯の検出結果から、罫線格子への位置合わせを行う。
+
+    `H0`(正準単位 → 作業画像 px の射影変換)を渡すと、帯の検出結果の代わりにそれを出発点にする(利用者が表の隅を指定したとき)。
+    その場合は帯の端・縦罫線の全体照合による大まかな補正は行わず、1 本ずつの検出と再推定だけで微調整する。
+    """
     notes: list[str] = []
-    H = coarse_homography(band)
+    if H0 is None:
+        if band is None:
+            raise ValueError("band か H0 のどちらかが必要です")
+        H = coarse_homography(band)
+    else:
+        H = np.asarray(H0, dtype=np.float64).copy()
+        notes.append("表の隅を手動で指定")
     margin = 0.06
     view = View(-margin, -0.07, 1 + margin, tpl.table_height + 0.06, float(det_width))
 
@@ -564,7 +575,7 @@ def fit_grid(
     img = warp_to_view(flat, H, view)
     # 帯の端が画像の端で切れているときだけ使う(切れていなければ帯の倍率・左端を信頼する。
     # 強い遠近で縦罫線が扇状に開いていると、全体照合が誤った周期に飛びつくため)
-    pat = _vertical_pattern_fit(img, view, tpl) if band.clipped else None
+    pat = _vertical_pattern_fit(img, view, tpl) if (H0 is None and band.clipped) else None
     if pat is not None:
         a, b, sl = pat
         # 単位座標のアフィン: x' = a + b*x + sl*y, y' = y(スケール b は x 方向のみ)
@@ -576,7 +587,11 @@ def fit_grid(
             trace.append(("vpattern", H.copy()))
     # 0b. 縦罫線の傾き・位置の全体照合(強い遠近・回転が残っていても外れないように)
     img = warp_to_view(flat, H, view)
-    corr = _vertical_corner_correction(_global_vertical_lines_fit(img, view, tpl), tpl)
+    corr = (
+        None
+        if H0 is not None
+        else _vertical_corner_correction(_global_vertical_lines_fit(img, view, tpl), tpl)
+    )
     if corr is not None:
         H = H @ corr
         notes.append("縦罫線の傾きを補正")

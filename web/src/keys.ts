@@ -21,7 +21,10 @@ export type KeyAction =
   | { type: "undo" }
   | { type: "redo" }
   | { type: "revert" } // Esc
-  | { type: "confirmPage" }; // Ctrl+Enter
+  | { type: "confirmPage" } // Ctrl+Enter
+  | { type: "toggleMode" } // Ctrl+L(行モード ↔ 列モード)
+  | { type: "nextReview" } // Ctrl+↓(次の未通過の要確認セルへ)
+  | { type: "prevReview" }; // Ctrl+↑
 
 export interface KeyLike {
   key: string;
@@ -50,6 +53,9 @@ export function classifyKey(e: KeyLike): KeyAction {
   }
   if (mod && (e.key === "z" || e.key === "Z")) return e.shiftKey ? { type: "redo" } : { type: "undo" };
   if (mod && (e.key === "y" || e.key === "Y")) return { type: "redo" };
+  if (mod && !e.altKey && (e.key === "l" || e.key === "L")) return { type: "toggleMode" };
+  if (mod && e.key === "ArrowDown") return { type: "nextReview" };
+  if (mod && e.key === "ArrowUp") return { type: "prevReview" };
   if (e.key === "Escape") return { type: "revert" };
   if (e.key === "ArrowUp" && !mod) return { type: "up" };
   if (e.key === "ArrowDown" && !mod) return { type: "down" };
