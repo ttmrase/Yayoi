@@ -129,6 +129,16 @@ def main() -> int:
         default="written",
         help="written = 書かれた通りの正解で学習(理想)/ resolved = 確定値だけから書き方を自己ラベル(確認画面で得られる情報だけ)",
     )
+    ap.add_argument(
+        "--replay-data",
+        nargs="*",
+        default=[],
+        help="忘却の防止: 他の書き手・一般語彙のセルを混ぜる(リハーサル)",
+    )
+    ap.add_argument(
+        "--replay-frac", type=float, default=0.5, help="書き手のセル数に対する混ぜる割合"
+    )
+    ap.add_argument("--replay-pages", type=int, default=40)
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--forget-data", nargs="*", default=[], help="忘却の測定に使うデータセット")
     ap.add_argument("--forget-limit", type=int, default=15)
@@ -172,6 +182,12 @@ def main() -> int:
         Path(d).name: [load_page(p) for p in list_pages(d)[: args.forget_limit]]
         for d in args.forget_data
     }
+    replay = [
+        pg
+        for d in args.replay_data
+        for pg in (load_page(p) for p in list_pages(d)[: args.replay_pages])
+    ]
+    rrng = np.random.default_rng(0)
     timing: list[dict] = []
     for wi, w in enumerate(writers):
         pages = sorted(by_writer[w], key=lambda p: p.meta["seed"])
@@ -197,6 +213,12 @@ def main() -> int:
                     samples = samples_from_pages(train_pool[:n], columns, args.label_mode, eng0)
                     if not samples:
                         continue
+                    if replay and args.replay_frac > 0:
+                        pool = samples_from_pages(replay, columns)
+                        k = min(len(pool), int(args.replay_frac * len(samples)))
+                        samples = samples + [
+                            pool[i] for i in rrng.choice(len(pool), k, replace=False)
+                        ]
                     epochs = int(np.clip(round(args.steps_samples / len(samples)), 3, 40))
                     cfg = FinetuneConfig(
                         width=width,
