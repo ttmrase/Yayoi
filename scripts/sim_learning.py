@@ -121,8 +121,10 @@ def main() -> int:
                     for c in pg.cells
                 ],
             )
-            if not args.dictionary:
+            if not args.dictionary:  # 静的: 摘要の辞書・金額の履歴・科目の語彙の更新を捨てる(前ページの年だけは仕事の文脈として残す)
                 ctx.dictionary.clear()
+                ctx.amount_history.clear()
+                ctx.accounts[:] = ACCOUNTS
     if dump:
         dump.close()
     print(
