@@ -30,12 +30,16 @@ class BandResult:
     clipped: bool  # 帯が画像の端に接している(表の隅が写っていない可能性)
     length: float  # 帯の長さ(px)
     thickness: float  # 帯の太さ(px)
+    far_known: bool = False  # 帯の反対側(紙の余白)が画像内で確認できた
 
 
-def _dark_mask(flat: np.ndarray) -> np.ndarray:
+DARK_THRESHOLDS = (105, 130, 155)  # 帯の暗さのしきい値(低コントラストの撮影では帯が灰色になる)
+
+
+def _dark_mask(flat: np.ndarray, threshold: int = 105) -> np.ndarray:
     """帯(黒ベタ+白抜き文字)を 1 つの塊にした二値画像。"""
     blur = cv2.GaussianBlur(flat, (0, 0), 3.0)
-    mask = (blur < 105).astype(np.uint8)
+    mask = (blur < threshold).astype(np.uint8)
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
 
@@ -120,20 +124,19 @@ def _edge_lines(pts: np.ndarray, u: np.ndarray, n: np.ndarray, origin: np.ndarra
 
 MIN_TABLE_PEAKS = 4  # 帯の表側に必要な罫線らしいピークの最少本数(これ未満は帯と認めない)
 MAX_CANDIDATES = 6
+OPEN_KERNEL_SIZES = (9, 15, 21)  # 帯に接した筆跡を切り離す開演算のカーネル径(px)
+MIN_FAR_BRIGHTNESS = 170  # 帯の反対側(紙の余白)の明るさの下限
+MAX_FIRST_LINE_RATIO = 2.5  # 最初の罫線は帯の下辺から帯の太さのこの倍数以内に始まる
 
 
 def find_header_band(flat: np.ndarray) -> BandResult | None:
     """作業画像(照明補正済みグレー)から見出し帯を探す。見つからなければ None。
 
-    候補(黒く横長の塊)を、(1) 画像の端に接していないもの、(2) スコアの高いもの の順に調べ、
-    表側に罫線らしい周期(MIN_TABLE_PEAKS 本以上)が確認できた最初の候補を帯とする。
-    紙の外の暗い縁・影は横長でも、その先に罫線の周期がないので帯とは認めない。
-    確認できる候補がなければ、スコア最良の候補を自信の低い結果として返す。
+    候補(黒く横長の塊)を、しきい値・開演算のカーネルを変えて集め、次の検証を通ったものから最長を採る:
+    表側に罫線らしい周期(MIN_TABLE_PEAKS 本以上)が帯のすぐ下から始まり、反対側(紙の余白)が明るい。
+    紙の外の暗い縁・影は横長でも、この検証を通らない。
+    検証を通る候補がなければ、最初の候補を自信の低い結果として返す。
     """
-    mask = _dark_mask(flat)
-    cands = _candidates(mask)[:MAX_CANDIDATES]
-    if not cands:
-        return None
     h_img, w_img = flat.shape
     margin = 3  # 帯の画素がこの距離以内まで画像の端に達していたら「切れている」
 
@@ -145,25 +148,43 @@ def find_header_band(flat: np.ndarray) -> BandResult | None:
             or pts[:, 1].max() >= h_img - 1 - margin
         )
 
-    ordered = sorted(cands, key=lambda c: (touches(c[1]), -c[0]))
     fallback: BandResult | None = None
-    for _, pts in ordered:
-        res = _band_from_points(flat, pts, touches(pts))
-        if res is None:
-            continue
-        band, peaks = res
-        if peaks >= MIN_TABLE_PEAKS:
-            return band
-        if fallback is None:
-            fallback = band
-            fallback.confidence = min(fallback.confidence, 0.3)  # 罫線の周期が確認できない
+    valid: list[BandResult] = []
+    # 等方的なカーネルで開演算(向きに依存しない)。帯(太さ約 35px)は残り、細い筆跡は切り離される。
+    # 筆跡・照明で最適なカーネルが違うので、複数試して検証を通った最長の候補を採る。
+    openers = [None] + [
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)) for k in OPEN_KERNEL_SIZES
+    ]
+    for thr in DARK_THRESHOLDS:
+        base = _dark_mask(flat, thr)
+        for opener in openers:
+            mask = base if opener is None else cv2.morphologyEx(base, cv2.MORPH_OPEN, opener)
+            cands = _candidates(mask)[:MAX_CANDIDATES]
+            for _, pts in sorted(cands, key=lambda c: (touches(c[1]), -c[0])):
+                res = _band_from_points(flat, pts, touches(pts))
+                if res is None:
+                    continue
+                band, peaks, first, far = res
+                far_dark = np.isfinite(far) and far < MIN_FAR_BRIGHTNESS
+                if peaks >= MIN_TABLE_PEAKS and first <= MAX_FIRST_LINE_RATIO and not far_dark:
+                    band.far_known = bool(np.isfinite(far))
+                    valid.append(band)
+                elif fallback is None:
+                    fallback = band
+                    fallback.confidence = min(fallback.confidence, 0.3)
+    if valid:
+        # 照明むらで帯の一部だけが暗く判定された断片より、全体が取れた最長の候補を採る
+        return max(valid, key=lambda b: (b.far_known, not b.clipped, b.length))
     return fallback
 
 
 def _band_from_points(
     flat: np.ndarray, pts: np.ndarray, clipped: bool
-) -> tuple[BandResult, float] | None:
-    """候補の点群から帯の幾何を求める。戻り値: (帯, 表側の罫線ピーク数)。"""
+) -> tuple[BandResult, float, float, float] | None:
+    """候補の点群から帯の幾何を求める。
+
+    戻り値: (帯, 罫線ピーク数, 最初の罫線までの距離/帯の太さ, 反対側の平均の明るさ)。
+    """
     # 主軸(長軸)
     mean = pts.mean(axis=0)
     cov = np.cov((pts - mean).T)
@@ -200,13 +221,14 @@ def _band_from_points(
     side_a = inside_s & (t < t_mid_lo - 0.5 * thickness) & (t > t_mid_lo - depth)
     side_b = inside_s & (t > t_mid_hi + 0.5 * thickness) & (t < t_mid_hi + depth)
 
-    def density(sel: np.ndarray, sign: float, edge_t: np.ndarray) -> float:
-        """帯から離れる向きの断面プロファイル上にある「罫線らしいピーク」の本数。
+    def density(sel: np.ndarray, sign: float, edge_t: np.ndarray) -> tuple[float, float]:
+        """帯から離れる向きの断面にある「罫線らしいピーク」の (本数, 最初のピークまでの距離)。
 
-        表側には等間隔の罫線が十数本ある。紙の外の暗い縁や題名の文字は数本しか出ない。
+        表側には等間隔の罫線が十数本あり、最初の罫線は帯のすぐ下に始まる。
+        紙の外の暗い縁や題名の文字は数本しか出ない/表までの距離が大きい。
         """
         if sel.sum() < 50:
-            return -1.0
+            return -1.0, float("inf")
         dist = (sign * (t[sel] - edge_t[sel])).astype(int)
         vals = thin[grid[sel, 1].astype(int), grid[sel, 0].astype(int)]
         nb = int(dist.max()) + 1
@@ -214,10 +236,13 @@ def _band_from_points(
         cnt = np.bincount(dist, minlength=nb)
         prof = np.where(cnt >= 20, tot / np.maximum(cnt, 1), 0.0)
         peaks = (prof[1:-1] > 6.0) & (prof[1:-1] >= prof[:-2]) & (prof[1:-1] > prof[2:])
-        return float(peaks.sum())
+        idx = np.nonzero(peaks)[0] + 1
+        return float(len(idx)), float(idx[0]) if len(idx) else float("inf")
 
-    dens_a = density(side_a, -1.0, t_mid_lo)
-    dens_b = density(side_b, 1.0, t_mid_hi)
+    (dens_a, first_a), (dens_b, first_b) = (
+        density(side_a, -1.0, t_mid_lo),
+        density(side_b, 1.0, t_mid_hi),
+    )
     if dens_b >= dens_a:
         down = n.copy()
         near_edge = (p_hi_l, p_hi_r)
@@ -256,7 +281,19 @@ def _band_from_points(
         length=length,
         thickness=thickness,
     )
-    return band, max(dens_a, dens_b)
+    first = first_b if dens_b >= dens_a else first_a
+    # 帯の「表と反対側」(紙の上の余白)は明るいはず。紙の外の暗い縁は反対側が暗い/画像の外。
+    far_sel = (
+        inside_s & (t < t_mid_lo - 0.5 * thickness) & (t > t_mid_lo - 2.5 * thickness)
+        if dens_b >= dens_a
+        else inside_s & (t > t_mid_hi + 0.5 * thickness) & (t < t_mid_hi + 2.5 * thickness)
+    )
+    far_mean = (
+        float(flat[grid[far_sel, 1].astype(int), grid[far_sel, 0].astype(int)].mean())
+        if far_sel.sum() >= 50
+        else float("nan")
+    )
+    return band, max(dens_a, dens_b), first / max(thickness, 1.0), far_mean
 
 
 def _rotation_to_upright(down: np.ndarray) -> int:

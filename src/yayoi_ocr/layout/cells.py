@@ -216,6 +216,7 @@ class CellCrop:
     ink_ratio: float
     blank: bool
     overflow: bool  # 帰属するインクがセル本体の外へ出ている
+    faint_only: bool = False  # 通常のインクは無いが、薄い記入らしいインクがある
     flags: set[CellFlag] = field(default_factory=set)
 
 
@@ -286,5 +287,6 @@ def extract_region(
         ink_ratio=ink_px / area,
         blank=blank,
         overflow=overflow,
+        faint_only=faint,
         flags=flags,
     )

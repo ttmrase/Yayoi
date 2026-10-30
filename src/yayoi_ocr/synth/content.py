@@ -5,7 +5,7 @@
 
 正解 JSON(docs/ground_truth_schema.json):
 - raw: 書かれた通りの文字列。同上記号は「〃」、矢印は「→」、波線による省略は「頭〜尾」。
-  日付・金額は描いた文字列そのまま(例: 「R7 11.19」「9,900-」)。
+  日付・金額は描いた文字列そのまま(例: 「R7 11.19」「3,456-」)。
 - resolved: 展開後の値。日付は R<年>.<月>.<日>、金額は数字のみ、〃・→・〜は元の記入に展開。
 """
 
@@ -22,9 +22,22 @@ ARROW = "→"
 ELIDE = "〜"
 
 TITLES = [
-    "通信費", "消耗品費", "旅費交通費", "支払手数料", "水道光熱費", "地代家賃",
-    "租税公課", "保険料", "会議費", "事務用品費", "雑費", "広告宣伝費",
-]  # fmt: skip
+    "消耗品費",
+    "旅費交通費",
+    "水道光熱費",
+    "地代家賃",
+    "租税公課",
+    "保険料",
+    "会議費",
+    "事務用品費",
+    "雑費",
+    "広告宣伝費",
+    "車両費",
+    "荷造運賃",
+    "修繕費",
+    "福利厚生費",
+    "接待交際費",
+]  # fmt: skip  (一般的な勘定科目名)
 ACCOUNTS = [
     "現金", "テスト銀行", "サンプル信金", "サンプルカード", "ダミー銀行",
     "仮払金", "普通預金", "売掛金", "未払金",
@@ -38,11 +51,11 @@ DESCRIPTIONS = [
     "駐車場代", "交通費", "(株)テスト商会 請求分", "テスト通信 電話代 {m}月分", "サンプル便 送料",
     "試験用品 購入", "デモ書店 図書代",
 ]  # fmt: skip
-# 波線で省略して書く長い記入(頭, 全体, 尾)
+# 波線で省略して書く長い記入(頭, 全体, 尾)。実データの語や構造を写さない、架空の語。
 LONG_DESCRIPTIONS = [
-    ("サンプル協会", "サンプル協会 試験情報提供サービス 指定法人 手数料", "手数料"),
-    ("テスト機構", "テスト機構 検査記録 閲覧サービス 指定機関 利用手数料", "手数料"),
-    ("ダミー連合会", "ダミー連合会 登録情報 照会サービス 取扱法人 手数料", "手数料"),
+    ("サンプル協会", "サンプル協会 定期点検 立会い 作業 手数料", "手数料"),
+    ("テスト機構", "テスト機構 検査記録 閲覧 取扱手数料", "取扱手数料"),
+    ("ダミー連合会", "ダミー連合会 登録 照会 代行 手数料", "手数料"),
 ]
 ANNOTATIONS = ["(新)", "3月", "分", "サンプル", "(旧)", "再"]
 
@@ -88,6 +101,13 @@ class PagePlan:
             number=GTField(raw=f"No.{self.number}", resolved=str(self.number)),
             rows=rows,
         )
+
+
+def _random_amount(rng: np.random.Generator) -> int:
+    """100〜99,999 の対数一様分布から取り、1・10・100 円単位にランダムに丸める(固定リストなし)。"""
+    v = 10 ** float(rng.uniform(2.0, 5.0))
+    unit = int(rng.choice([1, 10, 100], p=[0.3, 0.4, 0.3]))
+    return int(min(99_999, max(100, round(v / unit) * unit)))
 
 
 def _fmt_amount(rng: np.random.Generator, v: int) -> str:
@@ -183,12 +203,10 @@ def plan_page(rng: np.random.Generator, n_rows: int = 29, fill_rows: int | None 
         if i > 0 and amount and rng.random() < 0.3:
             pass  # 前の行と同じ金額
         else:
-            amount = int(round(10 ** rng.uniform(1.8, 4.6), -int(rng.integers(0, 3))))
-            amount = max(amount, 10)
+            amount = _random_amount(rng)
         raw_amount = _fmt_amount(rng, amount)
         row["amount"] = CellPlan(
             "amount", "text", raw_amount, str(amount), stray=bool(rng.random() < 0.03),
-            note="余計な点・線あり" if False else "",
         )  # fmt: skip
         if row["amount"].stray:
             row["amount"].note = "余計な点・線あり"

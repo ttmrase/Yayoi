@@ -22,6 +22,7 @@ class ColumnKind(StrEnum):
 class CellFlag(StrEnum):
     BLANK = "blank"  # 空欄
     DITTO = "ditto"  # 同上記号(〃 など)
+    DITTO_LIKELY = "ditto_likely"  # 〃の可能性(薄いインクだけがある。分類器で確定する)
     ARROW = "arrow"  # 矢印・線(「→」「⌐」等、下の行へ続く意味)
     NEEDS_REVIEW = "needs_review"  # 要確認(確信度が低い・文法違反など)
     USER_CORRECTED = "user_corrected"  # ユーザーが修正済み

@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import ImageFont
 
-from .fonts import find_japanese_fonts, load_font, render_glyph_offset
+from .fonts import find_handwriting_fonts, find_japanese_fonts, load_font, render_glyph_offset
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,8 @@ class Writer:
 
 
 def _usable_fonts() -> list[Path]:
-    fonts = find_japanese_fonts()
+    """書き手が使うフォント。手書き風(OFL)があればそれだけ。印刷体は取得できないときの代替。"""
+    fonts = find_handwriting_fonts() or find_japanese_fonts()
     if not fonts:
         raise RuntimeError(
             "日本語フォントが見つかりません。`python scripts/fetch_fonts.py` で取得するか、"

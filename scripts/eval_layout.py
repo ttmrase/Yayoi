@@ -19,12 +19,12 @@ from yayoi_ocr.config import assert_safe_output_dir
 from yayoi_ocr.layout.metrics import polygon_iou
 from yayoi_ocr.layout.pipeline import analyze_image
 from yayoi_ocr.models import PageStatus
-from yayoi_ocr.synth.generator import SynthConfig, generate_sample
+from yayoi_ocr.synth.generator import ALL_DEGRADATIONS, SynthConfig, generate_sample
 
 
-def _one(args: tuple[int, int | None]) -> dict:
-    seed, rot = args
-    s = generate_sample(SynthConfig(seed=seed, rotate90=rot))
+def _one(args: tuple) -> dict:
+    seed, rot, kw = args
+    s = generate_sample(SynthConfig(seed=seed, rotate90=rot, **kw))
     t = time.time()
     res = analyze_image(s.image)
     dt = time.time() - t
@@ -53,7 +53,8 @@ def evaluate(
     n: int, seed0: int = 0, rotate: bool = True, verbose: bool = True, jobs: int = 1
 ) -> dict:
     tasks = [
-        (seed0 + i, [0, 90, 180, 270][i % 4] if rotate and i % 5 == 0 else None) for i in range(n)
+        (seed0 + i, [0, 90, 180, 270][i % 4] if rotate and i % 5 == 0 else None, {})
+        for i in range(n)
     ]
     if jobs > 1:
         from concurrent.futures import ProcessPoolExecutor
@@ -88,6 +89,44 @@ def evaluate(
     }
 
 
+def evaluate_by_factor(n_each: int, seed0: int, jobs: int, strength: float) -> list[dict]:
+    """劣化の種類ごと(1 種類だけ与える)に評価する。基準として劣化なし・全種類も測る。"""
+    groups: list[tuple[str, dict]] = [("none(劣化なし)", {"degrade": False})]
+    groups += [(f, {"degradations": (f,), "degrade_strength": strength}) for f in ALL_DEGRADATIONS]
+    groups += [("all(全種類)", {"degrade_strength": strength})]
+    tasks = [
+        (seed0 + gi * 1000 + i, None, kw)
+        for gi, (_, kw) in enumerate(groups)
+        for i in range(n_each)
+    ]
+    if jobs > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        with ProcessPoolExecutor(jobs) as ex:
+            rows = list(ex.map(_one, tasks))
+    else:
+        rows = [_one(t) for t in tasks]
+    out = []
+    for gi, (name, _) in enumerate(groups):
+        rs = rows[gi * n_each : (gi + 1) * n_each]
+        ok = [r for r in rs if r["status"] == PageStatus.OK]
+        out.append(
+            {
+                "factor": name,
+                "n": len(rs),
+                "mean_iou": float(np.mean([r["mean_iou"] for r in rs])),
+                "mean_iou_ok": float(np.mean([r["mean_iou"] for r in ok])) if ok else float("nan"),
+                "min_page_iou": float(min(r["mean_iou"] for r in rs)),
+                "flagged": sum(r["status"] != PageStatus.OK for r in rs),
+                "silent": sum(r["status"] == PageStatus.OK and r["mean_iou"] < 0.8 for r in rs),
+                "silent_seeds": [
+                    r["seed"] for r in rs if r["status"] == PageStatus.OK and r["mean_iou"] < 0.8
+                ],
+            }
+        )
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=120)
@@ -95,7 +134,24 @@ def main() -> int:
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--jobs", type=int, default=1, help="並列プロセス数")
     ap.add_argument("--save-worst", help="最悪のページの画像を保存するディレクトリ(リポジトリ外)")
+    ap.add_argument(
+        "--by-factor", action="store_true", help="劣化の種類ごとに評価(--n は各種類の枚数)"
+    )
+    ap.add_argument("--strength", type=float, default=1.0, help="--by-factor の劣化の強さ")
     args = ap.parse_args()
+    if args.by_factor:
+        res = evaluate_by_factor(args.n, args.seed0, args.jobs, args.strength)
+        head = ("劣化の種類", "n", "平均IoU", "OK頁IoU", "最悪頁", "要確認", "黙った失敗")
+        print(
+            f"{head[0]:16s} {head[1]:>3s} {head[2]:>8s} {head[3]:>8s} {head[4]:>7s} "
+            f"{head[5]:>5s} {head[6]:>8s}"
+        )
+        for r in res:
+            print(
+                f"{r['factor']:16s} {r['n']:3d} {r['mean_iou']:8.3f} {r['mean_iou_ok']:8.3f} "
+                f"{r['min_page_iou']:7.3f} {r['flagged']:5d} {r['silent']:8d} {r['silent_seeds']}"
+            )
+        return 0 if all(r["silent"] == 0 for r in res) else 1
     out = evaluate(args.n, args.seed0, verbose=not args.quiet, jobs=args.jobs)
     print("\n==== summary ====")
     for k, v in out.items():

@@ -31,6 +31,20 @@ from .writer import (
     text_width,
 )
 
+# 撮影による劣化の種類(要素別に切り替えて、種類ごとの検出精度を測れる)
+ALL_DEGRADATIONS = (
+    "rotation",  # 回転 ±10°
+    "perspective",  # 遠近(斜めから撮影)
+    "curve",  # 紙のたわみ
+    "lighting",  # 照明むら・影・周辺減光
+    "contrast",  # コントラスト低下
+    "blur",  # ぼけ
+    "noise",  # ノイズ
+    "jpeg",  # JPEG 圧縮ノイズ
+    "lowres",  # 低解像度(80〜400dpi。無ければ 200dpi 固定)
+    "cut",  # 用紙の端・表の端が写っていない
+)
+
 
 @dataclass
 class SynthConfig:
@@ -38,6 +52,8 @@ class SynthConfig:
     writer_id: int | None = None  # None なら seed から決める(同じ ID = 同じ書き手の癖)
     dpi: float | None = None  # None なら 80〜400 から選ぶ
     degrade: bool = True
+    degradations: tuple[str, ...] | None = None  # None なら全種類(degrade=True のとき)
+    degrade_strength: float = 1.0  # 劣化の強さ(要素別評価で 0.5/1.0/1.5 など)
     rotate90: int | None = None  # 0/90/180/270(時計回り)。None ならなし
     fill_rows: int | None = None  # 埋まる行数(None なら 10〜29 から)
     canvas_scale: float = 1500.0  # 白紙の描画解像度(px / 単位)
@@ -231,10 +247,19 @@ def _smooth_field(
 
 
 def _random_homography(
-    cw: int, ch: int, out_w: int, out_h: int, rng: np.random.Generator, allow_cut: bool
+    cw: int,
+    ch: int,
+    out_w: int,
+    out_h: int,
+    rng: np.random.Generator,
+    allow_cut: bool,
+    *,
+    rotate: bool = True,
+    perspective: bool = True,
+    strength: float = 1.0,
 ) -> np.ndarray:
     """用紙キャンバス → 出力画像の射影変換(回転 ±10°・遠近・拡大・平行移動)。"""
-    ang = math.radians(float(rng.uniform(-10, 10)))
+    ang = math.radians(float(rng.uniform(-10, 10)) * strength) if rotate else 0.0
     zoom_lo, zoom_hi = (1.02, 1.16) if allow_cut else (0.86, 1.0)
     zoom = float(rng.uniform(zoom_lo, zoom_hi))
     s = zoom * min(out_w / cw, out_h / ch) * (1.0 if allow_cut else 0.95)
@@ -250,7 +275,9 @@ def _random_homography(
     # 遠近(キーストーン): 出力座標で 4 隅の少しの変位
     corners = np.array([[0, 0], [cw, 0], [cw, ch], [0, ch]], dtype=np.float64)
     dst = (M @ np.vstack([corners.T, np.ones(4)]))[:2].T
-    jitter = rng.normal(0, 0.009, (4, 2)) * np.array([out_w, out_h])
+    jitter = rng.normal(0, 0.009 * strength, (4, 2)) * np.array([out_w, out_h])
+    if not perspective:
+        jitter = jitter * 0.0
     dst = dst + jitter
     return cv2.getPerspectiveTransform(corners.astype(np.float32), dst.astype(np.float32)).astype(
         np.float64
@@ -292,13 +319,22 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
     plan = plan_page(rng, tpl.n_rows, cfg.fill_rows)
     fill_form(blank, tpl, to_px, rng, writer, plan)
 
-    dpi = cfg.dpi if cfg.dpi is not None else float(np.exp(rng.uniform(np.log(80), np.log(400))))
+    use = set(ALL_DEGRADATIONS if cfg.degradations is None else cfg.degradations)
+    if not cfg.degrade:
+        use = set()
+    st = cfg.degrade_strength
+    if cfg.dpi is not None:
+        dpi = cfg.dpi
+    elif "lowres" in use:
+        dpi = float(np.exp(rng.uniform(np.log(80), np.log(400))))
+    else:
+        dpi = 200.0
     out_w = round(8.27 * dpi * rng.uniform(0.9, 1.1))
     out_h = round(11.69 * dpi * rng.uniform(0.9, 1.1))
     out_w, out_h = max(out_w, 480), max(out_h, 640)
 
     # 紙のたわみ(正準キャンバス上の滑らかな変位場)
-    curve_amp = float(rng.uniform(0.0, 0.007)) * scale if cfg.degrade else 0.0
+    curve_amp = float(rng.uniform(0.0, 0.007)) * st * scale if "curve" in use else 0.0
     dx = (
         _smooth_field((ch, cw), (4, 3), curve_amp, rng)
         if curve_amp
@@ -310,8 +346,18 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
         else np.zeros((ch, cw), np.float32)
     )
 
-    if cfg.degrade:
-        Hm = _random_homography(cw, ch, out_w, out_h, rng, bool(rng.random() < cfg.cut_prob))
+    if use & {"rotation", "perspective", "cut"}:
+        Hm = _random_homography(
+            cw,
+            ch,
+            out_w,
+            out_h,
+            rng,
+            bool("cut" in use and rng.random() < cfg.cut_prob),
+            rotate="rotation" in use,
+            perspective="perspective" in use,
+            strength=st,
+        )
     else:
         s = min(out_w / cw, out_h / ch) * 0.95
         Hm = np.array([[s, 0, (out_w - s * cw) / 2], [0, s, (out_h - s * ch) / 2], [0, 0, 1.0]])
@@ -340,18 +386,20 @@ def generate_sample(cfg: SynthConfig | None = None, tpl: FormTemplate | None = N
     ].copy()  # 紙の色味(BGR・暖色寄り)
     color = color * tint[None, None, :]
 
-    if cfg.degrade:
-        color = _apply_lighting(color, rng, float(rng.uniform(0.4, 1.0)))
-        # コントラスト低下
-        gain = float(rng.uniform(0.7, 1.0))
+    if "lighting" in use:
+        color = _apply_lighting(color, rng, float(rng.uniform(0.4, 1.0)) * st)
+    if "contrast" in use:  # コントラスト低下
+        gain = 1.0 - float(rng.uniform(0.0, 0.3)) * st
         color = 255 - (255 - color) * gain
-        sigma = float(rng.uniform(0.0, 1.4)) * max(out_w / 900.0, 0.6)
+    if "blur" in use:
+        sigma = float(rng.uniform(0.0, 1.4)) * st * max(out_w / 900.0, 0.6)
         if sigma > 0.1:
             color = cv2.GaussianBlur(color, (0, 0), sigma)
-        color = color + rng.normal(0, rng.uniform(0, 5), color.shape).astype(np.float32)
+    if "noise" in use:
+        color = color + rng.normal(0, rng.uniform(0, 5) * st, color.shape).astype(np.float32)
     img8 = np.clip(color, 0, 255).astype(np.uint8)
-    if cfg.degrade:
-        q = int(rng.integers(35, 92))
+    if "jpeg" in use:
+        q = int(np.clip(92 - rng.uniform(0, 57) * st, 20, 95))
         ok, enc = cv2.imencode(".jpg", img8, [cv2.IMWRITE_JPEG_QUALITY, q])
         img8 = cv2.imdecode(enc, cv2.IMREAD_COLOR) if ok else img8
 

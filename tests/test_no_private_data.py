@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +35,13 @@ def repo(tmp_path: Path) -> Path:
 
 def _run(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), *args], cwd=repo, capture_output=True, text=True
+        [sys.executable, str(SCRIPT), *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=dict(os.environ, PYTHONUTF8="1"),
     )
 
 
@@ -92,7 +99,75 @@ def test_unpushed_history_detects_removed_image(repo: Path):
 
 
 def test_this_repository_is_clean():
-    res = subprocess.run(
-        [sys.executable, str(SCRIPT), "--all"], cwd=ROOT, capture_output=True, text=True
-    )
+    res = _run(ROOT, "--all")
     assert res.returncode == 0, res.stderr
+
+
+def _run_env(repo: Path, env_dir: Path, *args: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ, YAYOI_PRIVATE_DATA=str(env_dir), PYTHONUTF8="1")
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+
+
+def test_denylist_words_and_numbers_fail(repo: Path, tmp_path: Path):
+    priv = tmp_path / "priv"
+    priv.mkdir()
+    (priv / "denylist.txt").write_text(
+        "# テスト用の架空の拒否リスト\n架空の語\n98765\n", encoding="utf-8"
+    )
+    (repo / "a.py").write_text("x = '架空の語'\n", encoding="utf-8")
+    (repo / "b.py").write_text("amount = 98,765\n", encoding="utf-8")
+    (repo / "c.py").write_text("amount = 98765\nok = 987654\n", encoding="utf-8")
+    (repo / "d.py").write_text("amount = 12345\n", encoding="utf-8")
+    _git(repo, "add", "a.py", "b.py", "c.py", "d.py")
+    res = _run_env(repo, priv)
+    assert res.returncode == 1
+    for name in ("a.py", "b.py", "c.py"):
+        assert name in res.stderr
+    assert "d.py" not in res.stderr
+    assert "架空の語" not in res.stderr and "98765" not in res.stderr  # 値そのものは表示しない
+
+
+def test_denylist_missing_only_warns(repo: Path, tmp_path: Path):
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    res = _run_env(repo, tmp_path / "nothing_here")
+    assert res.returncode == 0
+    assert "拒否リスト" in res.stderr  # 警告は出る
+
+
+def test_denylist_checks_unpushed_commit_messages(repo: Path, tmp_path: Path):
+    priv = tmp_path / "priv"
+    priv.mkdir()
+    (priv / "denylist.txt").write_text("架空の語\n", encoding="utf-8")
+    (repo / "a.txt").write_text("x", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-qm", "メッセージに架空の語を含む")
+    res = _run_env(repo, priv, "--unpushed")
+    assert res.returncode == 1 and "コミットメッセージ" in res.stderr
+
+
+_LIST3 = "[" + ", ".join(["110", "220", "330"]) + "]"
+_LIST4 = "[" + ", ".join(["110", "220", "3300", "4400"]) + "]"
+
+
+def test_int_lists_in_synth_and_tests_are_rejected(repo: Path):
+    d = repo / "src" / "yayoi_ocr" / "synth"
+    d.mkdir(parents=True)
+    (d / "gen.py").write_text("AMOUNTS = " + _LIST4 + "\n", encoding="utf-8")  # allow-int-list
+    (repo / "src" / "other.py").write_text("X = " + _LIST3 + "\n", encoding="utf-8")  # 対象外の場所
+    _git(repo, "add", "-A")
+    res = _run(repo)
+    assert res.returncode == 1 and "gen.py" in res.stderr and "other.py" not in res.stderr
+    (d / "gen.py").write_text(
+        "SIZES = " + _LIST3 + "  # allow-int-list\n", encoding="utf-8"
+    )  # allow-int-list
+    _git(repo, "add", "-A")
+    assert _run(repo).returncode == 0

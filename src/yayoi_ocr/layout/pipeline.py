@@ -11,6 +11,7 @@ from ..models import (
     BBox,
     Cell,
     CellFlag,
+    ColumnKind,
     ImageRef,
     Page,
     PageStatus,
@@ -94,6 +95,26 @@ def _table_inside_fraction(fit: GridFit, tpl: FormTemplate, work_shape: tuple[in
     return float(np.mean((x >= -2) & (x < w + 2) & (y >= -2) & (y < h + 2)))
 
 
+def _apply_row_context(prep: list, tpl: FormTemplate) -> None:
+    """行の文脈で、薄いインクだけのセルの扱いを決める(Phase 2 の分類器までの暫定)。
+
+    - 金額欄が空欄の行は「行全体が空欄」とみなし、ほかの列の薄いインクは空欄にする(要確認なし)。
+    - 金額欄に記入がある行は、日付・科目・摘要の薄いインクを「〃の可能性」として拾う。
+    金額欄自体の薄いインクは高感度のまま(空欄とせず要確認)。
+    """
+    amount_idx = next(i for i, c in enumerate(tpl.columns) if c.kind == ColumnKind.AMOUNT)
+    amount_filled = not prep[amount_idx][3].blank
+    for i, (_, _, _, crop, _) in enumerate(prep):
+        if i == amount_idx or not crop.faint_only:
+            continue
+        crop.flags.discard(CellFlag.NEEDS_REVIEW)
+        if amount_filled:
+            crop.flags.add(CellFlag.DITTO_LIKELY)
+        else:
+            crop.blank = True
+            crop.flags.add(CellFlag.BLANK)
+
+
 def analyze_image(
     bgr: np.ndarray,
     tpl: FormTemplate | None = None,
@@ -161,7 +182,7 @@ def analyze_image(
     blank_px = BLANK_INK_PX * (px_w / 2000.0) ** 2
     uncertain_page = status == PageStatus.NEEDS_REVIEW and fit.notes == ["fallback"]
     for r in range(tpl.n_rows):
-        cells: list[Cell] = []
+        prep = []
         for c, col in enumerate(tpl.columns):
             box = tpl.cell_box(r, c)
             rect_px = geom.box_to_px(box)
@@ -181,8 +202,12 @@ def analyze_image(
                 rect, pink, rect_px, r * n_cols + c, (pad_x, pad_y), margins, blank_px
             )
             crops[(r, c)] = crop
+            prep.append((col, box, rect_px, crop, ok_l and ok_r and ok_t and ok_b))
+        _apply_row_context(prep, tpl)
+        cells: list[Cell] = []
+        for col, box, rect_px, crop, lines_ok in prep:
             flags = set(crop.flags)
-            if uncertain_page or not (ok_l and ok_r and ok_t and ok_b):
+            if uncertain_page or not lines_ok:
                 flags.add(CellFlag.LAYOUT_UNCERTAIN)
             cells.append(
                 Cell(

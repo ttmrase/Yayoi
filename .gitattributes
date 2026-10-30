@@ -1,0 +1,4 @@
+# 改行は常に LF(Windows の CI でも ruff format --check・シェルスクリプトが壊れないように)
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
