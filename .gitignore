@@ -61,3 +61,9 @@ venv/
 htmlcov/
 .idea/
 .vscode/
+
+# フロントエンド(web/)のビルド成果物・依存。成果物は wheel 作成時に生成する
+web/node_modules/
+web/test-results/
+web/playwright-report/
+src/yayoi_ocr/app/static/

@@ -20,6 +20,10 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.5"]
 # 認識(PyTorch)。アプリ本体の実行・学習に必要。CI の既定には入れない(重いので ml マーカーのテストは skip)
 ml = ["torch>=2.4", "PyYAML>=6"]
+# 確認 UI(Phase 3): ローカルサーバ。desktop は Windows のウィンドウ(WebView2)用
+app = ["fastapi>=0.115", "uvicorn>=0.30"]
+app-dev = ["httpx>=0.27"]
+desktop = ["pywebview>=5.0"]
 # 開発用: ONNX からの重み復元と NDLOCR-Lite の ONNX との数値一致テスト
 ml-dev = ["onnx>=1.16", "onnxruntime>=1.18"]
 
@@ -30,7 +34,7 @@ yayoi-ocr = "yayoi_ocr.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-yayoi_ocr = ["templates/*.json"]
+yayoi_ocr = ["templates/*.json", "app/static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

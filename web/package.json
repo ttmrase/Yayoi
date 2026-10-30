@@ -1,0 +1,28 @@
+{
+  "name": "yayoi-ocr-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "確認 UI(Phase 3)。ビルド成果物は ../src/yayoi_ocr/app/static に出力し、アプリに同梱する(外部リソースは読み込まない)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.0",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.3",
+    "jsdom": "25.0.1",
+    "typescript": "5.6.3",
+    "vite": "5.4.11",
+    "vitest": "2.1.5"
+  }
+}

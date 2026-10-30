@@ -97,3 +97,22 @@ SHA256 を検証して、`$YAYOI_PRIVATE_DATA/models/` に置く。ONNX から P
   書き出されている。AR デコードは未来トークンをスライスで除くので影響しないが、反復修正(cloze マスク)では
   自分自身のトークンが遮蔽されない。`PARSeq.refine_mask = "onnx"`(既定。NDLOCR-Lite が実際に配布・実行する挙動)と
   `"cloze"`(baudm/parseq の PyTorch 実装)を切り替えられる。
+
+## 確認 UI(Phase 3)
+
+### Python(サーバ。extras `app` / `app-dev` / `desktop`)
+
+| パッケージ | 用途 | ライセンス |
+|---|---|---|
+| fastapi / starlette / uvicorn | ローカルサーバ(127.0.0.1 のみ) | MIT / BSD-3-Clause / BSD-3-Clause |
+| httpx(`app-dev`) | サーバのテスト | BSD-3-Clause |
+| pywebview(`desktop`) | Windows のウィンドウ(WebView2 を使う) | BSD-3-Clause |
+
+### フロントエンド(`web/`。ビルド成果物だけをアプリに同梱し、Node は利用者の環境に要らない)
+
+アプリに入る(本番のバンドル): react 18.3.1(MIT)、react-dom 18.3.1(MIT)、scheduler 0.23.2(MIT)、loose-envify 1.4.0(MIT)、js-tokens 4.0.0(MIT)。
+ビルド・テストだけに使う(同梱しない): vite 5.4.11(MIT)、@vitejs/plugin-react 4.3.3(MIT)、typescript 5.6.3(Apache-2.0)、vitest 2.1.5(MIT)、
+jsdom 25.0.1(MIT)、@playwright/test 1.49.0(Apache-2.0)、@types/react・@types/react-dom(MIT)。ロックファイル `web/package-lock.json` で固定する(`npm ci`)。
+
+- **外部リソースを読み込まない**: CDN・Web フォント・外部スクリプトは使わない。フォントは OS のシステムフォント(`Yu Gothic UI` など)を名前で指定するだけ。
+  `tests/test_app_static.py` がビルド成果物に外部 URL が無いことを(名前空間の識別子と React のエラー文言を除いて)検査し、Playwright の E2E が実行時の通信先を検査する。

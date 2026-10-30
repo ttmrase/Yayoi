@@ -1,0 +1,47 @@
+:root {
+  --fg: #1d2330;
+  --bg: #f6f7f9;
+  --accent: #1f5fbf;
+  --ok: #1a7f37;
+  --ng: #b42318;
+  font-family: "Yu Gothic UI", "Meiryo UI", Meiryo, system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+body {
+  margin: 0;
+}
+.top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #fff;
+  border-bottom: 1px solid #d5d9e0;
+}
+.top nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+.top nav button {
+  border: 0;
+  background: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+.top nav button[aria-current="page"] {
+  background: var(--accent);
+  color: #fff;
+}
+.ok {
+  color: var(--ok);
+}
+.ng {
+  color: var(--ng);
+}
+main {
+  padding: 16px;
+}

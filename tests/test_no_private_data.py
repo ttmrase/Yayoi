@@ -171,3 +171,10 @@ def test_int_lists_in_synth_and_tests_are_rejected(repo: Path):
     )  # allow-int-list
     _git(repo, "add", "-A")
     assert _run(repo).returncode == 0
+
+
+def test_denylist_ignores_lockfile_integrity_hashes():
+    deny = (["abc"], [])
+    h = "sha512-" + "xyz" * 5 + "abc" + "QRS/+=" * 5  # base64 の途中に短い語が偶然含まれる
+    assert checker.check_denylist(f'"integrity": "{h}"', deny) == []
+    assert checker.check_denylist("name = 'abc'", deny)  # ふつうの本文は検出する

@@ -108,8 +108,13 @@ def load_denylist() -> tuple[list[str], list[re.Pattern[str]]] | None:
     return words, numbers
 
 
+# ロックファイルの完全性ハッシュ(sha512-… の base64)。短い語が偶然含まれる誤検出が多いので、検査の前に取り除く
+INTEGRITY_RE = re.compile(r"sha(?:1|256|384|512)-[A-Za-z0-9+/=]{20,}")
+
+
 def check_denylist(text: str, deny: tuple[list[str], list[re.Pattern[str]]]) -> list[str]:
     words, numbers = deny
+    text = INTEGRITY_RE.sub("", text)
     low = text.lower()
     hits = [f"拒否リストの語を含む(#{i + 1})" for i, w in enumerate(words) if w in low]
     hits += [f"拒否リストの数値を含む(#{i + 1})" for i, rx in enumerate(numbers) if rx.search(text)]
