@@ -34,6 +34,9 @@ def main() -> int:
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--l2", type=float, default=3.0)
     ap.add_argument(
+        "--margin", type=float, default=1.0, help="較正の目標に掛ける余裕(fit_confidence.py と同じ)"
+    )
+    ap.add_argument(
         "--stages",
         default="",
         help="書き手ごとの連続ページ(学習が進む)のデータ用: ページ番号の区間ごとに見逃し率を出す(例: 1-3,4-8,9-99)",
@@ -68,7 +71,7 @@ def main() -> int:
         model = fit_confidence(
             tr,
             dict(tr_cells),
-            TARGETS,
+            {k: args.margin * v for k, v in TARGETS.items()},
             alpha=args.alpha,
             l2=args.l2,
         )

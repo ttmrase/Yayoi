@@ -34,6 +34,12 @@ def main() -> int:
     ap.add_argument("--max-miss", type=float, default=0.005)
     ap.add_argument("--max-miss-amount", type=float, default=0.001)
     ap.add_argument("--l2", type=float, default=3.0)
+    ap.add_argument(
+        "--margin",
+        type=float,
+        default=1.0,
+        help="見逃し率の目標に掛ける余裕(0.8 = 目標の 80% で較正する。実運用の分布のずれへの備え)",
+    )
     args = ap.parse_args()
     rows = []
     for d in args.dump:
@@ -45,12 +51,12 @@ def main() -> int:
         samples,
         dict(n_cells),
         {
-            "amount": args.max_miss_amount,
-            "date": args.max_miss,
-            "account": args.max_miss,
-            "description": args.max_miss,
+            "amount": args.margin * args.max_miss_amount,
+            "date": args.margin * args.max_miss,
+            "account": args.margin * args.max_miss,
+            "description": args.margin * args.max_miss,
         },
-        default_max_miss=args.max_miss,
+        default_max_miss=args.margin * args.max_miss,
         alpha=args.alpha,
         l2=args.l2,
     )
