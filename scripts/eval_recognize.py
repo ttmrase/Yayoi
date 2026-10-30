@@ -22,7 +22,7 @@ from pathlib import Path
 from yayoi_ocr.config import assert_safe_output_dir
 from yayoi_ocr.recognize.celltype import CellTypeClassifier
 from yayoi_ocr.recognize.confidence import ConfidenceModel
-from yayoi_ocr.recognize.evaluate import format_table, judge, summarize
+from yayoi_ocr.recognize.evaluate import dump_row, format_table, judge, summarize
 from yayoi_ocr.recognize.inputs import from_page_data
 from yayoi_ocr.recognize.page import JobContext, PageRecognizer
 from yayoi_ocr.recognize.parseq.engine import ParseqEngine
@@ -99,37 +99,7 @@ def main() -> int:
                 rows.append(j)
                 by_font[page.meta["font"]].append(j)
                 if dump:
-                    dump.write(
-                        json.dumps(
-                            {
-                                "page": page.meta["seed"],
-                                "writer": page.meta["writer_id"],
-                                "row": c.row,
-                                "col": c.col,
-                                "column": c.column,
-                                "gt_kind": j.gt_kind,
-                                "gt_raw": c.raw,
-                                "gt_resolved": c.resolved,
-                                "r1_text": r.text,
-                                "pred_value": r.value,
-                                "review": j.review,
-                                "pred_kind": j.pred_kind,
-                                "correct": j.correct,
-                                "page_review": page_review,
-                                "features": r.features,
-                                "cls_probs": r.cls_probs,
-                                "reasons": r.reasons,
-                                "iou": c.iou,
-                                "faint": c.faint_only,
-                                "overflow_gt": c.overflow_gt,
-                                "stray": c.stray,
-                                "annotation": bool(c.annotation),
-                                "dpi": page.meta["dpi"],
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
+                    dump.write(json.dumps(dump_row(page.meta, c, r, j), ensure_ascii=False) + "\n")
         print(
             f"\n===== {d}  pages={len(pages)} (レイアウト要確認ページ {n_page_review}) "
             f"認識 {t_rec / max(1, len(pages)):.1f}s/ページ  classifier="
