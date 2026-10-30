@@ -62,7 +62,9 @@ def _cmd_synth(args: argparse.Namespace) -> int:
 def _cmd_app(args: argparse.Namespace) -> int:
     from .app.launcher import run
 
-    return run(args.data_dir, window=not args.no_window, port=args.port, token=args.token)
+    return run(
+        args.data_dir, window=not args.no_window, port=args.port, token=args.token, dev=args.dev
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     a.add_argument("--port", type=int, default=0, help="開発・E2E 専用")
     a.add_argument("--token", help="開発・E2E 専用")
+    a.add_argument(
+        "--dev", action="store_true", help="開発・E2E 専用: 合成ジョブを作る API を有効にする"
+    )
     a.set_defaults(func=_cmd_app)
     args = parser.parse_args(argv)
     try:

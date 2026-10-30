@@ -18,8 +18,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--port", type=int, default=0, help="開発・E2E 専用(既定: ランダム)")
     ap.add_argument("--token", help="開発・E2E 専用(既定: 起動ごとにランダム)")
+    ap.add_argument(
+        "--dev", action="store_true", help="開発・E2E 専用: 合成ジョブを作る API を有効にする"
+    )
     args = ap.parse_args(argv)
-    return run(args.data_dir, window=not args.no_window, port=args.port, token=args.token)
+    return run(
+        args.data_dir, window=not args.no_window, port=args.port, token=args.token, dev=args.dev
+    )
 
 
 if __name__ == "__main__":

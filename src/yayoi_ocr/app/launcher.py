@@ -27,13 +27,23 @@ def _bind_localhost(port: int = 0) -> socket.socket:
 
 class RunningServer:
     def __init__(
-        self, data_dir: Path | None = None, port: int = 0, token: str | None = None
+        self,
+        data_dir: Path | None = None,
+        port: int = 0,
+        token: str | None = None,
+        dev: bool = False,
     ) -> None:
         self.paths = AppPaths(data_dir or app_data_dir()).ensure()
         self.sock = _bind_localhost(port)
         self.port = self.sock.getsockname()[1]
         self.token = token or new_token()
-        self.app = create_app(self.paths.db, self.token, allowed_hosts_for(self.port))
+        self.app = create_app(
+            self.paths.db,
+            self.token,
+            allowed_hosts_for(self.port),
+            images_dir=self.paths.images,
+            dev=dev,
+        )
         config = uvicorn.Config(self.app, log_level="warning", access_log=False, lifespan="off")
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(
@@ -61,9 +71,13 @@ class RunningServer:
 
 
 def run(
-    data_dir: Path | None = None, window: bool = True, port: int = 0, token: str | None = None
+    data_dir: Path | None = None,
+    window: bool = True,
+    port: int = 0,
+    token: str | None = None,
+    dev: bool = False,
 ) -> int:
-    srv = RunningServer(data_dir, port, token).start()
+    srv = RunningServer(data_dir, port, token, dev).start()
     try:
         if window:
             try:
