@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -168,3 +169,36 @@ def dump_row(meta: dict, c: CellRecord, r: CellResult, j: Judged) -> dict:
         "annotation": bool(c.annotation),
         "dpi": meta["dpi"],
     }
+
+
+def norm(column: str, s: str) -> str:
+    s = unicodedata.normalize("NFKC", s)
+    return "".join(s.split())
+
+
+def align(a: str, b: str):
+    """正解 a と認識 b のレーベンシュタイン整列 → [(op, 正解の文字 | None, 認識の文字 | None)]。"""
+    n, m = len(a), len(b)
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            d[i][j] = min(
+                d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] != b[j - 1])
+            )
+    ops = []
+    i, j = n, m
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and d[i][j] == d[i - 1][j - 1] + (a[i - 1] != b[j - 1]):
+            ops.append(("ok" if a[i - 1] == b[j - 1] else "sub", a[i - 1], b[j - 1]))
+            i, j = i - 1, j - 1
+        elif i > 0 and d[i][j] == d[i - 1][j] + 1:
+            ops.append(("del", a[i - 1], None))
+            i -= 1
+        else:
+            ops.append(("ins", None, b[j - 1]))
+            j -= 1
+    return ops[::-1]
