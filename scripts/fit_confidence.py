@@ -55,6 +55,11 @@ def main() -> int:
         metavar="列=パス[,パス...]",
         help="その列だけ、このダンプで較正する(例: description=calib_gen.jsonl。語彙外の摘要が多いデータ)。繰り返し指定できる",
     )
+    ap.add_argument(
+        "--credit-learned-features",
+        action="store_true",
+        help="見覚えメモリ・金額履歴の特徴にも重みを与える(出荷の較正では使わない。Phase 4 で確定データを使うとき用)",
+    )
     args = ap.parse_args()
 
     def read(paths) -> list[dict]:
@@ -81,6 +86,7 @@ def main() -> int:
             default_max_miss=args.margin * args.max_miss,
             alpha=args.alpha,
             l2=args.l2,
+            credit_learned_features=args.credit_learned_features,
         )
 
     rows = read(args.dump)

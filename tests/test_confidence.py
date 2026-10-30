@@ -206,3 +206,25 @@ def test_replace_columns_swaps_only_the_given_columns():
     assert m.groups["text:description"].n_train == 99
     assert "ditto:description" not in m.groups  # 差し替え元に無い群は消える(古い群を残さない)
     assert m.default_threshold == 0.9 and a.groups["text:description"].n_train == 10  # 元は変えない
+
+
+def test_learned_features_get_zero_weight_unless_credited():
+    from yayoi_ocr.recognize.confidence import LEARNED_FEATURES
+
+    rng = np.random.default_rng(0)
+    samples = []
+    for _ in range(400):
+        correct = bool(rng.random() < 0.6)
+        feats = {
+            "post_top": 0.9 if correct else 0.4,
+            "mem_share": 1.0 if correct else 0.0,
+            "hist_desc": float(correct),
+        }
+        samples.append(Sample("description", "text", featurize(feats, 0.9), correct, False))
+    idx = [FEATURE_NAMES.index(n) for n in LEARNED_FEATURES]
+    off = fit_confidence(samples, {"description": 400}, {"description": 0.2})
+    on = fit_confidence(
+        samples, {"description": 400}, {"description": 0.2}, credit_learned_features=True
+    )
+    assert np.allclose(off.groups["text:description"].lr.w[idx], 0.0)  # 既定では確信度に効かない
+    assert np.abs(on.groups["text:description"].lr.w[idx]).max() > 0.0  # Phase 4 では有効にできる

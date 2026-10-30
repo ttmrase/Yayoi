@@ -51,6 +51,10 @@ FEATURE_NAMES = (
 )
 # 値が正であることを保証する特徴(一致で確信度を上げるが、不一致で下げない)
 NONNEG_FEATURES = ("hist_desc", "hist_acct")
+# 確定データの蓄積でできる特徴(見覚えメモリ・金額の履歴)。合成データで見積もった信頼度のまま確信度に入れると、
+# 実データで外れたときに見逃しが目標を超えうるので、出荷の較正では重みを 0 に固定する(`credit_learned_features=False`)。
+# Phase 4 で、確定データから書き手単位の交差検証で較正してから有効にする。
+LEARNED_FEATURES = ("mem_share", "mem_max_sim", "mem_n", "hist_desc", "hist_acct")
 # 確認が必須の理由(学習・しきい値の対象外。常に要確認)
 HARD_REASONS = frozenset(
     {
@@ -332,6 +336,7 @@ def fit_confidence(
     default_max_miss: float = 0.005,
     alpha: float = 0.05,
     l2: float = 3.0,
+    credit_learned_features: bool = False,
 ) -> ConfidenceModel:
     """群ごとにロジスティック回帰を学習し、列ごとの見逃し目標から群のしきい値を決める。
 
@@ -352,6 +357,8 @@ def fit_confidence(
             model.groups[gk] = GroupModel(None, 0.0, 1.1, len(ss))
             continue
         x = np.stack([s.x for s in free])
+        if not credit_learned_features:  # 列ごと 0 にすれば重みは 0(正則化で 0 のまま)
+            x[:, [FEATURE_NAMES.index(n) for n in LEARNED_FEATURES]] = 0.0
         y = np.array([s.correct for s in free], dtype=np.float64)
         if y.min() == y.max() or len(y) < 20:
             const = float(y.mean())
