@@ -125,10 +125,10 @@ def _edge_lines(pts: np.ndarray, u: np.ndarray, n: np.ndarray, origin: np.ndarra
 MIN_TABLE_PEAKS = 4  # 帯の表側に必要な罫線らしいピークの最少本数(これ未満は帯と認めない)
 MAX_CANDIDATES = 6
 OPEN_KERNEL_SIZES = (9, 15, 21)  # 帯に接した筆跡を切り離す開演算のカーネル径(px)
-MIN_THICKNESS_RATIO = 0.032  # 帯の太さ/長さの下限。様式の帯は 0.044 前後(遠近で多少変わる)
+MIN_THICKNESS_RATIO = 0.036  # 帯の太さ/長さの下限。様式の帯は 0.044 前後(遠近で多少変わる)
 MAX_THICKNESS_RATIO = 0.065  # 同上限(帯が画像端で切れていない場合)。断片は太さに対して短い
-MIN_FAR_BRIGHTNESS = 170  # 帯の反対側(紙の余白)の明るさの下限
-MAX_FIRST_LINE_RATIO = 2.5  # 最初の罫線は帯の下辺から帯の太さのこの倍数以内に始まる
+MIN_FAR_BRIGHTNESS = 200  # 帯の反対側(紙の余白)の明るさの下限
+MAX_FIRST_LINE_RATIO = 1.8  # 最初の罫線は帯の下辺から帯の太さのこの倍数以内に始まる
 
 
 def find_header_band(flat: np.ndarray) -> BandResult | None:
@@ -185,7 +185,10 @@ def find_header_band(flat: np.ndarray) -> BandResult | None:
                     fallback.confidence = min(fallback.confidence, 0.3)
     if valid:
         # 照明むらで帯の一部だけが暗く判定された断片より、全体が取れた最長の候補を採る
-        return max(valid, key=lambda b: (b.far_known, not b.clipped, b.length))
+        def typical(b: BandResult) -> bool:  # 様式の帯の太さ/長さ(約 0.044)に近い
+            return 0.038 <= b.thickness / max(b.length, 1.0) <= 0.052
+
+        return max(valid, key=lambda b: (b.far_known, not b.clipped, typical(b), b.length))
     return fallback
 
 
