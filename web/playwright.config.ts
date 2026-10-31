@@ -14,6 +14,8 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   fullyParallel: false,
   workers: 1,
+  // 共有の CI ランナー(特に Windows)は遅く揺れる。1 つの試験の上限は CI だけ広げる(個々の待ちの上限は変えない。止まったままの試験は、そちらで落ちる)
+  timeout: process.env.CI ? 90_000 : 30_000,
   reporter: [["list"]],
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,

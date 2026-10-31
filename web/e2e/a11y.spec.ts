@@ -35,6 +35,7 @@ async function setup(request: APIRequestContext) {
 }
 
 test("アクセシビリティ: ジョブ・確認(行/列)・罫線・設定・出力・学習", async ({ page, request }) => {
+  test.setTimeout(120_000); // axe の走査を 7 画面で行う。遅いランナーでは 30 秒を超えうる
   await request.post("/api/dev/fake", { headers: AUTH, data: { layout_ok: false } });
   const job = await setup(request);
   await page.goto(`/?a11y=${Date.now()}#token=${TOKEN}`);
