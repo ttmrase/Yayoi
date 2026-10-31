@@ -70,8 +70,13 @@ EVAL_RECIPES = [
 # 公開の合格基準(director 指示): 点推定で、全体の見逃し率 <= 0.5%、金額 <= 0.1%。列ごとの値の正解率(空欄を除く)が、コンテナでの出荷時の評価
 # から 3 ポイントを超えて下がっていない。基本の重みと適応済みの重みの両方に適用する。
 MISS_LIMIT_ALL = 0.005
-MISS_LIMIT_AMOUNT = 0.001
+# 列ごとの見逃し率の上限(Phase 2 の指示 e: 日付・科目・摘要はそれぞれ <= 0.5%、金額は <= 0.1%)。全体の上限とは別に、列ごとに判定する。
+MISS_LIMIT_COLUMN = {"date": 0.005, "account": 0.005, "description": 0.005, "amount": 0.001}
+MISS_LIMIT_AMOUNT = MISS_LIMIT_COLUMN["amount"]
 ACC_DROP_LIMIT = 0.03
+# 評価の結果(JSON)の、基準の版。2 = 列ごとの見逃し率の基準を含む。trial-publish は、この版以上の結果だけを受け付ける。
+EVAL_CRITERIA_VERSION = 2
+COLUMN_LABELS = {"date": "日付", "account": "科目", "description": "摘要", "amount": "金額"}
 # コンテナで出荷した重み(RC の束。SHA256 5d69f666…)を、元の最終ホールドアウト(200 ページ)に、この評価と同じコード(`evaluate_weights`)で
 # 当てて測った値(列ごとの accuracy_nonblank。小数第 3 位に丸めた)。見逃し数・要確認率は docs/recognition.md の表と一致することを確かめてある
 # (適応済み: 見逃し 12/21/8/2 件)。docs の表の「値の正解率」は定義が少し違う(空欄の扱い)ため、基準には、測り直した値を使う。
@@ -632,27 +637,45 @@ def evaluate_weights(
     }
 
 
+def required_eval_check_ids() -> list[str]:
+    """合格に必要な判定の ID(基本と適応済みの両方 x 全体・列ごとの見逃し率・列ごとの値の正解率、と評価ページ数)。"""
+    ids = []
+    for w in ("base", "adapted"):
+        ids.append(f"{w}:miss:overall")
+        ids += [f"{w}:miss:{c}" for c in MISS_LIMIT_COLUMN]
+        ids += [f"{w}:acc:{c}" for c in BASELINE_ACCURACY[w]]
+    ids.append("pages")
+    return ids
+
+
 def eval_checks(result: dict, weights: str) -> list[dict]:
     """合格の基準(director 指示)。点推定で判定する。"""
     out = [
         {
+            "id": f"{weights}:miss:overall",
             "name": f"{weights}: 全体の見逃し率 <= {MISS_LIMIT_ALL:.1%}",
             "value": result["overall"]["miss_rate"],
             "limit": MISS_LIMIT_ALL,
             "ok": result["overall"]["miss_rate"] <= MISS_LIMIT_ALL,
-        },
-        {
-            "name": f"{weights}: 金額の見逃し率 <= {MISS_LIMIT_AMOUNT:.1%}",
-            "value": result["columns"]["amount"]["miss_rate"],
-            "limit": MISS_LIMIT_AMOUNT,
-            "ok": result["columns"]["amount"]["miss_rate"] <= MISS_LIMIT_AMOUNT,
-        },
+        }
     ]
+    for col, limit in MISS_LIMIT_COLUMN.items():
+        rate = result["columns"][col]["miss_rate"]
+        out.append(
+            {
+                "id": f"{weights}:miss:{col}",
+                "name": f"{weights}: {COLUMN_LABELS[col]}の見逃し率 <= {limit:.1%}",
+                "value": rate,
+                "limit": limit,
+                "ok": rate is not None and rate <= limit,
+            }
+        )
     for col, base in BASELINE_ACCURACY[weights].items():
         acc = result["columns"][col]["accuracy_nonblank"]
         floor = round(base - ACC_DROP_LIMIT, 4)
         out.append(
             {
+                "id": f"{weights}:acc:{col}",
                 "name": f"{weights}: {col} の値の正解率 >= コンテナの値 {base} - {ACC_DROP_LIMIT}",
                 "value": acc,
                 "limit": floor,
@@ -662,16 +685,57 @@ def eval_checks(result: dict, weights: str) -> list[dict]:
     return out
 
 
+def _fmt(v, spec: str = ".3f") -> str:
+    return "-" if v is None else format(v, spec)
+
+
+def _miss_count(stats: dict) -> str:
+    """見逃しの件数 / セル数(割合)。"""
+    return f"{int(stats['miss'])}/{int(stats['n'])}({_fmt(stats['miss_rate'], '.3%')})"
+
+
+def format_eval_table(result: dict) -> list[str]:
+    """列ごとの、セル数・正解率・要確認率・見逃しの件数を、ログと要約に出す表にする。値は統計だけ(帳票の内容は含まない)。"""
+    lines = [f"■ {result['weights']}: {result['pages']} ページ"]
+    o = result["overall"]
+    lines.append(
+        f"  全体  セル {int(o['n'])}(空欄でない {int(o['n_nonblank'])})  値の正解率(空欄を除く) {_fmt(o['accuracy_nonblank'])}"
+        f"  要確認率(空欄を除く) {_fmt(o['review_rate_nonblank'])}  見逃し {_miss_count(o)}"
+    )
+    for col in MISS_LIMIT_COLUMN:
+        c = result["columns"][col]
+        lines.append(
+            f"  {COLUMN_LABELS[col]}  セル {int(c['n'])}(空欄でない {int(c['n_nonblank'])})  値の正解率(空欄を除く) {_fmt(c['accuracy_nonblank'])}"
+            f"  要確認率(空欄を除く) {_fmt(c['review_rate_nonblank'])}  見逃し {_miss_count(c)}"
+        )
+    for name, d in result.get("per_dataset", {}).items():
+        cols = "・".join(
+            f"{COLUMN_LABELS[col]} {int(d['columns'][col]['miss'])}" for col in MISS_LIMIT_COLUMN
+        )
+        lines.append(
+            f"  [{name}] {d['pages']} ページ  見逃し {_miss_count(d['overall'])}  内訳: {cols}"
+        )
+    return lines
+
+
 def merge_eval(base: dict, adapted: dict, meta: dict) -> dict:
     checks = eval_checks(base, "base") + eval_checks(adapted, "adapted")
     pages_ok = base["pages"] >= 200 and adapted["pages"] >= 200 if meta["mode"] == "full" else True
     checks.append(
-        {"name": "評価ページ数 >= 200(full)", "value": base["pages"], "limit": 200, "ok": pages_ok}
+        {
+            "id": "pages",
+            "name": "評価ページ数 >= 200(full)",
+            "value": base["pages"],
+            "limit": 200,
+            "ok": pages_ok,
+        }
     )
     return {
         **meta,
+        "criteria_version": EVAL_CRITERIA_VERSION,
         "criteria": {
             "miss_limit_all": MISS_LIMIT_ALL,
+            "miss_limit_column": MISS_LIMIT_COLUMN,
             "miss_limit_amount": MISS_LIMIT_AMOUNT,
             "accuracy_drop_limit": ACC_DROP_LIMIT,
             "baseline_accuracy": BASELINE_ACCURACY,
@@ -691,6 +755,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     print(
         f"{args.weights}: {result['pages']} ページ 正解率 {o['accuracy']:.3f} 要確認率 {o['review_rate']:.3f} 見逃し率 {o['miss_rate']:.4%}"
     )
+    print("\n".join(format_eval_table(result)))
     return 0
 
 
@@ -708,6 +773,9 @@ def cmd_eval_merge(args: argparse.Namespace) -> int:
     }
     final = merge_eval(base, adapted, meta)
     Path(args.out).write_text(json.dumps(final, ensure_ascii=False, indent=1), encoding="utf-8")
+    for r in (base, adapted):
+        print("\n".join(format_eval_table(r)))
+    print()
     for c in final["checks"]:
         v = c["value"]
         print(
@@ -853,6 +921,7 @@ def cmd_release_check(args: argparse.Namespace) -> int:
             ev = json.loads((Path(args.eval_dir) / "eval-result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise SystemExit("eval-result.json を読めません") from None
+        got = {c.get("id"): c.get("ok") for c in ev.get("checks", []) if isinstance(c, dict)}
         checks.update(
             {
                 "評価の結果が、この zip の SHA256 に対するもの": ev.get("zip_sha256")
@@ -864,6 +933,13 @@ def cmd_release_check(args: argparse.Namespace) -> int:
                 == spec["eval_run_id"],
                 "評価の mode が full": ev.get("mode") == "full",
                 "重みの質の評価が合格": ev.get("passed") is True,
+                "評価の基準の版が、列ごとの見逃し率を含む版以上": isinstance(
+                    ev.get("criteria_version"), int
+                )
+                and ev["criteria_version"] >= EVAL_CRITERIA_VERSION,
+                "必要な判定(全体・列ごとの見逃し率・列ごとの値の正解率・ページ数。基本と適応済みの両方)がすべて入っていて合格": all(
+                    got.get(i) is True for i in required_eval_check_ids()
+                ),
             }
         )
     problems += [f"{k}: 不一致" for k, ok in checks.items() if not ok]

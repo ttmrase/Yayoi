@@ -48,7 +48,7 @@
      できなければ、限界として受け入れる(`docs/trial_ci_build.md`「4. 限界・注意」の拒否リストの項。director の判断)。拒否リストの控えを作って持ち出すことはしない。
 2. **重みの質の評価(必須)**: `python scripts/trial_ci.py run shard --mode full --id final_std.0 ...`(`trial_ci.py plan --mode full --field eval_shards` の 4 つの評価ページを作る)→
    zip から `models/` を取り出し → `python scripts/trial_ci.py eval --weights base|adapted ...` ×2 → `python scripts/trial_ci.py eval-merge ...`。
-   **合格の基準は CI と同じ**(全体の見逃し率 ≤ 0.5%・金額 ≤ 0.1%・列ごとの値の正解率がコンテナの値から 3 ポイント以内・200 ページ以上)。**不合格なら、公開は不可**。
+   **合格の基準は CI と同じ**(全体の見逃し率 ≤ 0.5%・列ごとの見逃し率〔日付・科目・摘要 ≤ 0.5%、金額 ≤ 0.1%〕・列ごとの値の正解率がコンテナの値から 3 ポイント以内・200 ページ以上。基本と適応済みの両方)。**不合格なら、公開は不可**。
 3. **煙試験**: Linux では `python scripts/trial_smoke.py --python <python> --models <取り出した models> --data-dir <その親>`。**Windows での、この zip そのものの煙試験は、この案ではできない**
    (Windows のランナーは Actions にしかない)。代わりに、smoke 版の束の Windows CI の結果(`ci.yml` の `trial-windows`)を引用する。この違いは、director と planning に報告し、Release の本文にも書く。
 4. SHA256 を控える(zip・`.sha256`)。

@@ -223,6 +223,8 @@ def make_release(tmp_path: Path, **override) -> tuple[Path, Path, Path]:
         "eval_run_id": "100",
         "mode": "full",
         "passed": True,
+        "criteria_version": tci.EVAL_CRITERIA_VERSION,
+        "checks": [{"id": i, "ok": True} for i in tci.required_eval_check_ids()],
     }
     ev.update(eval_override)
     (tmp_path / "eval").mkdir(exist_ok=True)
@@ -340,17 +342,28 @@ def test_a_smoke_result_for_a_different_zip_or_a_failed_check_is_not_ok(tmp_path
 # ---- 評価(trial-eval)と公開の条件
 
 
-def stats(miss_rate: float, acc: float) -> dict:
-    return {"miss_rate": miss_rate, "accuracy_nonblank": acc}
+def stats(miss_rate: float, acc: float, n: int = 5800) -> dict:
+    return {
+        "n": n,
+        "n_nonblank": int(n * 0.66),
+        "miss": round(miss_rate * n),
+        "miss_rate": miss_rate,
+        "accuracy_nonblank": acc,
+        "review_rate_nonblank": 0.8,
+    }
 
 
 def good_result(weights: str, pages: int = 200) -> dict:
     base = tci.BASELINE_ACCURACY[weights]
+    columns = {c: stats(0.0005, base[c] - 0.01) for c in base}
     return {
         "weights": weights,
         "pages": pages,
-        "overall": stats(0.002, 0.6),
-        "columns": {c: stats(0.0005, base[c] - 0.01) for c in base},
+        "overall": stats(0.002, 0.6, 23200),
+        "columns": columns,
+        "per_dataset": {
+            "final_std": {"pages": 50, "overall": stats(0.002, 0.6), "columns": columns}
+        },
     }
 
 
@@ -387,6 +400,9 @@ def test_a_result_that_meets_the_criteria_passes_for_both_weights():
     [
         lambda r: r["overall"].update(miss_rate=0.0051),  # 全体の見逃し率が 0.5% を超える
         lambda r: r["columns"]["amount"].update(miss_rate=0.0011),  # 金額が 0.1% を超える
+        lambda r: r["columns"]["date"].update(miss_rate=0.0052),  # 列ごと: 日付が 0.5% を超える
+        lambda r: r["columns"]["account"].update(miss_rate=0.0052),  # 科目が 0.5% を超える
+        lambda r: r["columns"]["description"].update(miss_rate=0.0052),  # 摘要が 0.5% を超える
         lambda r: r["columns"]["description"].update(
             accuracy_nonblank=tci.BASELINE_ACCURACY["adapted"]["description"] - 0.031
         ),  # コンテナの値から 3 ポイントを超えて劣化
@@ -402,6 +418,69 @@ def test_a_result_that_misses_a_criterion_is_rejected(mutate):
 def test_fewer_than_200_pages_cannot_pass_a_full_evaluation():
     out = tci.merge_eval(good_result("base", 50), good_result("adapted", 50), {"mode": "full"})
     assert out["passed"] is False
+
+
+def test_the_per_column_miss_limits_apply_to_both_weights_and_to_the_limit_exactly():
+    # ちょうど上限は合格(<=)。列ごとの上限は、全体の上限とは別に判定される(全体が良くても、1 つの列が超えれば不合格)
+    ok = good_result("adapted")
+    ok["columns"]["account"].update(miss_rate=0.005)
+    ok["columns"]["amount"].update(miss_rate=0.001)
+    assert tci.merge_eval(good_result("base"), ok, {"mode": "full"})["passed"] is True
+    for weights in ("base", "adapted"):
+        bad = good_result(weights)
+        bad["columns"]["account"].update(miss_rate=0.0051)  # 全体は 0.2% のまま
+        pair = (bad, good_result("adapted")) if weights == "base" else (good_result("base"), bad)
+        out = tci.merge_eval(*pair, {"mode": "full"})
+        assert out["passed"] is False
+        failed = [c["id"] for c in out["checks"] if not c["ok"]]
+        assert failed == [f"{weights}:miss:account"]
+
+
+def test_the_checks_cover_every_required_id_and_the_result_carries_the_criteria_version():
+    out = tci.merge_eval(good_result("base"), good_result("adapted"), {"mode": "full"})
+    assert sorted(c["id"] for c in out["checks"]) == sorted(tci.required_eval_check_ids())
+    assert out["criteria_version"] == tci.EVAL_CRITERIA_VERSION
+    required = tci.required_eval_check_ids()
+    for w in ("base", "adapted"):
+        for col in ("date", "account", "description", "amount"):
+            assert f"{w}:miss:{col}" in required and f"{w}:acc:{col}" in required
+
+
+def test_the_eval_table_prints_counts_and_rates_per_column_but_no_contents():
+    lines = tci.format_eval_table(good_result("adapted"))
+    text = "\n".join(lines)
+    for label in ("日付", "科目", "摘要", "金額", "全体", "final_std"):
+        assert label in text
+    assert "見逃し 3/5800(0.050%)" in text  # 件数 / セル数(割合)
+
+
+def test_the_release_rejects_an_evaluation_without_the_per_column_criteria(tmp_path):
+    sp, notes, art = make_release(tmp_path)
+    assert check(sp, notes, art) == 0
+    old_ids = [i for i in tci.required_eval_check_ids() if ":miss:" in i and ":overall" not in i]
+    cases = {
+        "version_1": {"criteria_version": 1},
+        "no_version": {"criteria_version": None},
+        "no_column_checks": {
+            "checks": [
+                {"id": i, "ok": True}
+                for i in tci.required_eval_check_ids()
+                if i not in ("adapted:miss:account", "adapted:miss:date")
+            ]
+        },
+        "a_check_failed": {
+            "checks": [
+                {"id": i, "ok": i != "base:miss:description"} for i in tci.required_eval_check_ids()
+            ]
+        },
+        "old_format": {"checks": [{"name": "x", "ok": True}]},
+    }
+    assert old_ids  # 列ごとの判定が必要な ID に含まれている
+    for k, ev in cases.items():
+        d = tmp_path / f"case_{k}"
+        d.mkdir()
+        sp2, notes2, art2 = make_release(d, eval=ev)
+        assert check(sp2, notes2, art2) == 1, k
 
 
 def test_the_release_needs_a_passing_evaluation_of_exactly_this_zip(tmp_path):
