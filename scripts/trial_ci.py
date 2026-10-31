@@ -106,15 +106,17 @@ BASELINES = {
         "adapted": {"date": 0.586, "account": 0.853, "description": 0.443, "amount": 0.642},
         "base": {"date": 0.409, "account": 0.726, "description": 0.203, "amount": 0.540},
     },
-    # v2: コンテナで出荷した重みを、ホールドアウト v2 に当てて測り直した値
-    "v2": {  # TEMP: 測定中(測り直した値で置き換える)
-        "adapted": {"date": 0.586, "account": 0.853, "description": 0.443, "amount": 0.642},
-        "base": {"date": 0.409, "account": 0.726, "description": 0.203, "amount": 0.540},
+    # v2: コンテナで出荷した重み(RC の束。SHA256 5d69f666…)を、ホールドアウト v2(200 ページ)に、この評価と同じコード(`evaluate_weights`)で当てて測った値
+    # (列ごとの accuracy_nonblank。4 つのデータセットを合算して小数第 3 位に丸めた)。**CI の束の v2 の結果を見る前に確定した値**。
+    # 参考(コンテナの重み = 余裕 0.6 の較正での見逃し/5,800 セル。適応済み: 日付 9・科目 35〔0.60%〕・摘要 14・金額 0 / 基本: 11・4・17・0)。
+    "v2": {
+        "adapted": {"date": 0.604, "account": 0.873, "description": 0.465, "amount": 0.674},
+        "base": {"date": 0.434, "account": 0.759, "description": 0.220, "amount": 0.556},
     },
 }
 BASELINE_ACCURACY = BASELINES[FINAL_HOLDOUT]
-# 基準値が仮のホールドアウト。含まれている間は、評価は必ず不合格になる(仮の値のまま合格しないため。checker 指摘 V-2)。測り直した値を入れたら外す。
-BASELINES_PROVISIONAL = {"v2"}
+# 基準値が仮のホールドアウト。含まれている間は、評価は必ず不合格になる(仮の値のまま合格しないため。checker 指摘 V-2)。測り直した値を入れたので、空。
+BASELINES_PROVISIONAL: set[str] = set()
 MODES = {
     "full": {
         "chunk": 100,

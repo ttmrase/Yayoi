@@ -570,6 +570,16 @@ def test_the_merge_command_prints_every_check_including_the_text_valued_ones(tmp
     assert saved["passed"] is True and saved["holdout"] == tci.FINAL_HOLDOUT
 
 
+def test_the_container_baseline_of_the_final_holdout_was_measured_again():
+    assert set(tci.BASELINES) == {"v1", "v2"} and tci.BASELINE_ACCURACY is tci.BASELINES["v2"]
+    assert (
+        tci.BASELINES["v1"] != tci.BASELINES["v2"]
+    )  # 新しいホールドアウトで測り直した値(v1 の転記ではない)
+    for w in ("base", "adapted"):
+        assert set(tci.BASELINES["v2"][w]) == {"date", "account", "description", "amount"}
+    assert not tci.BASELINES_PROVISIONAL  # 仮の基準値が残っていない(残っていると、評価は必ず不合格)
+
+
 def test_a_result_from_another_holdout_cannot_pass():
     old = good_result("adapted")
     old["holdout"] = "v1"
