@@ -241,6 +241,11 @@ def main() -> int:
         " setup.ps1 が静かに導入する。配布元(python.org の公開チェックサム)で検証してから渡すこと",
     )
     ap.add_argument(
+        "--provenance",
+        type=Path,
+        help="束に入れる model_provenance.md(既定: docs/model_provenance.md)。CI のビルドは、実際に作った重みの SHA256 で作った文書を渡す",
+    )
+    ap.add_argument(
         "--smoke",
         action="store_true",
         help="CI の動作確認用: 基本の重みだけで束を作る(セル種別分類器・確信度・リハーサルの束が無くてよい)。zip の名前に -SMOKE を付ける。**配布しない**",
@@ -288,7 +293,7 @@ def main() -> int:
         (ROOT / "docs/windows_setup.md", "windows_setup.md"),
         (ROOT / "docs/windows_checklist.md", "windows_checklist.md"),
         (ROOT / "docs/yayoi_export.md", "yayoi_export.md"),
-        (ROOT / "docs/model_provenance.md", "model_provenance.md"),
+        (args.provenance or ROOT / "docs/model_provenance.md", "model_provenance.md"),
         (ROOT / "docs/user_manual.md", "user_manual.md"),
     ):
         shutil.copy2(src, stage / name)

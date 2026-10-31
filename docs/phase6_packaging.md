@@ -51,7 +51,10 @@ Windows 10 の一部には無い。オフラインインストーラ(Evergreen �
 - **Windows の CI**(`.github/workflows/ci.yml` の `trial-windows`): 束を作り、`setup.ps1` を Windows PowerShell 5.1 で実行し、開発用でないモードで起動して HTTP で通す(`scripts/trial_smoke.py`)。
   この CI は、`setup.ps1` の重みのコピーの不具合(置き場が無いまま `Copy-Item src\*` するとファイルとして書かれる)を見つけた。
   実配置(データ領域 = インストール先)で、バックアップの復元(準備 → 再起動 → 入れ替え)と、アンインストール(データを残す/消す・別フォルダの拒否)も通す。
-  未対応(煙の試験としての限界): GitHub Actions の外部アクションは版の固定(コミット SHA)までしていない。`fetch_fonts` は固定のハッシュを持たない(煙の試験の入力にだけ使い、配布物の検証ではない。配布物の重み・フォントは作成時に `model_provenance` の SHA256 と照合する)。
+  外部アクションはコミットの SHA で固定し、フォントは固定コミット + SHA256 で取得する(`docs/trial_ci_build.md`)。
+- **配布物のビルドと公開**(`docs/trial_ci_build.md`): GitHub Actions の `trial-build.yml` が、合成データ・学習・較正・束の作成・検査・Windows での束そのものの煙試験までを行い(公開しない)、
+  ユーザーが GitHub の画面で `trial-publish.yml` の「Run workflow」を押したときだけ、pre-release を公開する(公開後にアセットをダウンロードし直して SHA256 を照合。一致しなければ削除)。外部アクションはコミットの SHA で固定
+  (`ci.yml` も)。`fetch_fonts` も固定コミット + SHA256 の照合にした(煙試験を含む CI の入力の固定。R-9 を解消)。
 - **束の検査**(`scripts/verify_trial_bundle.py`、試験は `tests/test_verify_trial_bundle.py`): 作った zip を展開せずに読み、zip の SHA256 の控え・MANIFEST・`models/` と `model_provenance.md` の表の過不足のない一致・
   wheel と lock の対応(名前・版・ハッシュ)・同梱の Python の固定値・画像/CSV/DB の混入・拒否リストの語を確かめる。作った束の記録は `docs/trial_rc.md`。
 - **GPU**: `docs/phase6_gpu_design.md`(試用は CPU 版。判断材料の整理だけ)。

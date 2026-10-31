@@ -36,6 +36,7 @@
 | 文書 | 内容 |
 |---|---|
 | [`model_provenance.md`](model_provenance.md) | 同梱する重み 9 ファイルの由来・学習/較正データ・実行したスクリプト・SHA256、実サンプルを使った処理の開示、再検査の手順 |
+| [`trial_ci_build.md`](trial_ci_build.md) | **配布物のビルドと公開の方式**: GitHub Actions でビルド・検査(Windows で束そのものを煙試験)し、ユーザーが GitHub の画面で「Run workflow」を押して公開する(trial-build.yml / trial-publish.yml) |
 | [`trial_rc.md`](trial_rc.md) | 試用版の RC の記録(作ったコミット・zip の SHA256・全ファイルの一覧・重みの突き合わせ・検査の結果)と、**重みの作り直しの手順・所要時間・再現性の確認(§7)**。**未公開** |
 | [`dependencies.md`](dependencies.md) | 依存ライブラリ・モデルの出所とライセンス |
 | [`fonts.md`](fonts.md) | 合成帳票用のフォント(SIL OFL 1.1)の一覧 |
@@ -47,4 +48,4 @@
 - **全体をつかむ**: ルートの `README.md`(全体像の図・開発状況)→ `phase3_design.md` → `phase4_design.md`。
 - **安全の考え方**(実データを扱わない・外に出さない): ルートの `README.md` の「実データの置き場所」、`phase3_design.md` のセキュリティ、`backup_restore.md` の検査、`model_provenance.md` の開示。
 - **Windows の実機で試す人**: `windows_setup.md` → `windows_checklist.md`(結果を記録する項目に T12 の「金額の選択の負担」を含む)。
-- **試用版を配る前に**: `trial_rc.md`(束の同一性)→ `model_provenance.md` → `windows_setup.md`(SHA256 を別経路で伝える)。
+- **試用版を配る前に**: `trial_ci_build.md`(ビルドと公開の方式)→ `trial_rc.md`(コンテナの RC の記録・重みの作り直し)→ `model_provenance.md` → `windows_setup.md`(SHA256 を別経路で伝える)。

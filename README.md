@@ -59,7 +59,7 @@ flowchart LR
 | 5 | 弥生 CSV 出力(`docs/yayoi_export.md`) | 完了(試用版。弥生の実環境での取り込みは未確認) |
 | 6 | 配布(Windows のセットアップ・ログ・ライセンス表示・手引き・バックアップ・アンインストール。`docs/phase6_packaging.md`) | 試用版の RC 作成済み(`docs/trial_rc.md`、未公開)。Windows 実機の確認は未実施 |
 
-試用版の公開は、利用者の承認を待っている。文書の一覧は `docs/README.md`。
+試用版の配布物は GitHub Actions でビルドし、ユーザーが GitHub の画面で公開する(`docs/trial_ci_build.md`)。文書の一覧は `docs/README.md`。
 
 ## セットアップ
 

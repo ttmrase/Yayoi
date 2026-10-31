@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """試用版の束(zip)の検査(開発用)。`make_trial_bundle.py` が作った束を、配布の前に**別の経路**で確かめる。zip を読むだけで、展開しない。
 
-    python scripts/verify_trial_bundle.py ZIP [--sha256 HEX] [--provenance docs/model_provenance.md] [--markdown]
+    python scripts/verify_trial_bundle.py ZIP [--sha256 HEX] [--provenance docs/model_provenance.md] [--markdown] [--no-denylist]
 
 検査:
   B1 zip の SHA256 が `<zip>.sha256`(または --sha256)と一致する
@@ -49,6 +49,16 @@ FORBIDDEN_SUFFIXES = {
     ".db",
     ".zip",
 }
+# 画像・PDF・SQLite の先頭のバイト列(PNG・JPEG・GIF・PDF・SQLite・TIFF)
+_MEDIA_MAGIC = (
+    b"\x89PNG",
+    b"\xff\xd8\xff",
+    b"GIF8",
+    b"%PDF",
+    b"SQLite format 3",
+    b"II*\x00",
+    b"MM\x00*",
+)
 _PROVENANCE_ROW = re.compile(r"^\|\s*`(models/[^`]+)`\s*\|.*`([0-9a-f]{64})`\s*\|\s*$")
 _WHEEL = re.compile(r"^(?P<name>[A-Za-z0-9_.]+)-(?P<ver>[0-9][^-]*)-.*\.whl$")
 
@@ -120,6 +130,7 @@ def verify(
     provenance: Path = ROOT / "docs" / "model_provenance.md",
     locks: tuple[Path, ...] | None = None,
     deny=None,
+    no_denylist: bool = False,
     version: str = __version__,
 ) -> tuple[list[tuple[str, bool, str]], list[tuple[str, int, str]]]:
     """(検査の結果 [(ID, 成否, 説明)], 全ファイルの一覧 [(パス, 大きさ, SHA256)])。"""
@@ -280,12 +291,28 @@ def verify(
             for n in names
             if not n.startswith("wheels/") and PurePosixPath(n).suffix.lower() in FORBIDDEN_SUFFIXES
         )
+        # アプリの wheel の中の画像・PDF の類と、拡張子を偽ったファイル(先頭のバイト列が画像・PDF・SQLite)も拒否する
+        inner_forbidden: list[str] = []
+        disguised: list[str] = []
+        for w in app:
+            with zipfile.ZipFile(io.BytesIO(z.read(w))) as wz:
+                for m in wz.namelist():
+                    if PurePosixPath(m).suffix.lower() in FORBIDDEN_SUFFIXES:
+                        inner_forbidden.append(m)
+        for n, d in data.items():
+            if not n.startswith("models/") and d.startswith(_MEDIA_MAGIC):
+                disguised.append(n)
+        forbidden = sorted(forbidden + inner_forbidden + disguised)
         deny_result = "拒否リストなし(未検査)"
         deny_ok = False
-        if deny is None:
+        if no_denylist:
+            # CI のビルド: 拒否リストを置けないので、画像・PDF・CSV・DB・zip の混入(拡張子と先頭のバイト列)だけを検査する
+            deny_ok = True
+            deny_result = "拒否リストなしで検査(CI のビルド。混入の検査は拡張子と先頭のバイト列)"
+        elif deny is None:
             with contextlib.suppress(Exception):
                 deny = _load_denylist()
-        if deny is not None:
+        if deny is not None and not no_denylist:
             pats = _deny_patterns(deny)
             hit_files = 0
             hit_words: set[int] = set()
@@ -318,8 +345,18 @@ def main() -> int:
     ap.add_argument("--sha256", help="zip の SHA256 の控え(既定: <zip>.sha256)")
     ap.add_argument("--provenance", type=Path, default=ROOT / "docs" / "model_provenance.md")
     ap.add_argument("--markdown", action="store_true", help="全ファイルの一覧を表で出す")
+    ap.add_argument(
+        "--no-denylist",
+        action="store_true",
+        help="拒否リストを使わない(CI のビルド用。B7 は画像・PDF・CSV・DB・zip の混入だけを検査する)",
+    )
     args = ap.parse_args()
-    results, listing = verify(args.zip, expected_sha256=args.sha256, provenance=args.provenance)
+    results, listing = verify(
+        args.zip,
+        expected_sha256=args.sha256,
+        provenance=args.provenance,
+        no_denylist=args.no_denylist,
+    )
     for check, ok, text in results:
         print(f"[{'OK' if ok else 'NG'}] {check} {text}")
     if args.markdown:

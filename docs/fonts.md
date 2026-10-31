@@ -7,13 +7,13 @@ OFL であること、OFL.txt の本文が SIL Open Font License 1.1 である�
 
 | フォント | 作者 | ライセンス | 取得ファイル | 出所 |
 |---|---|---|---|---|
-| Yomogi | Satsuyako | SIL Open Font License 1.1 | Yomogi-Regular.ttf | https://github.com/google/fonts/tree/main/ofl/yomogi |
-| Zen Kurenaido | Yoshimichi Ohira | SIL Open Font License 1.1 | ZenKurenaido-Regular.ttf | https://github.com/google/fonts/tree/main/ofl/zenkurenaido |
-| Klee One | Fontworks Inc. | SIL Open Font License 1.1 | KleeOne-Regular.ttf, KleeOne-SemiBold.ttf | https://github.com/google/fonts/tree/main/ofl/kleeone |
-| Hachi Maru Pop | Nonty | SIL Open Font License 1.1 | HachiMaruPop-Regular.ttf | https://github.com/google/fonts/tree/main/ofl/hachimarupop |
-| Yusei Magic | Tanukizamurai | SIL Open Font License 1.1 | YuseiMagic-Regular.ttf | https://github.com/google/fonts/tree/main/ofl/yuseimagic |
-| Kiwi Maru | Hiroki-Chan | SIL Open Font License 1.1 | KiwiMaru-Light.ttf, KiwiMaru-Regular.ttf, KiwiMaru-Medium.ttf | https://github.com/google/fonts/tree/main/ofl/kiwimaru |
-| Zen Maru Gothic | Yoshimichi Ohira | SIL Open Font License 1.1 | ZenMaruGothic-Light.ttf, ZenMaruGothic-Regular.ttf, ZenMaruGothic-Medium.ttf, ZenMaruGothic-Bold.ttf, ZenMaruGothic-Black.ttf | https://github.com/google/fonts/tree/main/ofl/zenmarugothic |
+| Yomogi | Satsuyako | SIL Open Font License 1.1 | Yomogi-Regular.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/yomogi |
+| Zen Kurenaido | Yoshimichi Ohira | SIL Open Font License 1.1 | ZenKurenaido-Regular.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/zenkurenaido |
+| Klee One | Fontworks Inc. | SIL Open Font License 1.1 | KleeOne-Regular.ttf, KleeOne-SemiBold.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/kleeone |
+| Hachi Maru Pop | Nonty | SIL Open Font License 1.1 | HachiMaruPop-Regular.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/hachimarupop |
+| Yusei Magic | Tanukizamurai | SIL Open Font License 1.1 | YuseiMagic-Regular.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/yuseimagic |
+| Kiwi Maru | Hiroki-Chan | SIL Open Font License 1.1 | KiwiMaru-Light.ttf, KiwiMaru-Regular.ttf, KiwiMaru-Medium.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/kiwimaru |
+| Zen Maru Gothic | Yoshimichi Ohira | SIL Open Font License 1.1 | ZenMaruGothic-Light.ttf, ZenMaruGothic-Regular.ttf, ZenMaruGothic-Medium.ttf, ZenMaruGothic-Bold.ttf, ZenMaruGothic-Black.ttf | https://github.com/google/fonts/tree/6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec/ofl/zenmarugothic |
 
 各フォントの著作権表示:
 
@@ -29,24 +29,26 @@ OFL であること、OFL.txt の本文が SIL Open Font License 1.1 である�
 
 ## 取得したファイルの SHA256(2026-10-30 に取得し、合成データの生成に使ったもの)
 
-取得元は google/fonts の `main`(コミットを固定していない)。**再取得したファイルの SHA256 が下と一致しないと、合成データを同じ内容(ビット単位)では再生成できない**
-(`scripts/fetch_fonts.py` が `manifest.json` に SHA256 を記録するので、突き合わせる)。フォントが更新されていた場合は、`docs/trial_rc.md` §7 の手順で、重みも作り直す。
+取得元は google/fonts の `6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec`(配布物のビルド = GitHub Actions は、`requirements/fonts-pin.txt` のコミットに固定している)。
+**取得したファイルの SHA256 が下と一致しないと、合成データを同じ内容(ビット単位)では再生成できない**
+(`python scripts/fetch_fonts.py --ref <コミット> --verify requirements/fonts.sha256` が、全ファイルを照合して、一致しなければ失敗する)。
+フォントが更新されていた場合は、`docs/trial_rc.md` §7 の手順で、重みも作り直す。
 
 | ファイル | バイト数 | SHA256 |
 |---|---:|---|
-| `HachiMaruPop-Regular.ttf` | 4,385,624 | `78408910c8f1a2f174a279cbc1484b48b71780039eba3fe1be2bfcc5d4df3f98` |
-| `KiwiMaru-Light.ttf` | 4,982,684 | `30f856bc944911b025bfbf640bf6b9ffe18a9c7b06b20d4ef26fe5cc9b3819f8` |
-| `KiwiMaru-Medium.ttf` | 5,123,612 | `b2659f300a7d48c3f29eb273ffc5e1b26cc416ac8c37ff6bb2f3e43c2f4d235a` |
-| `KiwiMaru-Regular.ttf` | 5,065,572 | `b0c3103b2639f690c1fcb44e060058383174bfd2eb72e6635bc9869b374dee87` |
+| `Yomogi-Regular.ttf` | 4,045,904 | `ec280f473a03187292905618f24fdb08a6dcbf8620b52637e3b589fe745259b9` |
+| `ZenKurenaido-Regular.ttf` | 4,303,112 | `58b8d930d9fc10c8a5810c085bae378dacb98d0779073ee6d53d919f19ee6a4f` |
 | `KleeOne-Regular.ttf` | 8,724,204 | `bf4063f030cc2ae6adf0a11424a1888e5c0eb4438f1f6d02f52294af868e9b3a` |
 | `KleeOne-SemiBold.ttf` | 8,905,128 | `b031ec426c23ca1143ef1f7d58bee7a79efe119ed654152f121c922202b303fd` |
-| `Yomogi-Regular.ttf` | 4,045,904 | `ec280f473a03187292905618f24fdb08a6dcbf8620b52637e3b589fe745259b9` |
+| `HachiMaruPop-Regular.ttf` | 4,385,624 | `78408910c8f1a2f174a279cbc1484b48b71780039eba3fe1be2bfcc5d4df3f98` |
 | `YuseiMagic-Regular.ttf` | 3,134,968 | `82098615f39ed9da6a8ccc674b9006e49c70dd5b775a7a1697f6bedd22ce25a2` |
-| `ZenKurenaido-Regular.ttf` | 4,303,112 | `58b8d930d9fc10c8a5810c085bae378dacb98d0779073ee6d53d919f19ee6a4f` |
-| `ZenMaruGothic-Black.ttf` | 3,710,324 | `6bd74fe76cd39ee0ec18775c3661d845343fb3f6f8fa09a3076638417baf741f` |
-| `ZenMaruGothic-Bold.ttf` | 3,779,008 | `fe24426b9c8b5523a0146a8235c8674eccf0493af354a53ec895c3596d9eb745` |
+| `KiwiMaru-Light.ttf` | 4,982,684 | `30f856bc944911b025bfbf640bf6b9ffe18a9c7b06b20d4ef26fe5cc9b3819f8` |
+| `KiwiMaru-Regular.ttf` | 5,065,572 | `b0c3103b2639f690c1fcb44e060058383174bfd2eb72e6635bc9869b374dee87` |
+| `KiwiMaru-Medium.ttf` | 5,123,612 | `b2659f300a7d48c3f29eb273ffc5e1b26cc416ac8c37ff6bb2f3e43c2f4d235a` |
 | `ZenMaruGothic-Light.ttf` | 3,723,392 | `c4e6fa10ff517df37cb0c13038fe2813f3c47afe6577fa4a5573200e4508b2c1` |
-| `ZenMaruGothic-Medium.ttf` | 3,810,988 | `3cfdb98a13571ede17fcc769f5093a97c38b80a7b9b2ab754a26b4d822092b3b` |
 | `ZenMaruGothic-Regular.ttf` | 3,832,756 | `a0c0b53543e0993ae2225e629c833f3d51495ad31720694ff112ce4ce11111ef` |
+| `ZenMaruGothic-Medium.ttf` | 3,810,988 | `3cfdb98a13571ede17fcc769f5093a97c38b80a7b9b2ab754a26b4d822092b3b` |
+| `ZenMaruGothic-Bold.ttf` | 3,779,008 | `fe24426b9c8b5523a0146a8235c8674eccf0493af354a53ec895c3596d9eb745` |
+| `ZenMaruGothic-Black.ttf` | 3,710,324 | `6bd74fe76cd39ee0ec18775c3661d845343fb3f6f8fa09a3076638417baf741f` |
 
 学習・較正のデータには、`YuseiMagic`・`KleeOne` を除く 11 書体を使った(`--font-exclude yusei klee`。この 2 書体は評価でだけ使う)。

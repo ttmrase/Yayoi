@@ -1,0 +1,6 @@
+# このファイルを変更して push すると、trial-build ワークフロー(.github/workflows/trial-build.yml)が動く。公開はしない(公開は trial-publish.yml。ユーザーが GitHub の画面で実行する)。
+#   mode: full  = 配布物のビルド(合成データ 1,600 ページ → 学習 → 較正 → 束 → 検査 → Windows の煙試験)。数時間かかる
+#   mode: mini  = 通し試験(同じ経路を、ごく小さなデータ・1 エポックで通す。重みは使い物にならない。配布しない)
+# request は、同じ mode でもう一度ビルドしたいときに変える番号。
+mode: mini
+request: 1

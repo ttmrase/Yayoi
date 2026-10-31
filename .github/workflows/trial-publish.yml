@@ -1,0 +1,199 @@
+name: Trial publish
+
+# 試用版を GitHub の Release(pre-release)として公開する。**ユーザーが GitHub の画面で「Run workflow」を押したときだけ動く**(入力なし。このボタンが公開の承認になる)。
+#
+# 公開する内容は、リポジトリにコミットした次の 2 つで決まる(押す前に、中身を確かめられる):
+#   docs/release/trial-v0.1.0.json … ビルド(trial-build.yml)の run_id・zip の SHA256・タグ名・タグを付けるコミット(= ビルドのコミット)・zip の名前・題名
+#   docs/release/trial-v0.1.0.md   … Release の本文(SHA256 を含む)
+#
+# 流れ: verify(読み取りだけ)→ publish(contents: write はこのジョブにだけ)
+#   verify : 指定の run が trial-build で、そのコミットで、成功したことを確かめ、artifact「trial-bundle」をダウンロードして、SHA256・ビルドの記録・B1〜B7 を再確認する。
+#            同じタグ・同じ Release がすでにあれば、上書きせずに失敗する。
+#   publish: 再ダウンロードして SHA256 を再確認 → タグ(指定のコミット)と pre-release を作り、zip と .sha256 を添付 →
+#            アセットをダウンロードし直して(認証あり・なしの両方)SHA256 を照合。一致しなければ Release とタグを削除して失敗にする。
+# 外部アクションはすべてコミットの SHA で固定。トークンは GITHUB_TOKEN だけ(PAT・secrets は使わない)。
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: trial-publish
+  cancel-in-progress: false
+
+env:
+  RELEASE_JSON: docs/release/trial-v0.1.0.json
+  RELEASE_NOTES: docs/release/trial-v0.1.0.md
+
+jobs:
+  verify:
+    name: verify the built artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install (the verify script imports the package for its version)
+        run: python -m pip install -e . -c requirements/trial-build-linux.txt
+      - name: Read and validate the release spec (JSON + notes)
+        id: spec
+        run: |
+          python scripts/trial_ci.py release-spec --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" > "$RUNNER_TEMP/spec.txt"
+          cat "$RUNNER_TEMP/spec.txt"
+          cat "$RUNNER_TEMP/spec.txt" >> "$GITHUB_OUTPUT"
+      - name: The build run is a successful trial-build of exactly this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.spec.outputs.run_id }}
+          COMMIT: ${{ steps.spec.outputs.commit }}
+        run: |
+          gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,headSha,workflowName,status,event,headBranch | tee run.json
+          python - <<'EOF'
+          import json, os, sys
+          r = json.load(open("run.json"))
+          ok = (r["workflowName"] == "Trial build" and r["status"] == "completed" and r["conclusion"] == "success"
+                and r["headSha"] == os.environ["COMMIT"])
+          print("run:", r)
+          sys.exit(0 if ok else "ビルドの run が、成功した Trial build ではない、または、コミットが JSON と違う")
+          EOF
+          git cat-file -e "$COMMIT^{commit}"
+          git merge-base --is-ancestor "$COMMIT" HEAD
+      - name: The tag and the release must not exist yet (never overwrite)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.spec.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then echo "Release $TAG はすでにあります"; exit 1; fi
+          if git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" > /dev/null 2>&1; then echo "タグ $TAG はすでにあります"; exit 1; fi
+          echo "タグも Release も、まだありません"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trial-bundle
+          run-id: ${{ steps.spec.outputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/artifact
+      - name: The artifact matches the release spec (SHA-256, build record, checks passed)
+        run: python scripts/trial_ci.py release-check --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" --dir "$RUNNER_TEMP/artifact"
+      - name: Re-run the bundle checks (B1–B7)
+        env:
+          SHA256: ${{ steps.spec.outputs.sha256 }}
+          ZIP: ${{ steps.spec.outputs.zip_name }}
+        run: |
+          python scripts/verify_trial_bundle.py "$RUNNER_TEMP/artifact/$ZIP" --sha256 "$SHA256" \
+            --provenance "$RUNNER_TEMP/artifact/model_provenance.generated.md" --no-denylist
+
+  publish:
+    name: create the pre-release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # このジョブにだけ(タグと Release の作成・アセットの添付)
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install -e . -c requirements/trial-build-linux.txt
+      - name: Read the release spec again
+        id: spec
+        run: |
+          python scripts/trial_ci.py release-spec --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" > "$RUNNER_TEMP/spec.txt"
+          cat "$RUNNER_TEMP/spec.txt"
+          cat "$RUNNER_TEMP/spec.txt" >> "$GITHUB_OUTPUT"
+      - name: The tag and the release must still not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.spec.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then echo "Release $TAG はすでにあります"; exit 1; fi
+          if git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" > /dev/null 2>&1; then echo "タグ $TAG はすでにあります"; exit 1; fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trial-bundle
+          run-id: ${{ steps.spec.outputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/artifact
+      - name: The artifact still matches the release spec
+        run: python scripts/trial_ci.py release-check --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" --dir "$RUNNER_TEMP/artifact"
+
+      - name: Create the tag and the pre-release, and attach the zip and its checksum
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.spec.outputs.tag }}
+          COMMIT: ${{ steps.spec.outputs.commit }}
+          ZIP: ${{ steps.spec.outputs.zip_name }}
+          TITLE: ${{ steps.spec.outputs.title }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --prerelease \
+            --title "$TITLE" --notes-file "$RELEASE_NOTES" \
+            "$RUNNER_TEMP/artifact/$ZIP" "$RUNNER_TEMP/artifact/$ZIP.sha256"
+
+      - name: Download the assets again and compare the SHA-256 (with the token, and anonymously)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.spec.outputs.tag }}
+          ZIP: ${{ steps.spec.outputs.zip_name }}
+          SHA256: ${{ steps.spec.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dl-auth" "$RUNNER_TEMP/dl-anon"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/dl-auth"
+          got=$(sha256sum "$RUNNER_TEMP/dl-auth/$ZIP" | cut -d' ' -f1)
+          echo "認証あり: $got"
+          test "$got" = "$SHA256"
+          test "$(cut -d' ' -f1 "$RUNNER_TEMP/dl-auth/$ZIP.sha256")" = "$SHA256"
+          # 認証なし(一般の利用者と同じ経路)。反映に少しかかることがあるので、数回やり直す
+          for i in 1 2 3 4 5; do
+            if curl -fsSL -o "$RUNNER_TEMP/dl-anon/$ZIP" "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ZIP"; then break; fi
+            sleep 10
+          done
+          anon=$(sha256sum "$RUNNER_TEMP/dl-anon/$ZIP" | cut -d' ' -f1)
+          echo "認証なし: $anon"
+          test "$anon" = "$SHA256"
+          python scripts/verify_trial_bundle.py "$RUNNER_TEMP/dl-anon/$ZIP" --sha256 "$SHA256" \
+            --provenance "$RUNNER_TEMP/artifact/model_provenance.generated.md" --no-denylist
+
+      - name: Roll back (delete the release and the tag) if anything after the creation failed
+        if: failure() && steps.create.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.spec.outputs.tag }}
+        run: |
+          echo "公開の後の確認に失敗したので、Release とタグを削除します"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || echo "削除できませんでした(Release がまだ作られていない可能性)"
+
+      - name: Summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.spec.outputs.tag }}
+          COMMIT: ${{ steps.spec.outputs.commit }}
+          SHA256: ${{ steps.spec.outputs.sha256 }}
+        run: |
+          url=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)
+          {
+            echo "### 試用版を公開しました(pre-release)"
+            echo
+            echo "- Release: $url"
+            echo "- タグ: \`$TAG\` → \`$COMMIT\`"
+            echo "- zip の SHA256: \`$SHA256\`(アセットをダウンロードし直して、認証あり・なしの両方で一致を確認)"
+            echo "- zip の SHA256 は、Release とは別の経路でも利用者に伝えてください"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$url"

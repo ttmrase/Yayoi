@@ -1,0 +1,13 @@
+# 配布物のビルド(.github/workflows/trial-build.yml の Linux のジョブ)で使う、ライブラリのバージョンの固定(pip の constraints。`pip install -c`)。
+# 開発のコンテナで重みを作った環境(2026-10-30〜31)と同じ版。torch は別に入れる(CPU 版を PyTorch の配布元から、無ければ PyPI から)。
+# この環境は、配布物の中身(Windows 向けの wheel)ではない。そちらは requirements/trial-win-cp311.txt(バージョン + ハッシュ)。
+torch==2.15.0
+numpy==2.5.3
+opencv-python-headless==5.0.0.93
+Pillow==12.3.0
+pypdfium2==5.13.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+PyYAML==6.0.3
+onnx==1.23.2
+onnxruntime==1.29.0

@@ -1,0 +1,3 @@
+# 合成帳票用フォントの取得元(google/fonts)のコミット。GitHub Actions の配布物のビルドが使う。
+# 変えるときは、取得し直した全ファイルの SHA256 が requirements/fonts.sha256 と一致することを確かめる(一致しなければ、重みも作り直す)。
+ref=6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec
