@@ -23,7 +23,7 @@ from yayoi_ocr.app import backup, gens
 from yayoi_ocr.app import db as appdb
 from yayoi_ocr.app.backup import BackupError, Limits
 from yayoi_ocr.app.security import allowed_hosts_for, new_token
-from yayoi_ocr.app.server import create_app
+from yayoi_ocr.app.server import close_app, create_app
 from yayoi_ocr.app.worker import FakeBackend
 
 PORT = 8133
@@ -656,7 +656,8 @@ def test_backup_reset_restore_returns_to_the_same_state(tmp_path):
         st = wait(c)
         assert st["error"] is None and st["pending"] is not None and st["incoming"] is None
         assert not (tmp_path / backup.PENDING_DIR / backup.INCOMING).exists()
-    # アプリを閉じて、開き直す(launcher と同じ順: apply_pending → create_app)
+    # アプリを閉じて(DB の接続を閉じる。TestClient の with は close_app を呼ばない)、開き直す(launcher と同じ順: apply_pending → create_app)
+    close_app(app)
     res = backup.apply_pending(tmp_path)
     assert res and res["ok"]
     app2, c2 = make(tmp_path)
@@ -675,6 +676,7 @@ def test_backup_reset_restore_returns_to_the_same_state(tmp_path):
         assert st["undo"] is not None  # 復元前のデータは退避されている
         assert c2.post("/api/backup/ack").json()["result"] is None
         assert c2.delete("/api/backup/undo").json()["undo"] is None
+    close_app(app2)
 
 
 def test_restore_is_refused_while_recognition_or_training_is_running(tmp_path):

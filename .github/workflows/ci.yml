@@ -219,3 +219,4 @@ jobs:
           if ($LASTEXITCODE -eq 0) { Write-Host "should refuse other-dir"; exit 1 }
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\uninstall.ps1" -InstallDir "C:\" -Force
           if ($LASTEXITCODE -eq 0) { Write-Host "should refuse the drive root"; exit 1 }
+          exit 0  # 最後に実行した外部コマンドの終了コード(拒否の 1)を、このステップの結果にしない
