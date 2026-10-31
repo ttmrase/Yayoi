@@ -7,4 +7,4 @@
 # ふだんは mode: mini の状態にしておく(このファイルは、変更して push するだけでビルドが始まるため。本番を始めるときだけ full を書き、始めたら mini に戻す〔[skip ci] を付ける〕)。
 mode: mini
 reuse_run_id: 41220750716
-request: 4
+request: 5

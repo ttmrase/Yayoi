@@ -373,7 +373,7 @@ jobs:
     name: confidence models
     needs: [plan, dumps]
     # 再利用のとき、dumps は実行されない(skipped)。失敗・取り消しがなければ実行する
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -431,7 +431,7 @@ jobs:
   bundle:
     name: bundle + verify
     needs: [plan, shards, base-weights, celltype, adapt, confidence]
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ !cancelled() && !failure() && needs.confidence.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -534,6 +534,16 @@ jobs:
           --reuse-run-id "${{ needs.plan.outputs.reuse }}" --reuse-commit "${{ needs.plan.outputs.reuse_commit }}" --reuse-info "$RUNNER_TEMP/meta_reused/infos"
           --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA"
           --out "$RUNNER_TEMP/model_provenance.generated.md" --build-info "$RUNNER_TEMP/build-info.json"
+      - name: Show the build record (reuse and the fixed confidence margins; statistics only)
+        run: |
+          python - <<'PY'
+          import json, os
+          i = json.load(open(os.environ["RUNNER_TEMP"] + "/build-info.json", encoding="utf-8"))
+          print("reuse:", i.get("reuse"))
+          print("fit_margins:", i.get("fit_margins"))
+          print("stages:", sorted({(r["stage"], r.get("run_id")) for r in i["stages"]}))
+          PY
+          sed -n '1,22p' "$RUNNER_TEMP/model_provenance.generated.md" | cut -c1-400
       - name: Build the trial bundle (offline, complete)
         run: python scripts/make_trial_bundle.py --out "$RUNNER_TEMP/trial" --models "$YAYOI_PRIVATE_DATA/models" --provenance "$RUNNER_TEMP/model_provenance.generated.md"
       - name: Name and checksum the zip
@@ -571,6 +581,8 @@ jobs:
     # HTTP の煙試験(取り込み〜認識〜確定〜cp932 の出力〜バックアップ〜復元)→ アンインストール。IME・高 DPI・実機の WebView2・弥生への実際の取り込みは実機の確認項目。
     name: smoke (windows, the bundle itself)
     needs: [plan, bundle]
+    # 再利用のとき、上流の shards などが skipped で、暗黙の success() だと、この job も飛ばされる(通し試験で確認)。bundle が成功したときだけ実行する
+    if: ${{ !cancelled() && !failure() && needs.bundle.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -695,6 +707,7 @@ jobs:
   finalize:
     name: finalize (trial-bundle artifact)
     needs: [plan, bundle, smoke-windows]
+    if: ${{ !cancelled() && !failure() && needs.bundle.result == 'success' && needs.smoke-windows.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

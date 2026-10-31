@@ -120,11 +120,16 @@ def test_the_reuse_path_skips_the_heavy_stages_and_runs_only_the_tail():
     jobs = _build_jobs()
     for name in ("shards", "base-weights"):
         assert jobs[name]["if"] == "needs.plan.outputs.reuse == ''"  # 再利用のときは作らない
-    for name in ("confidence", "bundle"):
-        assert (
-            jobs[name]["if"] == "${{ !cancelled() && !failure() }}"
-        )  # 前の段階が skipped でも進む
-    assert "reuse" not in str(jobs["smoke-windows"].get("if", "")) and "if" not in jobs["finalize"]
+    # 前の段階が skipped でも進む(暗黙の success() だと、後続の job まで飛ばされる。通し試験で確認)が、失敗・取り消しでは進まない
+    for name, needed in (
+        ("confidence", ["plan"]),
+        ("bundle", ["confidence"]),
+        ("smoke-windows", ["bundle"]),
+        ("finalize", ["bundle", "smoke-windows"]),
+    ):
+        cond = jobs[name]["if"]
+        assert "!cancelled()" in cond and "!failure()" in cond, name
+        assert all(f"needs.{n}.result == 'success'" in cond for n in needed), name
 
 
 def test_the_reuse_path_checks_the_earlier_run_before_using_anything_from_it():
