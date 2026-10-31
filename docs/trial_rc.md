@@ -10,7 +10,7 @@
 | ファイル | `yayoi-ocr-trial-0.1.0.zip`(オフライン版。`--smoke` でない完全版) |
 | 大きさ | 385,422,030 バイト(385.4 MB)、114 ファイル |
 | **zip の SHA256** | `5d69f66680faea2bd6b9846063236d85cbd82dc1f058a3316349146568526d89` |
-| 作ったコミット | `4651b73d6e2b6b9c8cd96749ded501f624df5dfc`(作業ツリーはクリーン。ブランチ `claude/handwritten-document-ocr-sgf76h`。このあとのコミットは、束に入らない文書だけの変更) |
+| 作ったコミット | `4651b73d6e2b6b9c8cd96749ded501f624df5dfc`(作業ツリーはクリーン。ブランチ `claude/handwritten-document-ocr-sgf76h`。このあとのコミットは、束に入らない文書・E2E の試験だけの変更) |
 | 作った日時 | 2026-10-31 07:36 UTC |
 | 作った環境 | Linux・Python 3.13.17・Node 22(フロントエンドのビルド)。同梱するものは Windows 64 ビット・CPython 3.11 向け |
 | 作り方 | `cd web && npm run build` → `python scripts/make_trial_bundle.py`(出力先 `$YAYOI_PRIVATE_DATA/trial/`) |
@@ -60,7 +60,7 @@ C3(データセット間の seed・書き手 ID の重なりなし)・C4(同梱 
 |---|---|---|
 | Windows の CI `trial-windows`(windows-latest・Windows PowerShell 5.1): 束を展開 → `setup.ps1` → 開発用でないモードで起動 → HTTP の煙試験(取り込み〜認識〜確定〜cp932 の出力〜バックアップ〜**復元(再起動して入れ替え)**)→ ウィンドウ起動 → アンインストール(データを残す/消す・世代の保持・別フォルダと印のないフォルダの拒否) | **smoke 版の束**(基本の重みだけ。CI に適応済みの重みを置けない)。コミット `0b9e09d`(run 64)・`4651b73`(run 65。RC のビルド元)・`618a91c`(run 66。最終) | **成功**(run 64・66 は全ジョブ成功。run 65 は trial-windows を含む 5 ジョブが成功し、E2E の 2 件が共有ランナーの遅さで揺れて落ちた → `618a91c` で是正)。経緯: run 62・63 は、アンインストールの確認(`models\` が空のまま残った)で落ち、`0b9e09d` で修正 |
 | 同じ煙試験(`scripts/trial_smoke.py`)を、**この RC の `models/`(zip から取り出した適応済みの重みを含む 9 ファイル)** で実行(Linux、データ領域 = インストール先の配置) | 最終の RC の束(zip の SHA256 `5d69f666…`)から取り出した重み。コミット `4651b73` の煙試験 | すべて成功(認識 8 秒・116 セル、確定、cp932 の出力、バックアップ → 検査 → 復元の準備 → 再起動して入れ替え → 出荷時の重みが残る・世代の組の照合・新しいページの認識、標準出力・標準エラーに入力した値なし) |
-| CI(Python 3.11 の試験・`ruff`・フロントエンドの型検査/Vitest/ビルド・Playwright E2E(ubuntu と windows)・trial-windows) | コミット `618a91c`(run 66。ここまでの変更の最終) | **全ジョブ成功**(`618a91c` は `4651b73` に対して、E2E の試験 2 件の揺れの是正だけ。**束に入るファイルは同一**) |
+| CI(Python 3.11 の試験・`ruff`・フロントエンドの型検査/Vitest/ビルド・Playwright E2E(ubuntu と windows)・trial-windows) | コミット `7dc5b3a`(run 69。最終) | **全ジョブ成功**。`4651b73`(RC のビルド元)からここまでの変更は、E2E の試験の揺れの是正(共有ランナーの遅さで落ちた perf・⑳・㉜・a11y の 4 件。いずれもアプリの不具合ではない)と文書だけで、**束に入るファイルは変わらない**(束の `docs/`・`scripts/windows/`・wheel の中身は、HEAD と一致を確認済み) |
 
 - **RC そのものを Windows の CI に通すことはできない**(適応済みの重みは公開リポジトリに置けない)。smoke 版の束の Windows CI の結果で代える。smoke 版と RC は、`make_trial_bundle.py` の同じ経路で作る(違いは `models/` の中身と `SMOKE-ONLY.txt` の有無だけ)。
 - **Windows の実機の確認は未実施**: `docs/windows_checklist.md` の F'(T1〜T12)・H(バックアップ)・I(ライセンス・ログ・アンインストール)・GPU は、利用者の PC で行う。
