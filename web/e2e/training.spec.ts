@@ -32,6 +32,19 @@ async function confirmPages(request: APIRequestContext, n: number, seed: number)
   }
 }
 
+/** 学習を始め、**この実行**が終わるまで待つ。前のテストの実行が `last` に残っているので、番号が新しくなったものだけを数える(古い結果で先へ進むと、新しい世代の採用の前にページを作ってしまう)。 */
+async function startAndWait(request: APIRequestContext, status: string) {
+  const lastRun = async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { id: number; status: string } | null }).last;
+  const before = (await lastRun())?.id ?? 0;
+  await post(request, "/api/training/start");
+  await expect
+    .poll(async () => {
+      const last = await lastRun();
+      return last && last.id > before ? last.status : null;
+    })
+    .toBe(status);
+}
+
 async function setTrainer(request: APIRequestContext, mode: string, delay = 0, auto?: boolean) {
   await post(request, "/api/dev/trainer", { mode, delay, ...(auto === undefined ? {} : { auto }) });
 }
@@ -135,10 +148,7 @@ test("㉛ 自動開始: 確定セルがしきい値たまると始まり、止�
 test("㉜ 採用した世代で認識したページの金額に「要確認でなかったのに直したセル」があると、自動で前の世代に戻り、画面の上部に通知が出る(確認で消える)", async ({ page, request }) => {
   await confirmPages(request, 7, 4000);
   await setTrainer(request, "improve", 0);
-  await post(request, "/api/training/start");
-  await expect
-    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
-    .toBe("adopted");
+  await startAndWait(request, "adopted");
   // 新しい世代で認識したページ(合成): 要確認のないページの金額を利用者が直して確定する = 観測した見逃し
   const job = (await post(request, "/api/dev/jobs", {
     pages: 1,
@@ -170,10 +180,7 @@ test("㉜ 採用した世代で認識したページの金額に「要確認で�
 test("㉝ 提案モード: 安全基準には届かないが正解率が有意に高い世代は、入力済みの値の提案に使われ(要確認の判定は変えない)、新しい世代の採用で置き換わる", async ({ page, request }) => {
   await confirmPages(request, 7, 5000);
   await setTrainer(request, "suggest");
-  await post(request, "/api/training/start");
-  await expect
-    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
-    .toBe("suggested");
+  await startAndWait(request, "suggested");
   await openApp(page);
   await tab(page, "学習").click();
   await expect(page.getByTestId("training-last-status")).toHaveText("提案モード");
@@ -197,10 +204,7 @@ test("㉝ 提案モード: 安全基準には届かないが正解率が有意�
   // 新しい世代が採用されると、提案モードの世代は置き換わる(バナーが消える)
   await confirmPages(request, 1, 5100);
   await setTrainer(request, "improve");
-  await post(request, "/api/training/start");
-  await expect
-    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
-    .toBe("adopted");
+  await startAndWait(request, "adopted");
   await tab(page, "ジョブ").click();
   await tab(page, "学習").click();
   await expect(page.getByTestId("suggest-banner")).toHaveCount(0);
@@ -216,10 +220,7 @@ const cellInput = (page: Page, row: number, col: number) => page.getByTestId(`ce
 test("㉞ 提案モードで認識したページでは、金額が親の世代と違うセルは、候補を選ぶか入力するまで Enter で通せない", async ({ page, request }) => {
   await confirmPages(request, 7, 5200);
   await setTrainer(request, "suggest");
-  await post(request, "/api/training/start");
-  await expect
-    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
-    .toBe("suggested");
+  await startAndWait(request, "suggested");
   await openApp(page);
   const stamp = `提案${Date.now() % 100000}`;
   await page.getByLabel("ジョブ名").fill(stamp);
