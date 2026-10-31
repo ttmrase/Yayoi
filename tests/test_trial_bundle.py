@@ -54,3 +54,11 @@ def test_refuses_to_write_inside_the_repo(bundle):
     repo = Path(__file__).resolve().parent.parent
     with pytest.raises(PermissionError):
         bundle.assert_safe_output_dir(repo / "dist")
+
+
+def test_write_crlf_normalizes_line_endings(bundle, tmp_path):
+    src = tmp_path / "a.txt"
+    src.write_bytes(b"a\nb\r\nc\n")
+    dest = tmp_path / "b.txt"
+    bundle.write_crlf(src, dest)
+    assert dest.read_bytes() == b"a\r\nb\r\nc\r\n"

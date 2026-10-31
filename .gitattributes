@@ -2,3 +2,7 @@
 * text=auto eol=lf
 *.sh text eol=lf
 *.py text eol=lf
+# Windows のスクリプトは CRLF で取り出す
+scripts/windows/*.ps1 text eol=crlf
+scripts/windows/*.cmd text eol=crlf
+scripts/windows/*.txt text eol=crlf

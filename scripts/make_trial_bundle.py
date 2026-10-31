@@ -48,6 +48,12 @@ yayoi-ocr 試用版 — 利用しているもの
 """
 
 
+def write_crlf(src: Path, dest: Path) -> None:
+    """Windows のスクリプト・テキストは CRLF で入れる(Git は LF で保持するので、コピーのときに揃える)。"""
+    data = src.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    dest.write_bytes(data)
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -154,12 +160,15 @@ def main() -> int:
         (ROOT / "scripts/windows/setup.ps1", "setup.ps1"),
         (ROOT / "scripts/windows/start-yayoi-ocr.cmd", "start-yayoi-ocr.cmd"),
         (ROOT / "scripts/windows/README.txt", "README.txt"),
+    ):
+        write_crlf(src, stage / name)
+    for src, name in (
         (ROOT / "docs/windows_setup.md", "windows_setup.md"),
         (ROOT / "docs/windows_checklist.md", "windows_checklist.md"),
         (ROOT / "docs/yayoi_export.md", "yayoi_export.md"),
     ):
         shutil.copy2(src, stage / name)
-    (stage / "NOTICE.txt").write_text(NOTICE, encoding="utf-8")
+    (stage / "NOTICE.txt").write_bytes(NOTICE.replace("\n", "\r\n").encode("utf-8-sig"))
 
     files = sorted(p for p in stage.rglob("*") if p.is_file())
     (stage / "MANIFEST.sha256").write_text(
