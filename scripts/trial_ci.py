@@ -68,13 +68,16 @@ EVAL_RECIPES = [
     ),
 ]
 # 公開の合格基準(director 指示): 点推定で、全体の見逃し率 <= 0.5%、金額 <= 0.1%。列ごとの値の正解率(空欄を除く)が、コンテナでの出荷時の評価
-# (docs/recognition.md の最終ホールドアウトの表)から 3 ポイントを超えて下がっていない。基本の重みと適応済みの重みの両方に適用する。
+# から 3 ポイントを超えて下がっていない。基本の重みと適応済みの重みの両方に適用する。
 MISS_LIMIT_ALL = 0.005
 MISS_LIMIT_AMOUNT = 0.001
 ACC_DROP_LIMIT = 0.03
-BASELINE_ACCURACY = {  # 値の正解率(空欄を除く)。docs/recognition.md の最終ホールドアウト
-    "adapted": {"date": 0.564, "account": 0.848, "description": 0.432, "amount": 0.628},
-    "base": {"date": 0.387, "account": 0.721, "description": 0.193, "amount": 0.526},
+# コンテナで出荷した重み(RC の束。SHA256 5d69f666…)を、元の最終ホールドアウト(200 ページ)に、この評価と同じコード(`evaluate_weights`)で
+# 当てて測った値(列ごとの accuracy_nonblank。小数第 3 位に丸めた)。見逃し数・要確認率は docs/recognition.md の表と一致することを確かめてある
+# (適応済み: 見逃し 12/21/8/2 件)。docs の表の「値の正解率」は定義が少し違う(空欄の扱い)ため、基準には、測り直した値を使う。
+BASELINE_ACCURACY = {
+    "adapted": {"date": 0.586, "account": 0.853, "description": 0.443, "amount": 0.642},
+    "base": {"date": 0.409, "account": 0.726, "description": 0.203, "amount": 0.540},
 }
 MODES = {
     "full": {
