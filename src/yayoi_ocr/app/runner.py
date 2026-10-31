@@ -103,7 +103,7 @@ class JobRunner:
                         "SELECT profile_id FROM jobs WHERE id = ?", (job_id,)
                     ).fetchone()[0]
                 )
-                ctx = learned.build_context(self.con, profile, settings.load(self.con))
+                ctx = learned.build_state(self.con, profile, settings.load(self.con))
             page_id = int(row["id"])
             try:
                 payload = PagePayload(

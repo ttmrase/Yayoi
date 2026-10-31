@@ -3,21 +3,31 @@
 確定したページの値から、次のページの認識が使う状態を**毎回作り直す**(確定の取り消し・再確定でも二重に数えない)。画像の特徴(見覚えメモリ)は
 Phase 3 では扱わない(確信度への寄与を 0 にする方針。Phase 4 で、書き手の確定データから較正してから使う)。
 プロファイルごとに分ける(ジョブが属するプロファイルの確定ページだけ)。語彙の初期値は設定(支払手段・タイトル)。
+torch を読み込まない(認識のワーカーが `JobContext` に詰め替える)。
 """
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass, field
 
-from ..recognize.learning import ConfirmedCell, update_from_confirmed
-from ..recognize.page import JobContext
+from ..recognize.state import ConfirmedCell, update_from_confirmed
 from .settings import Settings
 
 MAX_ACCOUNTS = 60
 
 
-def build_context(con: sqlite3.Connection, profile_id: int, settings: Settings) -> JobContext:
-    ctx = JobContext(
+@dataclass
+class LearnedState:
+    accounts: list[str] = field(default_factory=list)  # 科目(支払手段)の閉じた語彙
+    titles: list[str] = field(default_factory=list)  # ページのタイトルの語彙
+    dictionary: dict[str, int] = field(default_factory=dict)  # 摘要の頻度辞書
+    amount_history: dict[str, dict[int, int]] = field(default_factory=dict)  # 金額の履歴
+    prev_year: int | None = None
+
+
+def build_state(con: sqlite3.Connection, profile_id: int, settings: Settings) -> LearnedState:
+    ctx = LearnedState(
         accounts=[p.name for p in settings.payments],
         titles=[t.name for t in settings.titles],
     )

@@ -118,10 +118,10 @@ def test_learned_state_is_rebuilt_from_confirmed_pages_only(client):
         payments=[settings.PaymentMap(name="現金", credit_account="現金")],
         titles=[settings.TitleMap(name="消耗品費", debit_account="消耗品費")],
     )
-    before = learned.build_context(con, db.DEFAULT_PROFILE_ID, cfg)
+    before = learned.build_state(con, db.DEFAULT_PROFILE_ID, cfg)
     assert before.accounts == ["現金"] and before.dictionary == {} and before.amount_history == {}
     confirm_with(client, p1, {(0, 1): "掛売", (0, 2): "テスト摘要", (0, 3): "1200"})
-    after = learned.build_context(con, db.DEFAULT_PROFILE_ID, cfg)
+    after = learned.build_state(con, db.DEFAULT_PROFILE_ID, cfg)
     assert (
         after.accounts[0] == "現金" and "掛売" in after.accounts
     )  # 設定の語彙が先、確定した科目が後
@@ -129,13 +129,13 @@ def test_learned_state_is_rebuilt_from_confirmed_pages_only(client):
     assert after.amount_history["d:テスト摘要"] == {1200: 1}
     assert after.amount_history["a:掛売"] == {1200: 1}
     assert (
-        learned.build_context(con, db.DEFAULT_PROFILE_ID, cfg).dictionary == after.dictionary
+        learned.build_state(con, db.DEFAULT_PROFILE_ID, cfg).dictionary == after.dictionary
     )  # 何度でも同じ
     # 再オープン → 状態から外れる(二重に数えない)
     client.post(f"/api/pages/{p1}/reopen")
-    assert learned.build_context(con, db.DEFAULT_PROFILE_ID, cfg).dictionary == {}
+    assert learned.build_state(con, db.DEFAULT_PROFILE_ID, cfg).dictionary == {}
     confirm_with(client, p1, {})
-    again = learned.build_context(con, db.DEFAULT_PROFILE_ID, cfg)
+    again = learned.build_state(con, db.DEFAULT_PROFILE_ID, cfg)
     assert again.dictionary["テスト摘要"] == 1
 
 
@@ -145,8 +145,8 @@ def test_learned_state_is_per_profile(client):
     confirm_with(client, p1, {(0, 2): "共通の摘要"})
     con = client.app_.state.db
     con.execute("INSERT INTO profiles (id, name, created_at) VALUES (2, '別の人', 0)")
-    mine = learned.build_context(con, db.DEFAULT_PROFILE_ID, settings.Settings())
-    other = learned.build_context(con, 2, settings.Settings())
+    mine = learned.build_state(con, db.DEFAULT_PROFILE_ID, settings.Settings())
+    other = learned.build_state(con, 2, settings.Settings())
     assert "共通の摘要" in mine.dictionary and other.dictionary == {}
 
 
@@ -157,12 +157,11 @@ def test_confirmed_titles_join_the_title_vocabulary(client):
     con = client.app_.state.db
     assert (
         "新しい勘定"
-        not in learned.build_context(con, db.DEFAULT_PROFILE_ID, settings.Settings()).titles
+        not in learned.build_state(con, db.DEFAULT_PROFILE_ID, settings.Settings()).titles
     )
     confirm_with(client, p1, {})
     assert (
-        "新しい勘定"
-        in learned.build_context(con, db.DEFAULT_PROFILE_ID, settings.Settings()).titles
+        "新しい勘定" in learned.build_state(con, db.DEFAULT_PROFILE_ID, settings.Settings()).titles
     )
 
 
