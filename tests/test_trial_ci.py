@@ -348,6 +348,20 @@ def test_a_smoke_result_for_a_different_zip_or_a_failed_check_is_not_ok(tmp_path
 # ---- 評価(trial-eval)と公開の条件
 
 
+@pytest.fixture(autouse=True)
+def _measured_baselines(monkeypatch, request):
+    """基準値が仮のままだと評価は必ず不合格になる(専用の試験で確かめる)。ほかの試験では、測定済みとして扱う。"""
+    if "provisional" not in request.node.name:
+        monkeypatch.setattr(tci, "BASELINES_PROVISIONAL", set())
+
+
+def test_an_evaluation_cannot_pass_while_the_baseline_is_provisional(monkeypatch):
+    monkeypatch.setattr(tci, "BASELINES_PROVISIONAL", {tci.FINAL_HOLDOUT})
+    out = tci.merge_eval(good_result("base"), good_result("adapted"), {"mode": "full"})
+    assert out["passed"] is False
+    assert [c["id"] for c in out["checks"] if not c["ok"]] == ["baseline_measured"]
+
+
 def stats(miss_rate: float, acc: float, n: int = 5800) -> dict:
     return {
         "n": n,

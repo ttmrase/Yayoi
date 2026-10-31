@@ -38,7 +38,7 @@ docs/release/trial-v0.1.0.{json,md} をコミット   ─▶ (公開の内容が
   - **照合(plan ジョブ。通らなければ、何も作らずに失敗)**: ① 前の run が「trial-build.yml の、同じブランチの、成功した実行」(`run-check`)。② 前の run の段階の記録(シャード 16・celltype・adapt・rehearsal・ダンプ 4)が**そろっていて、
     モードが同じで、記録したコマンドが、いまのコミットが実行するコマンドと一致する**(インタプリタのパスの違いは無視)。③ 前の run のコミットが、いまのコミットの祖先で、**学習・認識・合成に関わるファイル
     (`src/`・`requirements/`・`pyproject.toml`・`scripts/` の build_synth_cells・train_celltype・train_adapt・build_rehearsal・eval_recognize・fetch_models・fetch_fonts)が変わっていない**(`scripts/trial_ci.py reuse-check`)。
-    確信度の較正(`fit`)は、いまのコミットの処理でやり直す。再利用の連鎖(再利用ビルドの run を、さらに再利用する)はできない(段階の記録が無いため)。
+    確信度の較正(`fit`)は、いまのコミットの処理でやり直す。**`scripts/trial_ci.py` の run 系の関数(コマンドに現れない処理)を変えたときは、reuse-check に出ないので、再利用を使わない**(checker 指摘)。再利用の連鎖(再利用ビルドの run を、さらに再利用する)はできない(段階の記録が無いため)。
   - **出所の文書**(`model_provenance.md` §0)に、再利用元の run・コミットと、この run でやり直したのは確信度の較正だけであること、変更点(科目の余裕 0.6 → 0.3)を書く。段階の表に、段階ごとの run を載せる。
     `build-info.json` に `reuse`(元の run・コミット)と `fit_margins` を記録し、trial-publish の verify は、`fit_margins` が固定した値であることを確かめる。
   - **前の run の artifact の保持は 2 日**(重み・ダンプ・記録は `retention-days: 2`)。期限(前の run の完了から約 2 日)を過ぎると、再利用はできない(全部作り直す)。

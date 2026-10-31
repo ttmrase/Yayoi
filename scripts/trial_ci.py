@@ -113,6 +113,8 @@ BASELINES = {
     },
 }
 BASELINE_ACCURACY = BASELINES[FINAL_HOLDOUT]
+# 基準値が仮のホールドアウト。含まれている間は、評価は必ず不合格になる(仮の値のまま合格しないため。checker 指摘 V-2)。測り直した値を入れたら外す。
+BASELINES_PROVISIONAL = {"v2"}
 MODES = {
     "full": {
         "chunk": 100,
@@ -848,7 +850,7 @@ def required_eval_check_ids() -> list[str]:
         ids.append(f"{w}:miss:overall")
         ids += [f"{w}:miss:{c}" for c in MISS_LIMIT_COLUMN]
         ids += [f"{w}:acc:{c}" for c in BASELINE_ACCURACY[w]]
-    ids += ["holdout", "pages"]
+    ids += ["baseline_measured", "holdout", "pages"]
     return ids
 
 
@@ -926,6 +928,15 @@ def merge_eval(base: dict, adapted: dict, meta: dict) -> dict:
     checks = eval_checks(base, "base") + eval_checks(adapted, "adapted")
     pages_ok = base["pages"] >= 200 and adapted["pages"] >= 200 if meta["mode"] == "full" else True
     holdout = base.get("holdout")
+    checks.append(
+        {
+            "id": "baseline_measured",
+            "name": "コンテナの重みの基準値が、測り直した値(仮の値でない)",
+            "value": holdout,
+            "limit": "測定済み",
+            "ok": holdout not in BASELINES_PROVISIONAL,
+        }
+    )
     checks.append(
         {
             "id": "holdout",

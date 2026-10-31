@@ -373,7 +373,7 @@ jobs:
     name: confidence models
     needs: [plan, dumps]
     # 再利用のとき、dumps は実行されない(skipped)。失敗・取り消しがなければ実行する
-    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' && (needs.plan.outputs.reuse != '' || needs.dumps.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -431,7 +431,7 @@ jobs:
   bundle:
     name: bundle + verify
     needs: [plan, shards, base-weights, celltype, adapt, confidence]
-    if: ${{ !cancelled() && !failure() && needs.confidence.result == 'success' }}
+    if: ${{ !cancelled() && !failure() && needs.confidence.result == 'success' && (needs.plan.outputs.reuse != '' || (needs.shards.result == 'success' && needs.base-weights.result == 'success' && needs.celltype.result == 'success' && needs.adapt.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

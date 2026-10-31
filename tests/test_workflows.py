@@ -130,6 +130,13 @@ def test_the_reuse_path_skips_the_heavy_stages_and_runs_only_the_tail():
         cond = jobs[name]["if"]
         assert "!cancelled()" in cond and "!failure()" in cond, name
         assert all(f"needs.{n}.result == 'success'" in cond for n in needed), name
+    # 再利用でない通常のビルドでは、上流の job が skipped でも進む、ということがないように、成功を明示して求める
+    assert (
+        "needs.plan.outputs.reuse != '' || needs.dumps.result == 'success'"
+        in jobs["confidence"]["if"]
+    )
+    for n in ("shards", "base-weights", "celltype", "adapt"):
+        assert f"needs.{n}.result == 'success'" in jobs["bundle"]["if"], n
 
 
 def test_the_reuse_path_checks_the_earlier_run_before_using_anything_from_it():
