@@ -214,6 +214,10 @@ MIGRATIONS: list[str] = [
     CREATE UNIQUE INDEX ux_generations_profile_number ON generations(profile_id, number);
     ALTER TABLE generations ADD COLUMN ack INTEGER NOT NULL DEFAULT 0;           -- 使えなくなった世代(broken / halted)の警告を利用者が確認した
     """,
+    # --- v11: 提案モード(安全基準には届かないが正解率が有意に高い世代の値を、入力済みの値の提案に使う)。そのページの認識で提案に使った世代
+    """
+    ALTER TABLE pages ADD COLUMN suggest_generation INTEGER;                     -- 提案モードで使った世代の ID(使っていなければ NULL)
+    """,
 ]
 
 

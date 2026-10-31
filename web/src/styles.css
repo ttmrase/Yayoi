@@ -530,3 +530,9 @@ ul.plain {
 .notice-banner p {
   margin: 4px 0;
 }
+.suggest-banner {
+  background: #eef6ee;
+  border: 1px solid #5a9a5a;
+  padding: 6px 12px;
+  max-width: 70em;
+}

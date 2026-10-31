@@ -166,3 +166,33 @@ test("㉜ 採用した世代で認識したページの金額に「要確認で�
   await page.locator('[data-testid^="ack-notice-"]').first().click();
   await expect(page.getByTestId("notice-banner")).toHaveCount(0);
 });
+
+test("㉝ 提案モード: 安全基準には届かないが正解率が有意に高い世代は、入力済みの値の提案に使われ(要確認の判定は変えない)、新しい世代の採用で置き換わる", async ({ page, request }) => {
+  await confirmPages(request, 7, 5000);
+  await setTrainer(request, "suggest");
+  await post(request, "/api/training/start");
+  await expect
+    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
+    .toBe("suggested");
+  await openApp(page);
+  await tab(page, "学習").click();
+  await expect(page.getByTestId("training-last-status")).toHaveText("提案モード");
+  await expect(page.getByTestId("active-generation")).toHaveText("世代 0(出荷時)"); // 使用中の世代は変わらない
+  await expect(page.getByTestId("suggest-banner")).toContainText("提案モードで使用中");
+  await expect(page.getByTestId("suggest-banner")).toContainText("要確認の判定は変えません");
+  const detail = page.locator('[data-testid^="suggest-detail-"]').first();
+  await expect(detail).toContainText("符号検定");
+  await expect(detail).toContainText("金額に「要確認でないのに誤り」");
+  await expect(page.getByRole("button", { name: "この世代に戻す" })).toHaveCount(0); // 提案モードの世代は通常の世代としては戻せない
+  // 新しい世代が採用されると、提案モードの世代は置き換わる(バナーが消える)
+  await confirmPages(request, 1, 5100);
+  await setTrainer(request, "improve");
+  await post(request, "/api/training/start");
+  await expect
+    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
+    .toBe("adopted");
+  await tab(page, "ジョブ").click();
+  await tab(page, "学習").click();
+  await expect(page.getByTestId("suggest-banner")).toHaveCount(0);
+  await expect(page.getByTestId("generations")).toContainText("新しい世代に置き換えられました");
+});

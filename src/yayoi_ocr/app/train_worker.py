@@ -291,8 +291,39 @@ def run(plan: dict, run_dir: Path, progress: Progress | None = None) -> dict:
         for pg, fl in zip(parent_obs, parent_flags, strict=True):
             if evalstats.review_flags(pg, parent_cal) != fl:
                 raise WorkerError("review_replay_mismatch")
+    # 提案モードの判定に使う、親と新世代の対応(値が違うセルのうち、どちらが正しいか)
+    paired = {"cand_only_correct": 0, "parent_only_correct": 0, "both_correct": 0, "both_wrong": 0}
+    for ppg, cpg in zip(parent_obs, cand_obs, strict=True):
+        for po, co in zip(ppg, cpg, strict=True):
+            if not po.nonblank:
+                continue
+            key = (
+                "both_correct"
+                if po.correct and co.correct
+                else "cand_only_correct"
+                if co.correct
+                else "parent_only_correct"
+                if po.correct
+                else "both_wrong"
+            )
+            paired[key] += 1
     side_global = evalstats.side_from(cand_obs, cand_flags)
     _log(f"eval: candidate(global thresholds) {_fmt(side_global)}")
+
+    # ---- 3b. 提案モードの世代がすでにあれば、同じ評価用ページで評価する(あとで採用基準をすべて満たしたら、通常の採用に昇格させる)。
+    # その確信度は作成時に決まっていて、今回の評価ページに合わせていないので、実際の判定をそのまま数えてよい(循環しない)
+    prev = plan.get("suggest_prev")
+    side_prev = None
+    if prev:
+        try:
+            prev_engine = ParseqEngine(models_dir=Path(prev["weights_dir"]), device=device)
+            prev_cal = ConfidenceModel.load(prev["confidence"])
+            prev_obs, prev_flags = evaluate(PageRecognizer(prev_engine, clf, calibrator=prev_cal))
+            del prev_engine
+            side_prev = evalstats.side_from(prev_obs, prev_flags)
+            _log(f"eval: previous suggestion {_fmt(side_prev)}")
+        except (OSError, ValueError, KeyError):
+            _log("eval: previous suggestion unusable")
 
     # ---- 4. 再較正(全体の較正から出発。観測した見逃しが目標を超えた列だけ厳しくする)+ クロスフィッティング
     prog("recalibrate", 0.92)
@@ -347,6 +378,8 @@ def run(plan: dict, run_dir: Path, progress: Progress | None = None) -> dict:
         "eval": {
             "parent": parent_side.to_dict(),
             "candidate": cand_side.to_dict(),  # クロスフィッティングした判定での成績(ゲートが使う)
+            "paired": paired,
+            **({"suggest_prev": side_prev.to_dict()} if side_prev is not None else {}),
             "candidate_global": side_global.to_dict(),  # 参考: 全体の較正のしきい値のまま
             "candidate_final": side_final.to_dict(),  # 参考: 採用した場合に使うしきい値(楽観的)
         },

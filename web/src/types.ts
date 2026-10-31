@@ -134,6 +134,7 @@ export const REASON_LABEL: Record<string, string> = {
   dash_digit_ambiguity: "末尾の「-」か数字か不明",
   row_inconsistent: "行の整合",
   ditto_source_uncertain: "〃の参照元が要確認",
+  suggest_disagreement: "提案モード: 親の世代と値が違う",
   ditto_source_changed: "参照元が変わった",
   year_unknown: "年が不明",
   month_decreased: "月が戻った",
@@ -324,7 +325,7 @@ export interface Generation {
   parent_id: number | null;
   created_at: number;
   activated_at: number | null;
-  status: "active" | "retired" | "rejected" | "discarded" | "broken" | "halted";
+  status: "active" | "retired" | "rejected" | "discarded" | "broken" | "halted" | "suggest";
   reject_reason: string | null;
   n_train_pages: number | null;
   n_eval_pages: number | null;
@@ -333,6 +334,10 @@ export interface Generation {
   restorable: boolean;
   n_recognized: number | null;
   /** 安全のため停止したときの理由と件数(観測した見逃しの件数・全セル数) */
+  /** 提案モード: 値が違うセルのうち、この世代が正しい件数 / 親が正しい件数 と、符号検定の片側 p */
+  suggest?: { better: number; worse: number; p: number } | null;
+  n_suggested?: number;
+  suggest_in_effect?: boolean;
   halt?: { code: string; k_total?: number; k_amount?: number; n_cells?: number; n_pages?: number } | null;
   observed?: GenerationObserved | null;
 }
@@ -344,11 +349,27 @@ export interface Notice {
   code: string;
   at: number | null;
 }
+/** 提案モードの効果(提案モードで認識した確定ページと、そうでないページの比較) */
+export interface SuggestEffectSide {
+  n_pages: number;
+  n_text: number;
+  n_review: number;
+  n_review_unchanged: number;
+  n_corrected: number;
+  review_unchanged_share: number | null;
+  review_per_page: number | null;
+  corrected_per_page: number | null;
+}
+export interface SuggestEffect {
+  suggest: SuggestEffectSide;
+  normal: SuggestEffectSide;
+}
 export interface LearningData {
   profile_id: number;
   generations: Generation[];
   active_id: number | null;
   notices: Notice[];
+  suggest_effect: SuggestEffect;
   pages: PageMetric[];
   summary: {
     n_pages: number;
@@ -364,7 +385,7 @@ export interface LearningData {
 }
 
 // ---- 追加学習(Phase 4)
-export type TrainingStatus = "running" | "adopted" | "rejected" | "deferred" | "failed" | "interrupted";
+export type TrainingStatus = "running" | "adopted" | "suggested" | "rejected" | "deferred" | "failed" | "interrupted";
 export interface TrainingRun {
   id: number;
   trigger: "auto" | "manual";

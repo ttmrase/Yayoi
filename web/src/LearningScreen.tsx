@@ -64,6 +64,43 @@ function Trend({ pages, genNumber }: { pages: PageMetric[]; genNumber: Record<nu
   );
 }
 
+/** 提案モードの効果: 提案モードで認識して確定したページと、そうでないページの比較 */
+function SuggestEffectPanel({ effect }: { effect: LearningData["suggest_effect"] }) {
+  if (!effect || effect.suggest.n_pages === 0) return null;
+  const row = (label: string, d: LearningData["suggest_effect"]["suggest"], testid: string) => (
+    <tr data-testid={testid}>
+      <td>{label}</td>
+      <td>{d.n_pages}</td>
+      <td>{d.review_per_page === null ? "—" : d.review_per_page.toFixed(1)}</td>
+      <td>{pct(d.review_unchanged_share)}</td>
+      <td>{d.corrected_per_page === null ? "—" : d.corrected_per_page.toFixed(1)}</td>
+    </tr>
+  );
+  return (
+    <section data-testid="suggest-effect">
+      <h2>提案モードの効果</h2>
+      <p className="hint">
+        確定したページでの比較です(値の内容は記録しません)。「入力済みの値をそのまま確定した割合」は、要確認だったセルのうち、直さずに確定したものの割合です。
+      </p>
+      <table className="jobs">
+        <thead>
+          <tr>
+            <th>認識のしかた</th>
+            <th>確定したページ</th>
+            <th>要確認のセル / ページ</th>
+            <th>入力済みの値をそのまま確定した割合</th>
+            <th>直したセル / ページ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {row("提案モード", effect.suggest, "effect-suggest")}
+          {row("通常", effect.normal, "effect-normal")}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 export default function LearningScreen() {
   const [data, setData] = useState<LearningData | null>(null);
   const [error, setError] = useState(false);
@@ -122,6 +159,15 @@ export default function LearningScreen() {
         </b>
         。確定したページの摘要・科目・金額は、次のページの認識(辞書・語彙・金額の履歴)にすでに反映されています。
       </p>
+      {data.generations.some((g) => g.suggest_in_effect) && (
+        <p className="suggest-banner" role="status" data-testid="suggest-banner">
+          <b>提案モードで使用中:</b>確認の手間を減らしますが、要確認の判定は変えません。
+          {(() => {
+            const g = data.generations.find((x) => x.suggest_in_effect)!;
+            return `世代 ${g.number} の値を入力済みにします。親の世代と値が違うセルは必ず要確認になり、親の値も候補に入ります。`;
+          })()}
+        </p>
+      )}
       <div className="tiles" data-testid="learning-summary">
         <div>
           <b>{s.n_pages}</b>
@@ -162,6 +208,7 @@ export default function LearningScreen() {
         </button>{" "}
         <span className="hint">ページ数・要確認率・直した割合・確認時間だけを含みます。帳票の内容(日付・科目・摘要・金額の値)は含まれません。</span>
       </p>
+      <SuggestEffectPanel effect={data.suggest_effect} />
       <TrainingPanel onFinished={load} />
       <h2>世代</h2>
       <p className="hint">
@@ -190,7 +237,15 @@ export default function LearningScreen() {
               <td>{g.kind === "shipped" ? "世代 0(出荷時)" : `世代 ${g.number}`}</td>
               <td>
                 {GEN_STATUS_TEXT[g.status] ?? g.status}
-                {g.reject_reason && <div className="hint">{reasonText(g.reject_reason)}</div>}
+                {g.status === "suggest" && (
+                  <div className="hint" data-testid={`suggest-detail-${g.number}`}>
+                    {g.suggest_in_effect ? "使用中。" : "親の世代が使用中でないため、いまは使っていません。"}
+                    採用基準には届きませんでした(理由: {reasonText(g.reject_reason)})が、親と値が違うセルのうち、この世代が正しいものが
+                    {g.suggest?.better ?? "—"} 件、親が正しいものが {g.suggest?.worse ?? "—"} 件で、正解率は有意に高い(符号検定 p = {g.suggest?.p?.toFixed(4) ?? "—"})ため、
+                    入力済みの値の提案に使います。この世代で提案したページ: {g.n_suggested ?? 0}
+                  </div>
+                )}
+                {g.status !== "suggest" && g.reject_reason && <div className="hint">{reasonText(g.reject_reason)}</div>}
               </td>
               <td>{g.kind === "shipped" ? "—" : fmt(g.created_at)}</td>
               <td>{g.kind === "shipped" ? "—" : `${g.n_train_pages ?? "—"} / ${g.n_eval_pages ?? "—"}`}</td>

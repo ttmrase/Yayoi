@@ -592,3 +592,97 @@ def test_halt_returns_to_the_restorable_parent_and_cannot_be_restored(con, tmp_p
     assert (
         gens.halt(con, models(tmp_path), g3, "halted_miss_rate")["status"] == "halted"
     )  # 何度呼んでも同じ
+
+
+# ---- 提案モードの世代
+
+
+def add_suggest(con, tmp_path, number, parent_id=None):
+    write_weights(tmp_path, 1, number)
+    return gens.register(
+        con,
+        models(tmp_path),
+        profile_id=1,
+        number=number,
+        parent_id=parent_id or gens.active(con)["id"],
+        meta={"n_train_pages": 7, "suggest": {"better": 20, "worse": 2, "p": 0.0001}},
+        adopt=False,
+        suggest=True,
+        reject_reason="amount_miss",
+    )
+
+
+def test_a_suggestion_is_offered_only_while_its_parent_is_in_use(con, tmp_path):
+    s = add_suggest(con, tmp_path, 1)
+    w = gens.weights_for(con, models(tmp_path))
+    assert w.dir is None and w.number == 0  # 使用中は親(出荷時)のまま
+    assert w.suggest is not None and w.suggest.generation_id == s and w.suggest.number == 1
+    assert (
+        w.suggest.dir == models(tmp_path) / "1" / "gen_0001"
+        and w.suggest.confidence.name == "confidence.json"
+    )
+    row = con.execute("SELECT * FROM generations WHERE id = ?", (s,)).fetchone()
+    assert (row["status"], row["reject_reason"]) == ("suggest", "amount_miss")
+    listed = next(g for g in gens.list_generations(con, models(tmp_path)) if g["id"] == s)
+    assert listed["suggest_in_effect"] is True and listed["restorable"] is False
+    assert listed["suggest"]["better"] == 20
+    with pytest.raises(store.StoreError):  # 提案モードの世代は、通常の世代としては戻せない
+        gens.activate(con, models(tmp_path), s)
+
+
+def test_only_one_suggestion_exists_and_a_new_one_replaces_the_old(con, tmp_path):
+    s1 = add_suggest(con, tmp_path, 1)
+    s2 = add_suggest(con, tmp_path, 2)
+    r1 = con.execute("SELECT * FROM generations WHERE id = ?", (s1,)).fetchone()
+    assert (r1["status"], r1["reject_reason"]) == ("rejected", "superseded")
+    assert not (models(tmp_path) / "1" / "gen_0001").exists()  # 置き換えられた重みは消える
+    assert gens.weights_for(con, models(tmp_path)).suggest.generation_id == s2
+
+
+def test_adopting_or_rolling_back_drops_a_suggestion_whose_parent_is_no_longer_in_use(
+    con, tmp_path
+):
+    shipped = gens.shipped(con)["id"]
+    s = add_suggest(con, tmp_path, 1)
+    g2 = add_trained(con, tmp_path, 2)  # 別の世代が採用された → 提案の親(出荷時)は使用中でなくなる
+    assert (
+        con.execute("SELECT status FROM generations WHERE id = ?", (s,)).fetchone()[0] == "rejected"
+    )
+    assert gens.weights_for(con, models(tmp_path)).suggest is None
+    s2 = add_suggest(con, tmp_path, 3)  # 世代 2 を親とする提案
+    assert gens.weights_for(con, models(tmp_path)).suggest.generation_id == s2
+    gens.activate(con, models(tmp_path), shipped)  # ロールバック → 親が使用中でない
+    assert (
+        con.execute("SELECT status FROM generations WHERE id = ?", (s2,)).fetchone()[0]
+        == "rejected"
+    )
+    assert gens.active(con)["id"] == shipped and g2 != shipped
+
+
+def test_a_broken_suggestion_is_dropped_with_a_warning_but_recognition_continues(con, tmp_path):
+    s = add_suggest(con, tmp_path, 1)
+    (models(tmp_path) / "1" / "gen_0001" / gens.CONFIDENCE_FILE).unlink()
+    w = gens.weights_for(con, models(tmp_path))
+    assert w.suggest is None and w.dir is None  # 親での認識は続く
+    assert [(n["id"], n["code"]) for n in gens.notices(con)] == [(s, "confidence_missing")]
+
+
+def test_promoting_a_suggestion_makes_it_the_active_generation(con, tmp_path):
+    s = add_suggest(con, tmp_path, 1)
+    out = gens.promote(con, models(tmp_path), s, {"run": 3})
+    assert out["status"] == "active" and gens.active(con)["id"] == s
+    assert gens.shipped(con)["status"] == "retired"
+    assert (
+        con.execute("SELECT reject_reason FROM generations WHERE id = ?", (s,)).fetchone()[0]
+        is None
+    )
+    assert gens.weights_for(con, models(tmp_path)).number == 1
+    with pytest.raises(store.StoreError):
+        gens.promote(con, models(tmp_path), s)  # すでに採用済み
+
+
+def test_reset_discards_a_suggestion_and_removes_its_weights(con, tmp_path):
+    add_suggest(con, tmp_path, 1)
+    assert gens.reset(con, models(tmp_path)) == 1
+    assert not (models(tmp_path) / "1" / "gen_0001").exists()
+    assert gens.weights_for(con, models(tmp_path)).suggest is None

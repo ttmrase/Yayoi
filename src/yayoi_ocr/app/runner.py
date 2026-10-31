@@ -147,6 +147,16 @@ class JobRunner:
                     weights_dir=None if w is None or w.dir is None else str(w.dir),
                     confidence=None if w is None or w.confidence is None else str(w.confidence),
                     confidence_warm=warm,
+                    suggest_weights_dir=(
+                        None
+                        if w is None or w.suggest is None or w.suggest.dir is None
+                        else str(w.suggest.dir)
+                    ),
+                    suggest_confidence=(
+                        None
+                        if w is None or w.suggest is None or w.suggest.confidence is None
+                        else str(w.suggest.confidence)
+                    ),
                     pagedata_path=(
                         None
                         if self.pagedata_root is None
@@ -163,6 +173,7 @@ class JobRunner:
                         outcome.last_year,
                         outcome.seconds,
                         None if w is None else w.generation_id,
+                        w.suggest.generation_id if outcome.suggested and w and w.suggest else None,
                     )
             except Exception as exc:  # 1 ページの失敗でジョブ全体を止めない
                 with self.lock:

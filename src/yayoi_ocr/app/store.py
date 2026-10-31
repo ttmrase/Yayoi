@@ -193,6 +193,7 @@ def fill_page(
     last_year: int | None = None,
     seconds: float | None = None,
     generation: int | None = None,
+    suggest_generation: int | None = None,
 ) -> None:
     """認識結果をページに書き込んで 'review' にする(再実行しても同じ結果になるよう、既存のセルは作り直す)。"""
     with transaction(con):
@@ -219,7 +220,7 @@ def fill_page(
             " last_year = ?, error = NULL, recognized_at = ?, recognize_seconds = ?,"
             " view_path = COALESCE(?, view_path), view_scale = COALESCE(?, view_scale),"
             " layout_info = COALESCE(?, layout_info), title_recognized = ?, revision = revision + 1,"
-            " generation = COALESCE(?, generation) WHERE id = ?",
+            " generation = COALESCE(?, generation), suggest_generation = ? WHERE id = ?",
             (
                 "ok" if spec.approved else spec.layout_status,
                 _j([] if spec.approved else spec.layout_reasons),
@@ -232,6 +233,7 @@ def fill_page(
                 None if spec.layout_info is None else _j(spec.layout_info),
                 spec.title_recognized,
                 generation,
+                suggest_generation,
                 page_id,
             ),
         )

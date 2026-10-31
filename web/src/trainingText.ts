@@ -2,6 +2,8 @@ import type { TrainingStatus } from "./types";
 
 /** 追加学習の理由コード → 画面の文言。コードはサーバ(app/gate.py・trainers.py・training.py)が返し、値(摘要・金額)は含まない。 */
 const REASONS: Record<string, string> = {
+  promoted_suggestion: "提案モードの世代が、新しい評価用ページで採用基準をすべて満たしたため、通常の採用に昇格しました",
+  superseded: "新しい世代に置き換えられました",
   adopted_accuracy_up: "評価用ページで正解率が上がったため採用しました",
   adopted_review_down: "評価用ページで要確認が減ったため採用しました",
   amount_miss: "評価用ページで、金額に「要確認でないのに誤り」が見つかったため、採用しませんでした",
@@ -45,12 +47,14 @@ export const GEN_STATUS_TEXT: Record<string, string> = {
   rejected: "不採用",
   discarded: "リセットで破棄",
   broken: "使用停止(組が壊れている)",
+  suggest: "提案モード",
   halted: "安全のため停止",
 };
 
 export const STATUS_TEXT: Record<TrainingStatus, string> = {
   running: "学習中",
   adopted: "採用",
+  suggested: "提案モード",
   rejected: "不採用",
   deferred: "見送り",
   failed: "失敗",

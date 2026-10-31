@@ -97,6 +97,32 @@ def by_generation(rows: list[dict]) -> dict[int, dict]:
     return out
 
 
+def suggest_effect(con: sqlite3.Connection, profile_id: int) -> dict:
+    """提案モードで認識した確定ページと、そうでないページの比較(件数と割合だけ)。
+    「入力済みの値をそのまま確定した割合」= 要確認だったセルのうち、利用者が直さずにそのまま確定したもの。直した回数 = 値を直したセル(要確認の有無を問わない)。"""
+    q = ",".join("?" * len(CORRECTED))
+    out: dict[str, dict] = {}
+    for key, flag in (("suggest", 1), ("normal", 0)):
+        r = con.execute(
+            "SELECT COUNT(DISTINCT p.id) AS n_pages,"
+            " COALESCE(SUM(c.kind != 'blank'), 0) AS n_text,"
+            " COALESCE(SUM(c.kind != 'blank' AND c.review = 1), 0) AS n_review,"
+            " COALESCE(SUM(c.kind != 'blank' AND c.review = 1 AND c.edit_kind = 'unchanged'), 0) AS n_review_unchanged,"
+            f" COALESCE(SUM(c.kind != 'blank' AND c.edit_kind IN ({q})), 0) AS n_corrected"
+            " FROM cells c JOIN pages p ON p.id = c.page_id JOIN jobs j ON j.id = p.job_id"
+            " WHERE p.status = 'confirmed' AND j.profile_id = ?"
+            " AND (p.suggest_generation IS NOT NULL) = ?",
+            (*CORRECTED, profile_id, flag),
+        ).fetchone()
+        d = {k: int(r[k]) for k in r.keys()}  # noqa: SIM118
+        n_pages, n_review = d["n_pages"], d["n_review"]
+        d["review_unchanged_share"] = d["n_review_unchanged"] / n_review if n_review else None
+        d["review_per_page"] = n_review / n_pages if n_pages else None
+        d["corrected_per_page"] = d["n_corrected"] / n_pages if n_pages else None
+        out[key] = d
+    return out
+
+
 _COUNT_KEYS = (
     "n_cells",
     "n_text",
@@ -177,6 +203,11 @@ def generation_report(con: sqlite3.Connection, profile_id: int, rows: list[dict]
                     }
                     for col, c in recal.items()
                 },
+                "suggest": (
+                    {k: (meta.get("suggest") or {}).get(k) for k in ("better", "worse", "p")}
+                    if meta.get("suggest")
+                    else None
+                ),
                 "halt": {
                     k: (meta.get("halt") or {}).get(k)
                     for k in ("code", "k_total", "k_amount", "n_cells", "n_pages")
@@ -261,6 +292,7 @@ def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: floa
         "review_reasons": dict(sorted(reasons.items())),
         "edit_kinds": edit_kinds,
         "generations": generation_report(con, profile_id, rows),
+        "suggest_effect": suggest_effect(con, profile_id),
         "training_runs": training_report(con, profile_id),
         "pages": [
             {

@@ -92,7 +92,8 @@ def _mock_side(
 class MockTrainer:
     """合成の成績を返す学習器(重みは空のファイル)。評価用ページの非空欄セル数は、計画の実際の件数を使う(評価が足りない場合の見送りも試験できる)。
     mode: improve(採用される)/ worsen(見逃しが増える)/ flat(変わらない)/ fail(失敗)/ amount_miss(金額に要確認でない誤り)/
-    overconfident(見逃しが予測より有意に多い)/ calib_worse(較正が悪化)。"""
+    overconfident(見逃しが予測より有意に多い)/ calib_worse(較正が悪化)/ suggest(金額に要確認でない誤りがあるが、正解率は有意に高い = 提案モード)/
+    promote_prev(今回の世代は不採用だが、すでにある提案モードの世代が採用基準をすべて満たす = 昇格)。"""
 
     needs_pagedata = False
 
@@ -125,7 +126,21 @@ class MockTrainer:
             "amount_miss": _mock_side(n_cells, n_text, 0.94, 0.26, 0, 0.30, amount_miss=1),
             "overconfident": _mock_side(n_cells, n_text, 0.94, 0.26, miss0, 0.30, calibration=0.02),
             "calib_worse": _mock_side(n_cells, n_text, 0.94, 0.26, max(0, miss0 - 1), 0.55),
+            "suggest": _mock_side(n_cells, n_text, 0.94, 0.26, 0, 0.30, amount_miss=1),
+            "promote_prev": _mock_side(n_cells, n_text, 0.94, 0.26, 0, 0.30, amount_miss=1),
         }[self.mode]
+        # 値が違うセルのうち、どちらが正しいか(提案モードの判定に使う)
+        paired = {
+            "improve": (round(0.06 * n_text), 0),
+            "worsen": (0, round(0.04 * n_text)),
+            "suggest": (round(0.10 * n_text), max(1, round(0.01 * n_text))),
+            "promote_prev": (round(0.02 * n_text), round(0.02 * n_text)),  # 有意でない
+        }.get(self.mode, (0, 0))
+        extra = {}
+        if self.mode == "promote_prev" and plan.get("suggest_prev"):
+            extra["suggest_prev"] = _mock_side(
+                n_cells, n_text, 0.94, 0.26, max(0, miss0 - 1), 0.30
+            ).to_dict()
         wdir = run_dir / WEIGHTS_SUBDIR
         wdir.mkdir(parents=True, exist_ok=True)
         for f in WEIGHT_FILES:
@@ -135,7 +150,17 @@ class MockTrainer:
         return {
             "weights_dir": str(wdir),
             "confidence": str(wdir / "confidence.json"),
-            "eval": {"parent": parent.to_dict(), "candidate": cand.to_dict()},
+            "eval": {
+                "parent": parent.to_dict(),
+                "candidate": cand.to_dict(),
+                "paired": {
+                    "cand_only_correct": paired[0],
+                    "parent_only_correct": paired[1],
+                    "both_correct": 0,
+                    "both_wrong": 0,
+                },
+                **extra,
+            },
             "recalibration": {},
             "train": {
                 "samples": {"256": 0, "384": 0},

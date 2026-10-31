@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import gate, gens, learned
+from . import gate, gens, learned, suggest
 from . import settings as app_settings
 from .db import DEFAULT_PROFILE_ID, transaction
 from .paths import AppPaths
@@ -227,6 +227,16 @@ class TrainManager:
                 "weights_dir": None if w.dir is None else str(w.dir),
                 "confidence": None if w.confidence is None else str(w.confidence),
             },
+            "suggest_prev": (
+                None
+                if w.suggest is None or w.suggest.dir is None
+                else {
+                    "generation_id": w.suggest.generation_id,
+                    "number": w.suggest.number,
+                    "weights_dir": str(w.suggest.dir),
+                    "confidence": str(w.suggest.confidence),
+                }
+            ),
             "pages": {
                 "train": [entry(i) for i in train_ids],
                 "eval": [entry(i) for i in eval_ids],
@@ -337,6 +347,30 @@ class TrainManager:
         if decision.outcome == "defer":
             self._finish(run_id, "deferred", decision.reason)
             return
+        paired = result["eval"].get("paired") or {}
+        better, worse = (
+            int(paired.get("cand_only_correct", 0)),
+            int(paired.get("parent_only_correct", 0)),
+        )
+        suggestion = decision.outcome == "reject" and suggest.eligible(
+            decision.reason, better, worse
+        )
+        # すでにある提案モードの世代が、今回の評価用ページで採用基準をすべて満たしたら、通常の採用に昇格させる(新しい世代が採用される場合は、そちらを優先)
+        prev = plan.get("suggest_prev")
+        if not decision.adopted and prev and result["eval"].get("suggest_prev"):
+            prev_decision = gate.decide(
+                parent, gate.EvalSide.from_dict(result["eval"]["suggest_prev"])
+            )
+            if prev_decision.adopted:
+                with self.lock:
+                    gens.promote(
+                        self.con,
+                        self.paths.models,
+                        int(prev["generation_id"]),
+                        {"reason": 1, "run": run_id},
+                    )
+                self._finish(run_id, "adopted", "promoted_suggestion", int(prev["generation_id"]))
+                return
         number = None
         with self.lock:
             number = gens.next_number(self.con, profile_id)
@@ -363,26 +397,56 @@ class TrainManager:
                 },
             },
             "recalibration": result.get("recalibration", {}),
-            "decision": {"outcome": decision.outcome, "reason": decision.reason},
+            "decision": {
+                "outcome": "suggest" if suggestion else decision.outcome,
+                "reason": decision.reason,
+            },
             "created_at": time.time(),
         }
-        if not decision.adopted:
-            with self.lock:
-                gid = gens.register(
-                    self.con,
-                    self.paths.models,
-                    profile_id=profile_id,
-                    number=number,
-                    parent_id=plan["parent"]["generation_id"],
-                    meta=meta,
-                    adopt=False,
-                    reject_reason=decision.reason,
-                    keep_dir=False,
-                )
-            self._finish(run_id, "rejected", decision.reason, gid)
+        if suggestion:
+            meta["suggest"] = {
+                "better": better,
+                "worse": worse,
+                "p": suggest.sign_test_p(better, worse),
+            }
+        if decision.adopted or suggestion:
+            gid = self._install(
+                run_id, profile_id, plan, result, number, meta, suggestion, decision.reason
+            )
+            self._finish(
+                run_id,
+                "suggested" if suggestion else "adopted",
+                decision.reason,
+                gid,
+            )
             return
         with self.lock:
-            gid = gens.install(
+            gid = gens.register(
+                self.con,
+                self.paths.models,
+                profile_id=profile_id,
+                number=number,
+                parent_id=plan["parent"]["generation_id"],
+                meta=meta,
+                adopt=False,
+                reject_reason=decision.reason,
+                keep_dir=False,
+            )
+        self._finish(run_id, "rejected", decision.reason, gid)
+
+    def _install(
+        self,
+        run_id: int,
+        profile_id: int,
+        plan: dict,
+        result: dict,
+        number: int,
+        meta: dict,
+        suggestion: bool,
+        reason: str,
+    ) -> int:
+        with self.lock:
+            return gens.install(
                 self.con,
                 self.paths.models,
                 profile_id=profile_id,
@@ -392,5 +456,6 @@ class TrainManager:
                 weights_dir=Path(result["weights_dir"]),
                 confidence=Path(result["confidence"]),
                 run_dir=self.paths.training / str(run_id),
+                suggest=suggestion,
+                reject_reason=reason if suggestion else None,
             )
-        self._finish(run_id, "adopted", decision.reason, gid)

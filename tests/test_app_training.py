@@ -439,3 +439,105 @@ def test_the_first_pages_after_adoption_use_the_warm_thresholds(tmp_path):
         job = c.post("/api/jobs", json={"upload_ids": [up["id"]]}).json()
         app.state.runner.run_job(job["job_id"])
         assert backend.payloads[-1].confidence_warm is False
+
+
+# ---- 提案モード
+
+
+def run_training(env, mode, seed=0):
+    set_mock(env, mode)
+    env.post("/api/training/start")
+    wait(env)
+    return last(env)
+
+
+def test_a_generation_rejected_for_safety_but_significantly_more_accurate_becomes_a_suggestion(env):
+    confirm_pages(env, 7)
+    run = run_training(env, "suggest")
+    assert run["status"] == "suggested" and run["reason"] == "amount_miss" and run["generation_id"]
+    con = env.app_.state.db
+    assert gens.active(con)["kind"] == "shipped"  # 使用中の世代は変わらない(要確認の判定は親のまま)
+    g = next(x for x in env.get("/api/generations").json()["generations"] if x["number"] == 1)
+    assert g["status"] == "suggest" and g["suggest_in_effect"] is True and g["restorable"] is False
+    assert g["suggest"]["better"] > g["suggest"]["worse"] and g["suggest"]["p"] < 0.05
+    assert env.post(f"/api/generations/{g['id']}/activate").status_code == 409
+    d = env.dir_ / "models" / "1" / "gen_0001"
+    assert all((d / f).is_file() for f in (*gens.WEIGHT_FILES, "confidence.json", "meta.json"))
+    # 学習画面の API にも出る
+    learning = env.get("/api/learning").json()
+    assert any(x["suggest_in_effect"] for x in learning["generations"])
+
+
+def test_safety_rejections_without_a_significant_gain_are_not_suggestions(env):
+    confirm_pages(env, 7)
+    for mode in ("amount_miss", "overconfident", "calib_worse", "worsen", "flat"):
+        run = run_training(env, mode)
+        assert run["status"] == "rejected", mode
+    assert not [
+        g for g in env.get("/api/generations").json()["generations"] if g["status"] == "suggest"
+    ]
+
+
+def test_pages_recognized_in_suggestion_mode_record_it_and_add_extra_review_cells(env):
+    from test_app_hardening import png_bytes, upload
+
+    confirm_pages(env, 7)
+    run_training(env, "suggest")
+    con = env.app_.state.db
+    gid = gens.weights_for(con, env.dir_ / "models").suggest.generation_id
+    up = upload(env, "a.png", png_bytes()).json()
+    job = env.post("/api/jobs", json={"upload_ids": [up["id"]]}).json()
+    env.app_.state.runner.run_job(job["job_id"])
+    pid = job["page_ids"][0]
+    assert (
+        con.execute("SELECT suggest_generation FROM pages WHERE id = ?", (pid,)).fetchone()[0]
+        == gid
+    )
+    cells = env.get(f"/api/pages/{pid}").json()["cells"]
+    assert any("suggest_disagreement" in c["reasons"] and c["review"] for c in cells)
+    # 通常の世代で認識したページは、提案モードの記録を持たない
+    assert (
+        con.execute(
+            "SELECT COUNT(*) FROM pages WHERE suggest_generation IS NOT NULL AND id != ?", (pid,)
+        ).fetchone()[0]
+        == 0
+    )
+    confirm_with(env, pid, {})
+    eff = env.get("/api/learning").json()["suggest_effect"]
+    assert eff["suggest"]["n_pages"] == 1 and eff["suggest"]["n_review"] > 0
+    assert eff["suggest"]["review_unchanged_share"] is not None
+    assert eff["normal"]["n_pages"] >= 7
+    rep = env.get("/api/learning/report").json()
+    assert rep["suggest_effect"]["suggest"]["n_pages"] == 1
+    assert next(g for g in rep["generations"] if g["number"] == 1)["suggest"]["better"] > 0
+
+
+def test_a_later_run_promotes_the_suggestion_when_it_meets_every_criterion(env):
+    confirm_pages(env, 7)
+    sug = run_training(env, "suggest")["generation_id"]
+    confirm_pages(env, 1, seed=900)
+    run = run_training(env, "promote_prev")
+    assert run["status"] == "adopted" and run["reason"] == "promoted_suggestion"
+    assert run["generation_id"] == sug
+    con = env.app_.state.db
+    assert gens.active(con)["id"] == sug
+    assert (
+        con.execute("SELECT status FROM generations WHERE id = ?", (sug,)).fetchone()[0] == "active"
+    )
+    # 昇格した世代の重みと確信度の組は、そのまま使える
+    assert gens.weights_for(con, env.dir_ / "models").generation_id == sug
+
+
+def test_a_newly_adopted_generation_replaces_the_suggestion(env):
+    confirm_pages(env, 7)
+    sug = run_training(env, "suggest")["generation_id"]
+    confirm_pages(env, 1, seed=901)
+    run = run_training(env, "improve")
+    assert run["status"] == "adopted"
+    con = env.app_.state.db
+    row = con.execute(
+        "SELECT status, reject_reason FROM generations WHERE id = ?", (sug,)
+    ).fetchone()
+    assert (row["status"], row["reject_reason"]) == ("rejected", "superseded")
+    assert not (env.dir_ / "models" / "1" / "gen_0001").exists()
+    assert gens.weights_for(con, env.dir_ / "models").suggest is None

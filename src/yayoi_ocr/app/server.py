@@ -40,7 +40,15 @@ class CellPatch(BaseModel):
 
 class DevTrainerBody(BaseModel):
     mode: Literal[
-        "improve", "worsen", "flat", "fail", "amount_miss", "overconfident", "calib_worse"
+        "improve",
+        "worsen",
+        "flat",
+        "fail",
+        "amount_miss",
+        "overconfident",
+        "calib_worse",
+        "suggest",
+        "promote_prev",
     ] = "improve"
     delay: float = Field(default=0.0, ge=0.0, le=30.0)
     auto: bool | None = (
@@ -209,6 +217,7 @@ def create_app(
                 "generations": glist,
                 "active_id": next((g["id"] for g in glist if g["status"] == "active"), None),
                 "notices": gens.notices(con, profile_id),
+                "suggest_effect": metrics.suggest_effect(con, profile_id),
                 "pages": rows,
                 "summary": metrics.summary(rows),
                 # 戻せるのは、重みが残っている使用中でない世代(世代 0 を含む)

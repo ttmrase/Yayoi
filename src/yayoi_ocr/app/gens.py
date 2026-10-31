@@ -7,8 +7,11 @@
   欠け・不一致があれば、その世代は使わず(状態を `broken`、理由コードを `reject_reason` に記録)、出荷時の組へ戻す。黙って戻さず、学習画面に警告を出す。
 - 使用中(`active`)の世代は書き手(プロファイル)ごとに 1 つ。新しく認識するページはそれで認識し、`pages.generation` に世代の ID を記録する。
 - 状態: active(使用中)/ retired(過去。重みがあり、戻せる)/ rejected(不採用。重みは消す)/ discarded(リセットで捨てた。重みは消す)/
-  broken(重みと確信度の組が壊れていて使えない)/ halted(採用後の監視で見逃しが見つかり、安全のため停止した。戻せない)。
-- メタデータ(`meta`)には、ページ ID・件数・割合・理由コードだけを入れる(`clean_meta` が、数値・コード形式の短い文字列・キーだけを通す。摘要・金額などの値は構造的に入らない)。
+  broken(重みと確信度の組が壊れていて使えない)/ halted(採用後の監視で見逃しが見つかり、安全のため停止した。戻せない)/
+  **suggest(提案モード)**: 安全基準には届かない(金額の見逃し・見逃しの悪化・自信過剰・較正の悪化)が、評価用ページで親より正解率が有意に高い世代。
+  親が使用中の間だけ、認識のたびに親と両方で推論し、**入力済みの値を提案モードの世代の値にする**。要確認の判定は「親 OR 提案モード OR 値が違う」なので、要確認でないセルの値は親と同じ
+  (見逃しは親の見逃しの部分集合)。提案モードの世代は 1 つだけ(新しい結果で置き換える)。
+- メタデータ(`meta`)には、ページ ID・件数・割合・理由コードだけを入れる(`clean_meta` が、数値・コード形式の短い文字列・キーだけを通す。日本語や空白を含む値は構造的に入らない)。
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ class Weights:
     number: int
     dir: Path | None = None
     confidence: Path | None = None
+    suggest: Weights | None = None  # 提案モードの世代の重みと確信度(使用中の世代が親のときだけ)
 
 
 def gen_dir_name(number: int) -> str:
@@ -79,7 +83,8 @@ _KEY = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
 
 def clean_meta(x: object, depth: int = 0) -> object:
-    """メタデータに入れてよいもの(数値・真偽・コード形式の短い文字列・それらの配列と辞書)だけを通す。日本語や空白を含む文字列(= 帳票の値になりうるもの)は ValueError。"""
+    """メタデータに入れてよいもの(数値・真偽・コード形式の短い文字列・それらの配列と辞書)だけを通す。日本語や空白を含む文字列は ValueError。
+    数字だけの文字列や日付の形([A-Za-z0-9_.:+-] だけの文字列)は通るので、呼び出し側は、値(金額・日付)を文字列で渡さないこと(今の呼び出しは、アプリが決めたキーと件数・割合・コードだけ)。"""
     if depth > 6:
         raise ValueError("meta_too_deep")
     if x is None or isinstance(x, bool | int):
@@ -180,8 +185,13 @@ def _has_weights(models_root: Path, row: sqlite3.Row) -> bool:
     return verify_pair(models_root, row) is None
 
 
-def _activate_row(con: sqlite3.Connection, row: sqlite3.Row) -> None:
-    """この世代を使用中にし、ほかの使用中の世代を過去にする(トランザクションの中で呼ぶ)。"""
+def _activate_row(
+    con: sqlite3.Connection, row: sqlite3.Row, models_root: Path | None = None
+) -> None:
+    """この世代を使用中にし、ほかの使用中の世代を過去にする(トランザクションの中で呼ぶ)。親が使用中でなくなる提案モードの世代は片づける。"""
+    supersede_suggestions(
+        con, models_root, row["profile_id"], keep_parent=row["id"], except_id=row["id"]
+    )
     con.execute(
         "UPDATE generations SET status = 'retired' WHERE profile_id = ? AND status = 'active' AND id != ?",
         (row["profile_id"], row["id"]),
@@ -202,7 +212,9 @@ def _with_meta(row: sqlite3.Row, key: str, value: dict) -> str:
     return json.dumps(meta, ensure_ascii=False)
 
 
-def mark_broken(con: sqlite3.Connection, row: sqlite3.Row, reason: str) -> None:
+def mark_broken(
+    con: sqlite3.Connection, row: sqlite3.Row, reason: str, models_root: Path | None = None
+) -> None:
     """重みと確信度の組が使えない世代を `broken` にし、使用中だったら出荷時の組へ戻す(理由コードを残す。学習画面に警告が出る)。"""
     log.warning("generation_invalid number=%s reason=%s", row["number"], reason)
     with transaction(con):
@@ -215,25 +227,76 @@ def mark_broken(con: sqlite3.Connection, row: sqlite3.Row, reason: str) -> None:
             (reason, _with_meta(cur, "broken", {"code": reason, "at": time.time()}), cur["id"]),
         )
         if was_active:
-            _activate_row(con, shipped(con, cur["profile_id"]))
+            _activate_row(con, shipped(con, cur["profile_id"]), models_root)
 
 
 def weights_for(
     con: sqlite3.Connection, models_root: Path, profile_id: int = DEFAULT_PROFILE_ID
 ) -> Weights:
-    """新しく認識するページに使う重み(と確信度)。使用中の世代の組が壊れていたら、出荷時の組に戻す(認識を止めない。戻したことは状態と学習画面の警告に残す)。"""
+    """新しく認識するページに使う重み(と確信度)。使用中の世代の組が壊れていたら、出荷時の組に戻す(認識を止めない。戻したことは状態と学習画面の警告に残す)。
+    使用中の世代を親とする提案モードの世代があり、その組が正しければ `.suggest` に入れる(組が壊れていれば `broken` にして、提案なしで認識する)。"""
     row = active(con, profile_id)
     if row["kind"] != "shipped":
         reason = verify_pair(models_root, row)
         if reason is not None:
-            mark_broken(con, row, reason)
+            mark_broken(con, row, reason, models_root)
             s = shipped(con, profile_id)
-            return Weights(s["id"], 0)
+            return Weights(s["id"], 0, suggest=_suggestion(con, models_root, profile_id, s["id"]))
         d = gen_path(models_root, row)
         assert d is not None
-        return Weights(row["id"], row["number"], d, d / CONFIDENCE_FILE)
+        return Weights(
+            row["id"],
+            row["number"],
+            d,
+            d / CONFIDENCE_FILE,
+            _suggestion(con, models_root, profile_id, row["id"]),
+        )
     s = shipped(con, profile_id)
-    return Weights(s["id"], 0)
+    return Weights(s["id"], 0, suggest=_suggestion(con, models_root, profile_id, s["id"]))
+
+
+def _suggestion(
+    con: sqlite3.Connection, models_root: Path, profile_id: int, parent_id: int
+) -> Weights | None:
+    r = con.execute(
+        "SELECT * FROM generations WHERE profile_id = ? AND status = 'suggest' AND parent_id = ?"
+        " ORDER BY id DESC LIMIT 1",
+        (profile_id, parent_id),
+    ).fetchone()
+    if r is None:
+        return None
+    reason = verify_pair(models_root, r)
+    if reason is not None:
+        mark_broken(con, r, reason, models_root)
+        return None
+    d = gen_path(models_root, r)
+    assert d is not None
+    return Weights(r["id"], r["number"], d, d / CONFIDENCE_FILE)
+
+
+def supersede_suggestions(
+    con: sqlite3.Connection,
+    models_root: Path | None,
+    profile_id: int,
+    keep_parent: int | None = None,
+    except_id: int | None = None,
+) -> int:
+    """提案モードの世代を片づける(置き換えられた / 親が使用中でなくなった)。`keep_parent` の世代を親とするもの、`except_id`(昇格する世代)は残す。
+    重みは消し、行は `rejected`(理由 superseded)にする。"""
+    n = 0
+    for r in con.execute(
+        "SELECT * FROM generations WHERE profile_id = ? AND status = 'suggest'", (profile_id,)
+    ).fetchall():
+        if (keep_parent is not None and r["parent_id"] == keep_parent) or r["id"] == except_id:
+            continue
+        if models_root is not None:
+            _remove_dir(models_root, r)
+        con.execute(
+            "UPDATE generations SET status = 'rejected', reject_reason = 'superseded' WHERE id = ?",
+            (r["id"],),
+        )
+        n += 1
+    return n
 
 
 def recognized_count(con: sqlite3.Connection, gen_id: int) -> int:
@@ -272,6 +335,7 @@ def _dict(models_root: Path, r: sqlite3.Row, n_recognized: int | None = None) ->
         ),  # {parent: {...}, candidate: {...}} 正解率・要確認率・見逃し率・評価セル数
         "recalibration": meta.get("recalibration"),
         "halt": meta.get("halt"),
+        "suggest": meta.get("suggest"),
         "restorable": r["status"] in RESTORABLE and _has_weights(models_root, r),
         "n_recognized": n_recognized,
     }
@@ -282,11 +346,20 @@ def list_generations(
 ) -> list[dict]:
     rows = con.execute(
         "SELECT g.*, (SELECT COUNT(*) FROM pages p JOIN jobs j ON j.id = p.job_id"
-        "   WHERE j.profile_id = g.profile_id AND p.generation = g.id) AS n_recognized"
+        "   WHERE j.profile_id = g.profile_id AND p.generation = g.id) AS n_recognized,"
+        " (SELECT COUNT(*) FROM pages p JOIN jobs j ON j.id = p.job_id"
+        "   WHERE j.profile_id = g.profile_id AND p.suggest_generation = g.id) AS n_suggested"
         " FROM generations g WHERE g.profile_id = ? ORDER BY g.number, g.id",
         (profile_id,),
     ).fetchall()
-    return [_dict(models_root, r, r["n_recognized"]) for r in rows]
+    active_id = next((r["id"] for r in rows if r["status"] == "active"), None)
+    out = []
+    for r in rows:
+        d = _dict(models_root, r, r["n_recognized"])
+        d["n_suggested"] = r["n_suggested"]  # この世代の提案モードで認識したページ数
+        d["suggest_in_effect"] = r["status"] == "suggest" and r["parent_id"] == active_id
+        out.append(d)
+    return out
 
 
 def notices(con: sqlite3.Connection, profile_id: int = DEFAULT_PROFILE_ID) -> list[dict]:
@@ -346,7 +419,7 @@ def activate(con: sqlite3.Connection, models_root: Path, gen_id: int) -> dict:
         reason = verify_pair(models_root, r)
         if reason is not None:
             raise StoreError(409, "generation_weights_invalid", {"reason": reason})
-        _activate_row(con, r)
+        _activate_row(con, r, models_root)
     return _dict(
         models_root, con.execute("SELECT * FROM generations WHERE id = ?", (gen_id,)).fetchone()
     )
@@ -366,7 +439,7 @@ def reset(con: sqlite3.Connection, models_root: Path, profile_id: int = DEFAULT_
         now = time.time()
         rows = con.execute(
             "SELECT * FROM generations WHERE profile_id = ? AND kind = 'trained'"
-            " AND status IN ('active', 'retired', 'broken', 'halted')",
+            " AND status IN ('active', 'retired', 'broken', 'halted', 'suggest')",
             (profile_id,),
         ).fetchall()
         for r in rows:
@@ -420,7 +493,7 @@ def halt(
             ),
         )
         if was_active:
-            _activate_row(con, _restorable_ancestor(con, models_root, r))
+            _activate_row(con, _restorable_ancestor(con, models_root, r), models_root)
     log.warning("generation_halted number=%s code=%s", r["number"], code)
     return _dict(
         models_root, con.execute("SELECT * FROM generations WHERE id = ?", (gen_id,)).fetchone()
@@ -450,8 +523,10 @@ def register(
     adopt: bool,
     reject_reason: str | None = None,
     keep_dir: bool = True,
+    suggest: bool = False,
 ) -> int:
     """学習で作った世代を登録する。採用なら使用中にし、前の世代は過去(retired)にする。不採用なら rejected で行だけ残し、重みは消す。
+    `suggest` なら提案モード(重みを残す。`reject_reason` に、採用基準に届かなかった安全側の理由を残す)。提案モードの世代は 1 つだけ。
     `(profile_id, number)` は一意(DB の制約)。メタデータは `clean_meta` を通ったものだけ。"""
     meta = clean_meta(meta)  # type: ignore[assignment]
     with transaction(con):
@@ -464,12 +539,12 @@ def register(
                 parent_id,
                 now,
                 int(meta.get("n_train_pages", 0)),  # type: ignore[attr-defined]
-                "active" if adopt else "rejected",
+                "active" if adopt else "suggest" if suggest else "rejected",
                 number,
                 expected_dir(profile_id, number) if keep_dir else None,
                 json.dumps(meta, ensure_ascii=False),
                 None if adopt else reject_reason,
-                now if adopt else None,
+                now if adopt or suggest else None,
             ),
         )
         gid = int(cur.lastrowid)
@@ -478,7 +553,42 @@ def register(
                 "UPDATE generations SET status = 'retired' WHERE profile_id = ? AND status = 'active' AND id != ?",
                 (profile_id, gid),
             )
+            supersede_suggestions(
+                con, models_root, profile_id
+            )  # 親が変わるので、提案モードの世代は片づける
+        elif suggest:  # 提案モードは 1 つだけ。前のものは置き換える(自分は残す)
+            for r in con.execute(
+                "SELECT * FROM generations WHERE profile_id = ? AND status = 'suggest' AND id != ?",
+                (profile_id, gid),
+            ).fetchall():
+                _remove_dir(models_root, r)
+                con.execute(
+                    "UPDATE generations SET status = 'rejected', reject_reason = 'superseded' WHERE id = ?",
+                    (r["id"],),
+                )
     return gid
+
+
+def promote(
+    con: sqlite3.Connection, models_root: Path, gen_id: int, info: dict | None = None
+) -> dict:
+    """提案モードの世代が、あとで採用基準をすべて満たしたとき、通常の採用にする(使用中にし、親は過去の世代にする)。"""
+    with transaction(con):
+        r = con.execute("SELECT * FROM generations WHERE id = ?", (gen_id,)).fetchone()
+        if r is None or r["status"] != "suggest":
+            raise StoreError(409, "generation_not_suggest")
+        reason = verify_pair(models_root, r)
+        if reason is not None:
+            raise StoreError(409, "generation_weights_invalid", {"reason": reason})
+        con.execute(
+            "UPDATE generations SET reject_reason = NULL, meta = ? WHERE id = ?",
+            (_with_meta(r, "promoted", {**(info or {}), "at": time.time()}), gen_id),
+        )
+        _activate_row(con, r, models_root)
+    log.info("generation_promoted number=%s", r["number"])
+    return _dict(
+        models_root, con.execute("SELECT * FROM generations WHERE id = ?", (gen_id,)).fetchone()
+    )
 
 
 def _inside(root: Path, p: Path) -> bool:
@@ -499,8 +609,10 @@ def install(
     weights_dir: Path,
     confidence: Path,
     run_dir: Path,
+    suggest: bool = False,
+    reject_reason: str | None = None,
 ) -> int:
-    """採用する世代の重み・確信度・メタデータを置き場(`gen_XXXX`)に置いて、使用中として登録する。
+    """採用する世代(`suggest` なら提案モードの世代)の重み・確信度・メタデータを置き場(`gen_XXXX`)に置いて、使用中として登録する。
     学習器が返したパス(`weights_dir`・`confidence`)は `run_dir` の内側でなければならない。重みの SHA256 を `meta.json` と `confidence.json` の両方に記録する(組の照合用)。
     途中で失敗したら置き場を残さない。"""
     for p in (weights_dir, confidence):
@@ -536,7 +648,9 @@ def install(
             number=number,
             parent_id=parent_id,
             meta=meta,
-            adopt=True,
+            adopt=not suggest,
+            suggest=suggest,
+            reject_reason=reject_reason,
         )
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)

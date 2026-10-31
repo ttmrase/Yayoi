@@ -47,6 +47,10 @@ class PagePayload:
     confidence_warm: bool = (
         False  # 採用直後の数ページ: 確信度モデルの warm_threshold(通常より厳しい)を使う
     )
+    suggest_weights_dir: str | None = (
+        None  # 提案モードの世代の重み(あれば、親と両方で推論し、入力済みの値は提案モードのものにする)
+    )
+    suggest_confidence: str | None = None  # その確信度モデル
     pagedata_path: str | None = (
         None  # 認識の入力(追加学習・世代の評価に使う)を保存する先。None なら保存しない
     )
@@ -58,6 +62,7 @@ class PageOutcome:
     last_year: int | None = None
     seconds: float = 0.0
     notes: list[str] = field(default_factory=list)
+    suggested: bool = False  # 提案モードで認識した(入力済みの値は提案モードの世代のもの)
 
 
 class Backend(Protocol):
@@ -155,7 +160,19 @@ class FakeBackend:
         if payload.pagedata_path:  # 本物の入力の代わりの目印(MockTrainer は中身を読まない)
             Path(payload.pagedata_path).parent.mkdir(parents=True, exist_ok=True)
             Path(payload.pagedata_path).write_bytes(b"fake")
-        return PageOutcome(spec, last_year=8, seconds=time.time() - t)
+        suggested = False
+        if (
+            payload.suggest_weights_dir
+        ):  # 提案モードの模擬: 親と値が違うセルを要確認にする(5 セルに 1 つ)
+            from .suggest import R_DISAGREE
+
+            suggested = True
+            for i, c in enumerate(spec.cells):
+                if i % 5 == 0 and c.kind != "blank":
+                    c.review = True
+                    if R_DISAGREE not in c.reasons:
+                        c.reasons.append(R_DISAGREE)
+        return PageOutcome(spec, last_year=8, seconds=time.time() - t, suggested=suggested)
 
     def close(self) -> None:
         pass
@@ -191,7 +208,7 @@ def _recognizer(
     key = f"{variant}|{weights_dir or ''}|{confidence or ''}|{int(warm)}"
     if key not in _RECOGNIZERS:
         while (
-            len(_RECOGNIZERS) >= 2
+            len(_RECOGNIZERS) >= 3
         ):  # 世代を切り替えても、読み込んだ重みを溜め込まない(古いものから捨てる)
             _RECOGNIZERS.pop(next(iter(_RECOGNIZERS)))
         import torch
@@ -300,26 +317,45 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
         payload.confidence,
         payload.confidence_warm,
     )
-    ctx = JobContext(
-        prev_year=payload.prev_year,
-        accounts=list(payload.accounts),
-        titles=list(payload.titles),
-        dictionary=dict(payload.dictionary or {}),
-        amount_history=dict(payload.amount_history or {}),
-    )
+
+    def make_ctx() -> JobContext:
+        return JobContext(
+            prev_year=payload.prev_year,
+            accounts=list(payload.accounts),
+            titles=list(payload.titles),
+            dictionary=dict(payload.dictionary or {}),
+            amount_history=dict(payload.amount_history or {}),
+        )
+
     page_input = from_layout(layout)
     if payload.pagedata_path:  # 追加学習と世代の評価のために、認識の入力を利用者の PC に残す
         from ..recognize.pagedata import save_page_input
 
         save_page_input(payload.pagedata_path, page_input, payload.prev_year)
-    result = rec.recognize_page(page_input, ctx)
+    result = rec.recognize_page(page_input, make_ctx())
+    suggested = False
+    if payload.suggest_weights_dir:
+        # 提案モード: 提案モードの世代でも推論し、入力済みの値はそちらにする。要確認 = 親 OR 提案 OR 値が違う(見逃しは親の部分集合)
+        from . import suggest
+
+        rec_s = _recognizer(
+            variant or variants.default_variant(),
+            payload.suggest_weights_dir,
+            payload.suggest_confidence,
+            False,
+        )
+        result_s = rec_s.recognize_page(page_input, make_ctx())
+        suggest.merge(result.cells, result_s.cells)
+        result, suggested = result_s, True
     spec = to_page_spec(result, layout)
     spec.view_jpeg, spec.view_scale = view_jpeg(layout)
     spec.layout_info = overlay_info(layout)
     spec.approved = payload.corners is not None
     if result.title is not None and result.title.value:
         spec.title_recognized = result.title.value
-    return PageOutcome(spec, last_year=result.last_year, seconds=time.time() - t)
+    return PageOutcome(
+        spec, last_year=result.last_year, seconds=time.time() - t, suggested=suggested
+    )
 
 
 class RealBackend:
