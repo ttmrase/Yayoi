@@ -96,13 +96,18 @@ def delete_originals(
 
 
 def reset_learning(
-    con: sqlite3.Connection, lock: threading.RLock, images_dir: Path, now: float | None = None
+    con: sqlite3.Connection,
+    lock: threading.RLock,
+    images_dir: Path,
+    now: float | None = None,
+    pagedata_dir: Path | None = None,
 ) -> dict:
-    """学習データの削除: 確定したページのセルの切り出し画像を削除し、学習状態(辞書・科目の語彙・金額の履歴)を作り直しの起点まで戻す。
+    """学習データの削除: 確定したページのセルの切り出し画像と、追加学習用の認識の入力(`pagedata`)を削除し、学習状態(辞書・科目の語彙・金額の履歴)を作り直しの起点まで戻す。
     確定した値・出力の履歴・設定は残す。"""
     now = time.time() if now is None else now
     n_images = 0
     with lock:
+        page_ids = [r["id"] for r in con.execute("SELECT id FROM pages WHERE status = 'confirmed'")]
         rows = con.execute(
             "SELECT c.id, c.crop_path FROM cells c JOIN pages p ON p.id = c.page_id"
             " WHERE p.status = 'confirmed' AND c.crop_path IS NOT NULL"
@@ -119,6 +124,9 @@ def reset_learning(
             )
     for r in rows:
         n_images += _unlink(images_dir, r["crop_path"])
+    if pagedata_dir is not None:
+        for pid in page_ids:
+            _unlink(pagedata_dir, f"{pid}.npz")
     return {"deleted_images": n_images, "learned_since": now}
 
 

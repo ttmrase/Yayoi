@@ -8,10 +8,11 @@ director 指示(報告9への判断の次の作業 2a〜2f)。手法の検証(`d
 | 区切り | 内容 | 状況 |
 |---|---|---|
 | M-A(2a) | 世代の管理(DB v9・`app/gens.py`・API・学習画面の世代の表と戻す/リセット・認識への受け渡し) | 実装済み |
-| M-B(2b) | バックグラウンドの追加学習(`TrainManager`・別プロセスの学習器・自動/手動の開始・`MockTrainer`) | 未 |
-| M-C(2c, 2d) | 採用ゲート・再較正・リハーサルの束 | 未 |
-| M-D(2e) | 学習画面の学習状況・精度レポートの世代情報 | 未 |
-| M-E(2f) | 結合の E2E(確定 → 学習 → ゲート → 採用/不採用 → ロールバック) | 未 |
+| M-B(2b 管理) | 追加学習の管理(`app/training.py` `TrainManager`・自動/手動の開始・`training_runs`・中断・キャンセル)、学習器の差し込み口(`app/trainers.py`: `MockTrainer`・`SubprocessTrainer`)、認識の入力の保存(`pagedata`)、`GET /api/training` ほか、学習画面の追加学習の欄、採用ゲート(`app/gate.py`) | 実装済み(学習器はモック) |
+| M-B2(2b 実学習) | 別プロセスの学習・評価(`app/train_worker.py`)、リハーサルの束、デバイス/スレッド/優先度 | 未 |
+| M-C(2d) | 再較正(`app/recalibrate.py`) | 未 |
+| M-D(2e) | 学習画面の世代ごとの推移・精度レポートの世代情報 | 未 |
+| M-E(2f) | 実学習の結合試験(合成の書き手) | 未(モックでの E2E は `web/e2e/training.spec.ts` で済み) |
 
 ## 用語
 
@@ -97,6 +98,16 @@ DB(v9): `generations` に 番号・種別(shipped / trained)・ディレクト�
 - 世代の管理・自動開始・手動開始・採否・ロールバック・リセットの流れは、**学習器をモック**(`MockTrainer`。開発用の `--dev` で `POST /api/dev/trainer` から動作を選ぶ: 改善 / 悪化 / 失敗)にして
   API の pytest と Playwright の E2E で通す(torch なしの CI)。
 - 実際の学習・評価は、合成の書き手で `slow` マーカーの統合試験(確定 → 追加学習 → ゲート → 採否)を開発機で走らせる。
+
+## 実装メモ(管理部分)
+
+- `TrainManager`(サーバのプロセス内、スレッド 1 本)が、開始の判断・計画(`plan`)の作成・学習器の呼び出し・採否・世代の登録を行う。学習器(`Trainer`)は `run(plan, run_dir, progress, cancel) -> result` だけを持つ差し込み口で、
+  本物は別プロセス(`SubprocessTrainer` → `train_worker`)、CI・E2E は `MockTrainer`(計画の件数から合成の成績を返す。開発用の `POST /api/dev/trainer` で improve / worsen / flat / fail、遅延、自動開始の全体スイッチを選ぶ)。
+- 計画(`plan.json`)には確定値が入る(ラベルと評価の比較に使う)ので、`training/<実行 ID>/` の中にだけ置き、終わったら消す。ログ(`train.log`)はステージと件数だけで、直近の 1 回分を `training/last.log` に残す。
+- 認識のたびに、ワーカーが認識の入力を `pagedata/<ページ ID>.npz`(許可リスト形式・pickle なし)に保存する(再認識で上書き)。学習画面のリセット(データも削除)で消える。1 ページ数百 KB。
+- 「新しい確定セル」= 前回までの実行(採用・不採用・見送り・失敗)が見たページより後に確定したページの非空欄セル。中断・キャンセルは数えない(次の機会にまた始まる)。
+- 学習中にロールバックされた場合は、結果を使わず「見送り(`active_generation_changed`)」にする。学習中のリセットは 409(`training_running`)。アプリを閉じると学習は止まり、次の起動で「中断(`app_closed`)」と記録する。
+- 自動開始は、設定 `auto_train`(既定オン)、新しい確定セルが `train_threshold_cells`(既定 200、50〜5000)以上、学習に使える確定ページが 6 以上、認識中のページがない、別の学習が動いていない、をすべて満たしたとき(確定の通知のたびに確かめる)。
 
 ## 限界
 

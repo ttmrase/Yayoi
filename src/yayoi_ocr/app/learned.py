@@ -27,7 +27,43 @@ class LearnedState:
     prev_year: int | None = None
 
 
-def build_state(con: sqlite3.Connection, profile_id: int, settings: Settings) -> LearnedState:
+def confirmed_cells(con: sqlite3.Connection, page_id: int) -> list[ConfirmedCell]:
+    """確定したページのセル(行優先)。値は確定値(直していなければ認識の解決値)。"""
+    rows = con.execute(
+        "SELECT row, col, column_kind, kind, recognized_text, resolved_value, confirmed_value"
+        " FROM cells WHERE page_id = ? ORDER BY row, col",
+        (page_id,),
+    ).fetchall()
+    return [
+        ConfirmedCell(
+            r["row"],
+            r["col"],
+            r["column_kind"],
+            r["kind"],
+            r["recognized_text"],
+            r["resolved_value"] if r["confirmed_value"] is None else r["confirmed_value"],
+        )
+        for r in rows
+    ]
+
+
+def confirmed_pages(con: sqlite3.Connection, profile_id: int) -> list[sqlite3.Row]:
+    """学習に使える確定ページ(学習画面の「リセット」より後に確定したもの)を、確定した順(古い → 新しい)に。"""
+    return con.execute(
+        "SELECT p.id, p.title, p.confirmed_at, p.generation FROM pages p JOIN jobs j ON j.id = p.job_id"
+        " WHERE j.profile_id = ? AND p.status = 'confirmed' AND COALESCE(p.confirmed_at, 0) >= ?"
+        " ORDER BY COALESCE(p.confirmed_at, 0), p.id",
+        (profile_id, learned_since(con)),
+    ).fetchall()
+
+
+def build_state(
+    con: sqlite3.Connection,
+    profile_id: int,
+    settings: Settings,
+    only_pages: set[int] | None = None,
+) -> LearnedState:
+    """`only_pages` があれば、そのページだけから作る(世代の評価で、学習用ページだけの文脈を作る)。"""
     ctx = LearnedState(
         accounts=[p.name for p in settings.payments],
         titles=[t.name for t in settings.titles],
@@ -42,23 +78,9 @@ def build_state(con: sqlite3.Connection, profile_id: int, settings: Settings) ->
         ),  # 学習画面の「リセット」より前に確定したページは、学習に使わない
     ).fetchall()
     for pg in pages:
-        rows = con.execute(
-            "SELECT row, col, column_kind, kind, recognized_text, resolved_value, confirmed_value"
-            " FROM cells WHERE page_id = ? ORDER BY row, col",
-            (pg["id"],),
-        ).fetchall()
-        cells = [
-            ConfirmedCell(
-                r["row"],
-                r["col"],
-                r["column_kind"],
-                r["kind"],
-                r["recognized_text"],
-                r["resolved_value"] if r["confirmed_value"] is None else r["confirmed_value"],
-            )
-            for r in rows
-        ]
-        update_from_confirmed(ctx, cells)
+        if only_pages is not None and pg["id"] not in only_pages:
+            continue
+        update_from_confirmed(ctx, confirmed_cells(con, pg["id"]))
         if pg["title"] and pg["title"] not in ctx.titles:
             ctx.titles.append(pg["title"])
     ctx.accounts = ctx.accounts[:MAX_ACCOUNTS]

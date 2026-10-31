@@ -63,6 +63,9 @@ class Settings(BaseModel):
     default_tax: list[AccountTax] = Field(default_factory=list, max_length=MAX_ITEMS)
     # 取り込んだ元画像(実帳票)の保管: keep = 残す(既定)/ delete_after_export = そのファイルの全ページを出力したら削除する
     original_retention: Literal["keep", "delete_after_export"] = "keep"
+    # 追加学習(Phase 4): 確定した新しい非空欄セルがこの件数たまったら、バックグラウンドで始める(止めることもできる。手動の「今すぐ学習する」は常に使える)
+    auto_train: bool = True
+    train_threshold_cells: int = Field(default=200, ge=50, le=5000)
 
 
 def _encodable(s: str) -> bool:

@@ -22,7 +22,9 @@ from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
 from .security import SecurityMiddleware
-from .worker import Backend, FakeBackend
+from .trainers import MockTrainer, SubprocessTrainer, Trainer
+from .training import TrainManager
+from .worker import Backend, FakeBackend, RealBackend
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -34,6 +36,14 @@ class CellPatch(BaseModel):
     action: Literal["pass", "edit", "confirm", "candidate", "revert"]
     value: str | None = Field(default=None, max_length=400)
     candidate_index: int | None = None
+
+
+class DevTrainerBody(BaseModel):
+    mode: Literal["improve", "worsen", "flat", "fail"] = "improve"
+    delay: float = Field(default=0.0, ge=0.0, le=30.0)
+    auto: bool | None = (
+        None  # False: 設定 auto_train が有効でも自動では始めない(共有サーバの E2E 用)
+    )
 
 
 class GenerationResetBody(BaseModel):
@@ -105,8 +115,10 @@ def create_app(
     dev: bool = False,
     backend: Backend | None = None,
     uploads_dir: Path | None = None,
+    trainer: Trainer | None = None,
 ) -> FastAPI:
-    """`backend` が None のときは認識を行わない(ジョブの作成は 503。M0・M1 のテストと合成ジョブだけ)。"""
+    """`backend` が None のときは認識を行わない(ジョブの作成は 503。M0・M1 のテストと合成ジョブだけ)。
+    `trainer` が None のときは、`backend` に合わせて選ぶ(合成の認識 → MockTrainer、本物の認識 → 別プロセスの学習器、認識なし → 追加学習なし)。"""
     db_path = Path(db_path)
     images = images_dir if images_dir is not None else AppPaths(db_path.parent).images
     images.mkdir(parents=True, exist_ok=True)
@@ -123,11 +135,24 @@ def create_app(
     app = FastAPI(title="yayoi-ocr", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db = con
     app.state.db_lock = lock
+    paths = AppPaths(db_path.parent)
+    paths.pagedata.mkdir(parents=True, exist_ok=True)
     runner = (
-        JobRunner(con, lock, images, uploads_root, backend, models_root)
+        JobRunner(con, lock, images, uploads_root, backend, models_root, paths.pagedata)
         if backend is not None
         else None
     )
+    if trainer is None:
+        trainer = (
+            MockTrainer()
+            if isinstance(backend, FakeBackend)
+            else SubprocessTrainer()
+            if isinstance(backend, RealBackend)
+            else None
+        )
+    trainer_mgr = TrainManager(con, lock, paths, trainer)
+    trainer_mgr.mark_interrupted()  # 前回、学習の途中でアプリが閉じていたら「中断」にする
+    app.state.trainer = trainer_mgr
     app.state.runner = runner  # 起動は launcher(テストは run_job を直接呼ぶ)
     app.state.purge_unused = lambda: uploads.purge_unused(
         con, lock, uploads_root
@@ -205,11 +230,13 @@ def create_app(
     ) -> dict:
         """出荷時の重み(世代 0)に戻す。利用者のデータから作った世代の重みは消す。確定した値・出力の履歴・設定は残る。
         `delete_learning_data` が真なら、切り出し画像・学習状態も削除する(偽なら、確定データは次の追加学習の元として残す)。"""
+        if trainer_mgr.running:  # 学習中は重みも学習データも触れない(止めてから)
+            raise store.StoreError(409, "training_running")
         with lock:
             discarded = gens.reset(con, models_root, profile_id)
         out: dict = {"discarded": discarded, "deleted_images": 0}
         if body.delete_learning_data:
-            out.update(retention.reset_learning(con, lock, images))
+            out.update(retention.reset_learning(con, lock, images, pagedata_dir=paths.pagedata))
         return out
 
     @app.post("/api/generations/{gen_id}/activate")
@@ -217,6 +244,19 @@ def create_app(
         """この世代に戻す(ロールバック)。以降に認識するページから使う。すでに認識したページは変わらない。"""
         with lock:
             return gens.activate(con, models_root, gen_id)
+
+    @app.get("/api/training")
+    def training_status(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
+        return trainer_mgr.status(profile_id)
+
+    @app.post("/api/training/start")
+    def training_start(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
+        """今すぐ学習する(手動。しきい値は見ない)。始められなければ理由のコード(training_running / not_enough_pages …)。"""
+        return {"run_id": trainer_mgr.start(profile_id, "manual")}
+
+    @app.post("/api/training/cancel")
+    def training_cancel() -> dict:
+        return {"cancelled": trainer_mgr.cancel()}
 
     @app.get("/api/learning/report")
     def learning_report(profile_id: int = db.DEFAULT_PROFILE_ID) -> JSONResponse:
@@ -230,7 +270,9 @@ def create_app(
     @app.post("/api/learning/reset")
     def learning_reset() -> dict:
         """学習データの削除(確定したセルの切り出し画像 + 学習状態)。確定した値・出力の履歴は残る。"""
-        return retention.reset_learning(con, lock, images)
+        if trainer_mgr.running:
+            raise store.StoreError(409, "training_running")
+        return retention.reset_learning(con, lock, images, pagedata_dir=paths.pagedata)
 
     @app.get("/api/exports")
     def exports_list() -> dict:
@@ -398,7 +440,9 @@ def create_app(
     @app.post("/api/pages/{page_id}/confirm")
     def confirm(page_id: int, body: ConfirmBody) -> dict:
         with lock:
-            return store.confirm_page(con, page_id, body.review_seconds)
+            out = store.confirm_page(con, page_id, body.review_seconds)
+        trainer_mgr.notify_confirmed()  # 新しい確定セルがたまっていれば、バックグラウンドの追加学習を始める
+        return out
 
     @app.post("/api/pages/{page_id}/reopen")
     def reopen(page_id: int) -> dict:
@@ -438,6 +482,15 @@ def create_app(
                 raise store.StoreError(409, "not_fake_backend")
             backend.delay, backend.fail_next = body.delay, body.fail_next
             backend.layout_ok = body.layout_ok
+            return {"ok": True}
+
+        @app.post("/api/dev/trainer")
+        def dev_trainer(body: DevTrainerBody) -> dict:
+            if not isinstance(trainer, MockTrainer):
+                raise store.StoreError(409, "not_mock_trainer")
+            trainer.mode, trainer.delay = body.mode, body.delay
+            if body.auto is not None:
+                trainer_mgr.auto_allowed = body.auto
             return {"ok": True}
 
         @app.post("/api/dev/jobs")
@@ -484,6 +537,7 @@ def create_app(
 
 
 def close_app(app: FastAPI) -> None:
+    app.state.trainer.close()  # 学習中なら止める(結果は使わない。次の起動で「中断」と記録される)
     runner: JobRunner | None = app.state.runner
     if runner is not None:
         runner.stop()

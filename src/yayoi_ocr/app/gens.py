@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import time
@@ -215,3 +216,46 @@ def register(
                 (profile_id, gid),
             )
     return gid
+
+
+def install(
+    con: sqlite3.Connection,
+    models_root: Path,
+    *,
+    profile_id: int,
+    number: int,
+    parent_id: int | None,
+    meta: dict,
+    weights_dir: Path,
+    confidence: Path,
+) -> int:
+    """採用する世代の重み・確信度・メタデータを置き場(`gen_XXXX`)に置いて、使用中として登録する。途中で失敗したら置き場を残さない。"""
+    dest = models_root / str(profile_id) / gen_dir_name(number)
+    tmp = dest.with_name(dest.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    placed = False
+    try:
+        for f in WEIGHT_FILES:
+            shutil.copy2(weights_dir / f, tmp / f)
+        shutil.copy2(confidence, tmp / CONFIDENCE_FILE)
+        (tmp / META_FILE).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        shutil.rmtree(dest, ignore_errors=True)
+        os.replace(tmp, dest)
+        placed = True
+        return register(
+            con,
+            models_root,
+            profile_id=profile_id,
+            number=number,
+            parent_id=parent_id,
+            meta=meta,
+            adopt=True,
+        )
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if placed:
+            shutil.rmtree(dest, ignore_errors=True)
+        raise

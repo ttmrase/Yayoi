@@ -207,6 +207,9 @@ export interface AppSettings {
   default_tax: AccountTax[];
   /** 取り込んだ元画像の保管: keep = 残す(既定)/ delete_after_export = そのファイルの全ページを出力したら削除 */
   original_retention: "keep" | "delete_after_export";
+  /** 追加学習: 確定した新しい非空欄セルがしきい値たまったら、バックグラウンドで自動で始める */
+  auto_train: boolean;
+  train_threshold_cells: number;
 }
 export interface SettingsResponse {
   settings: AppSettings;
@@ -335,6 +338,36 @@ export interface LearningData {
   can_rollback: boolean;
   can_reset: boolean;
   phase: number;
+}
+
+// ---- 追加学習(Phase 4)
+export type TrainingStatus = "running" | "adopted" | "rejected" | "deferred" | "failed" | "interrupted";
+export interface TrainingRun {
+  id: number;
+  trigger: "auto" | "manual";
+  status: TrainingStatus;
+  started_at: number;
+  finished_at: number | null;
+  n_new_cells: number | null;
+  n_train_pages: number | null;
+  n_eval_pages: number | null;
+  generation_id: number | null;
+  /** 採否・見送り・失敗・中断の理由コード(値は含まない)。文言は trainingText.ts */
+  reason: string | null;
+  stage: string | null;
+  progress: number | null;
+}
+export interface TrainingData {
+  available: boolean;
+  auto_train: boolean;
+  threshold: number;
+  active_generation: { id: number; number: number };
+  eligible_pages: number;
+  min_pages: number;
+  new_cells: number;
+  running: TrainingRun | null;
+  last: TrainingRun | null;
+  runs: TrainingRun[];
 }
 
 /** 税区分の許可リストのキー(課税方式 × 経理方式)。リスト自体はサーバが返す(`/api/settings` の tax_options。app/tax.py が唯一の定義) */

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import TrainingPanel from "./TrainingPanel";
 import { activateGeneration, fetchLearning, learningReport, resetGenerations } from "./pageApi";
 import type { Generation, LearningData, PageMetric } from "./types";
 
@@ -142,6 +143,7 @@ export default function LearningScreen() {
         </button>{" "}
         <span className="hint">ページ数・要確認率・直した割合・確認時間だけを含みます。帳票の内容(日付・科目・摘要・金額の値)は含まれません。</span>
       </p>
+      <TrainingPanel onFinished={load} />
       <h2>世代</h2>
       <p className="hint">
         世代は、重みと確信度の組です。出荷時の重みが世代 0 で、あなたの確定データから追加学習した世代が 1 以降に並びます。「実績」は、その世代で認識して確定したページでの値です

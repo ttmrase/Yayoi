@@ -44,6 +44,9 @@ class PagePayload:
     )
     weights_dir: str | None = None  # 使用中の世代の重み(Phase 4)。None なら出荷時の重み
     confidence: str | None = None  # その世代の確信度モデル。None なら出荷時のもの
+    pagedata_path: str | None = (
+        None  # 認識の入力(追加学習・世代の評価に使う)を保存する先。None なら保存しない
+    )
 
 
 @dataclass
@@ -146,6 +149,9 @@ class FakeBackend:
             layout_status="ok" if payload.corners or self.layout_ok else "needs_review",
         )
         _attach_fake_view(spec, payload.corners)
+        if payload.pagedata_path:  # 本物の入力の代わりの目印(MockTrainer は中身を読まない)
+            Path(payload.pagedata_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(payload.pagedata_path).write_bytes(b"fake")
         return PageOutcome(spec, last_year=8, seconds=time.time() - t)
 
     def close(self) -> None:
@@ -290,7 +296,12 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
         dictionary=dict(payload.dictionary or {}),
         amount_history=dict(payload.amount_history or {}),
     )
-    result = rec.recognize_page(from_layout(layout), ctx)
+    page_input = from_layout(layout)
+    if payload.pagedata_path:  # 追加学習と世代の評価のために、認識の入力を利用者の PC に残す
+        from ..recognize.pagedata import save_page_input
+
+        save_page_input(payload.pagedata_path, page_input, payload.prev_year)
+    result = rec.recognize_page(page_input, ctx)
     spec = to_page_spec(result, layout)
     spec.view_jpeg, spec.view_scale = view_jpeg(layout)
     spec.layout_info = overlay_info(layout)

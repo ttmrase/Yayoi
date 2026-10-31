@@ -13,6 +13,7 @@ import type {
   Pt,
   SettingsResponse,
   TaxMemory,
+  TrainingData,
   Upload,
 } from "./types";
 
@@ -52,6 +53,9 @@ export const exportSample = (format: string, date: string) =>
   apiBlobUrl(`/api/exports/sample?format=${encodeURIComponent(format)}&date=${encodeURIComponent(date)}`);
 export const fetchLearning = () => api<LearningData>("/api/learning");
 export const learningReport = () => apiBlobUrl("/api/learning/report");
+export const fetchTraining = () => api<TrainingData>("/api/training");
+export const startTraining = () => api<{ run_id: number }>("/api/training/start", json("POST", {}));
+export const cancelTraining = () => api<{ cancelled: boolean }>("/api/training/cancel", json("POST", {}));
 export const activateGeneration = (id: number) => api<Generation>(`/api/generations/${id}/activate`, json("POST", {}));
 export const resetGenerations = (deleteLearningData: boolean) =>
   api<{ discarded: number; deleted_images: number }>("/api/generations/reset", json("POST", { delete_learning_data: deleteLearningData }));

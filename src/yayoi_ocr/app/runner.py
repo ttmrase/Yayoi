@@ -29,6 +29,7 @@ class JobRunner:
         uploads_dir: Path,
         backend: Backend,
         models_root: Path | None = None,
+        pagedata_root: Path | None = None,
     ) -> None:
         self.con = con
         self.lock = lock
@@ -36,6 +37,9 @@ class JobRunner:
         self.uploads_dir = uploads_dir
         self.backend = backend
         self.models_root = models_root  # 利用者のデータから作った世代の置き場(<データ領域>/models)
+        self.pagedata_root = (
+            pagedata_root  # 認識の入力の保存先(<データ領域>/pagedata/<ページ ID>.npz)
+        )
         self._queue: queue.Queue[int | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -135,6 +139,11 @@ class JobRunner:
                     ),
                     weights_dir=None if w is None or w.dir is None else str(w.dir),
                     confidence=None if w is None or w.confidence is None else str(w.confidence),
+                    pagedata_path=(
+                        None
+                        if self.pagedata_root is None
+                        else str(self.pagedata_root / f"{page_id}.npz")
+                    ),
                 )
                 outcome = self.backend.process(payload)
                 with self.lock:
