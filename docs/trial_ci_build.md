@@ -108,9 +108,13 @@ docs/release/trial-v0.1.0.{json,md} をコミット   ─▶ (公開の内容が
   束の混入検査 B7 は、画像・PDF・CSV・DB・zip の類(拡張子と、先頭のバイト列)と、アプリの wheel の中身だけで、重みのテンソルは見ない。
   ユーザーが案 1(トークン付きのセッションで作り直して公開)を選んだ場合は、そのセッションで artifact を取得して走査する手順を、`docs/release/runbook_token_session.md` §3(2a)に置いた。
   ただし、拒否リストは今の開発のコンテナにしかないので、**走査できるのは、今のコンテナが残っている場合だけ**。
-- **Linux のビルド・評価の依存は、版の固定(`requirements/trial-build-linux.txt` の constraints)であって、ハッシュの固定ではない**(Windows の束に入るパッケージだけが、ハッシュ付きの lock〔`requirements/trial-win-cp311.txt`〕)。
+- **既知の限界・次回の改善(Linux のビルド・評価の依存は、版の固定であって、ハッシュの固定ではない)**: `requirements/trial-build-linux.txt` は constraints(版の固定)で、ハッシュは固定していない。
+  Windows の束に入るパッケージ(利用者の PC に入るもの)だけが、ハッシュ付きの lock〔`requirements/trial-win-cp311.txt`〕。
   torch は、PyTorch の CPU 版の配布元から入れる。trial-eval は、ローカル版 `+cpu` を指定し、取れなければ失敗させる(PyPI の別の build に切り替えない)。
-  trial-build の Linux のジョブは、まだ「配布元で失敗したら PyPI から入れる」形のまま(ビルド済みの full の run がこの形で動いている)。
+  trial-build の Linux のジョブは、まだ「配布元で失敗したら PyPI から入れる」形のまま(実行中の full の run がこの形で動いているため、変えない。director の判断で、full の作り直しはしない)。
+  受け入れる理由(director の判断): ① 利用者の PC に入るパッケージは、ハッシュ付きの lock で固定済み。② Linux 側は学習のためだけに使い、生成される重みはテンソルだけ
+  (アプリは `torch.load(weights_only=True)` と `np.load(allow_pickle=False)` で読む)なので、依存が改ざんされた場合の影響の経路が限られる。③ 重みの質は trial-eval で確かめる。
+  **次に束を作り直すとき(試用版 0.2 など)には、Linux 側もハッシュ付きの lock に揃える。**
 - Windows の実機(IME・高 DPI・WebView2 の保存ダイアログ・実際の速度・弥生への実取り込み)の確認は、引き続き実機の項目(`docs/windows_checklist.md`)。
 - Actions の実行時間・成果物の容量は、GitHub の制限(public リポジトリの標準のランナーは無料枠)に従う。full の artifact は約 400 MB。
 
