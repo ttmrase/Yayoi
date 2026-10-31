@@ -16,7 +16,7 @@
 | 作り方 | `cd web && npm run build` → `python scripts/make_trial_bundle.py`(出力先 `$YAYOI_PRIVATE_DATA/trial/`) |
 | 同梱の Python | python-build-standalone `cpython-3.11.18+20261026`(install_only_stripped、Windows x86_64)。SHA256 `67215a7bf1643e33d01b17ee3f1e91a8b0b39163746855ee02594bf0608f68b4`(固定値と公式 SHA256SUMS の両方で検証) |
 
-- **zip はビット単位では再現しない**(zip の項目の更新時刻が入る)。同じ SHA256 の束を作り直すことはできない。束の同一性は、上の zip の SHA256 と、§4 の各ファイルの SHA256(`MANIFEST.sha256` と同じ)で確かめる。
+- **zip はビット単位では再現しない**(zip の項目の更新時刻が入る)。同じ SHA256 の束を作り直すことはできない。束の同一性は、上の zip の SHA256 と、§8 の各ファイルの SHA256(`MANIFEST.sha256` と同じ)で確かめる。
 - zip の SHA256 は、zip の配布経路とは別の経路で利用者に伝える(`docs/windows_setup.md`)。`<zip>.sha256` に同じ値を書いてある。
 - 試用版の束(`--smoke` あり)との違い: 完全版は、セル種別分類器 `celltype.pt`・確信度モデル `confidence.json`・リハーサルの束 `rehearsal.npz`・**適応済みの重み `models/adapted/`** を含む。smoke 版(CI 用)は基本の重みだけで、配布しない。
 
@@ -80,7 +80,68 @@ sha256sum yayoi-ocr-trial-0.1.0.zip                      # 上の SHA256 と比�
 python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経路で受け取った SHA256>
 ```
 
-## 7. 束に含まれる全ファイル(パス・大きさ・SHA256。`MANIFEST.sha256` 自身の行を除き、`MANIFEST.sha256` と同じ値)
+## 7. 重みの作り直し(コンテナが回収されたとき)
+
+束・重み・合成データ・拒否リストは `$YAYOI_PRIVATE_DATA`(開発のコンテナの中。リポジトリの外)にだけあり、コンテナが回収されると失われる。リポジトリ(公開)に残るのは、コード・文書・lock だけ。
+ここに、**残るものだけから重みを作り直す手順・所要時間・再現性の確認結果**を記す。公開はしない(作り直した束も、director の指示があるまで出さない)。
+
+### 7.1 必要なもの
+
+| 必要なもの | 入手 | 備考 |
+|---|---|---|
+| リポジトリのコード | git(ブランチ `claude/handwritten-document-ocr-sgf76h`) | 重みに関わる `src/yayoi_ocr/synth/`・`src/yayoi_ocr/recognize/`・`scripts/` を、RC のビルド元(`4651b73`)から変えていないこと(`git diff 4651b73 HEAD -- src scripts` で確認)。変えた場合、ビット一致は保証されない |
+| Python と依存(作成時: Python 3.13.17・torch 2.15.0(CPU 版)・numpy 2.5.3・Pillow 12.3.0・opencv-python-headless 5.0.0.93・onnx 1.23.2・onnxruntime 1.29.0・scipy 1.18.1) | `pip install -e ".[dev,ml,ml-dev]"` | **数値の再現は、版・CPU・スレッド数に依存しうる**(§7.3)。作成時の環境は Linux・Intel Xeon 2.1 GHz・4 コア・RAM 15 GB |
+| 合成帳票用の手書き風フォント(OFL・14 ファイル) | `python scripts/fetch_fonts.py`(ネットワーク。google/fonts の `main`) | 取得したファイルの SHA256 を `docs/fonts.md` の表と突き合わせる(2026-10-31 に再取得して **14/14 一致**を確認。一致しないと、データはビット単位では再生成できない) |
+| NDLOCR-Lite の ONNX(固定コミット + SHA256 検証) | `python scripts/fetch_models.py` | 基本の重みへの変換は、ビット単位で一致する(§7.3) |
+| 拒否リスト `$YAYOI_PRIVATE_DATA/denylist.txt` | **リポジトリにない**(実データの語を含むため)。別の経路で再作成が必要 | `scripts/check_no_private_data.py` と `scripts/model_provenance.py`(C4・C6)が使う。**重みの作成そのものには要らない**が、無いと、混入の検査とコミット前のフックが働かない |
+| 実サンプル | 不要 | 重みの作成には使っていない(`docs/model_provenance.md` §4) |
+
+### 7.2 手順(順序に依存関係がある。所要時間は 4 コア・RAM 15 GB の CPU 機)
+
+`D=$YAYOI_PRIVATE_DATA/datasets`・`M=$YAYOI_PRIVATE_DATA/models`・`E=$YAYOI_PRIVATE_DATA/evals` とする。コマンドの全文は `docs/model_provenance.md` §2・§3。
+
+| # | 作業 | コマンド(要点) | 入力 | 出力 | 所要時間(目安) |
+|---|---|---|---|---|---|
+| 1 | フォントと基本の重み | `scripts/fetch_fonts.py`、`scripts/fetch_models.py` | ネットワーク | `fonts/`・`models/*.pt`(基本の重み)・`NDLmoji.yaml` | 1 分 |
+| 2 | 合成データ(5 組・7 コマンド) | `python3 -I scripts/build_synth_cells.py --jobs 3 --out $D/<名前> --n … --preset … --seed0 … --writer0 … --font-exclude yusei klee`(`model_provenance.md` §3) | フォント | `train` 500・`train_gen` 300・`calib` 100・`calib500` 500・`calib_gen` 200 ページ | 約 1.6 時間(実測 3.6 秒/ページ × 1,600 ページ。`--jobs 3`) |
+| 3 | セル種別分類器 | `python3 -I scripts/train_celltype.py --train $D/train --calib $D/calib --out $M/celltype.pt --epochs 8 --threads 4` | 2 の `train`・`calib` | `celltype.pt` | 約 17 分(実測) |
+| 4 | 適応済みの重み | `python3 -I scripts/train_adapt.py --train $D/train $D/train_gen --out-dir $M/adapted --l2sp 0.1 --epochs 3 --threads 3` | 1 の基本の重み・2 | `adapted/parseq-ndl-24x256-30-tiny.pt`・`adapted/parseq-ndl-24x384-50-tiny.pt` | 約 27 分(実測。幅 256 が約 11 分、幅 384 が約 16 分) |
+| 5 | リハーサルの束 | `python3 -I scripts/build_rehearsal.py --data $D/train $D/train_gen --out $M/rehearsal.npz` | 2 | `rehearsal.npz` | 5 秒 |
+| 6 | 較正のダンプ(4 つ) | `python3 -I scripts/eval_recognize.py --data $D/calib500 --classifier $M/celltype.pt [--models-dir $M/adapted] --threads 3 --dump $E/calib500_{base,adapted}.jsonl`、`$D/calib_gen` も同様 → `calib_gen_{base,adapted}.jsonl` | 3・4・2 | ダンプ 4 つ | 約 1.5 時間(実測 約 4 秒/ページ × 700 ページ × 2 組(基本・適応済み)) |
+| 7 | 確信度モデル(2 つ) | `python3 -I scripts/fit_confidence.py --dump …`(`model_provenance.md` §3 の 2 コマンド) | 6 | `confidence.json`・`adapted/confidence.json` | 25 秒 |
+
+- 4 と 5 は 2 だけに依存し、3 と並行できる(CPU が 4 コアなので、並行すると互いに遅くなる)。6 は 3 と(適応済みの方は)4 が要る。
+- 所要時間: 手順 2 は、アイドルの CPU で 30 ページを 109 秒で作った実測(3.6 秒/ページ)から 1,600 ページ分を、3・4 は再学習の実測、6 は 10 ページの実測からの外挿。逐次で合計 **4 時間弱**(約 1.6 時間 + 17 分 + 27 分 + 1.5 時間)。作業記録(`model_provenance.md` §2 の実行時刻。ほかの作業と並行していた)の実績より速い。
+- 学習・ダンプのスレッド数(`--threads`)は、**上の値に揃える**(§7.3)。
+- `docs/model_provenance.md` §3 の較正のダンプのコマンドには `--threads` が書かれていない。**§7.2 の `--threads 3` を使う**(`model_provenance.md` は束に入る文書なので、次に束を作り直すときに追記する)。
+
+### 7.3 再現性の確認(2026-10-31、RC のビルド元と同じコードで実施。結果は SHA256 / 行の一致)
+
+| 成果物 | 確認の内容 | 結果 |
+|---|---|---|
+| 基本の重み(`*.pt`) | ONNX から再変換(`model_provenance.py --reconvert` の C5) | **ビット一致**(2/2) |
+| 合成データ | 7 つのレシピ(`train` の 3 つ・`calib`・`calib500`・`train_gen`・`calib_gen`)から、各 3〜6 ページ(計 24 ページ)を再生成して、元のファイルと SHA256 を比較 | **ビット一致**(24/24)。全ページの再生成は未実施(生成器は seed ごとに決定的で、ページは互いに独立) |
+| `rehearsal.npz` | 手順 5 で作り直し | **ビット一致**(`bd10074a…`)。5 秒 |
+| `celltype.pt` | 手順 3 で再学習(`--threads 4`) | **ビット一致**(`5cbd43b5…`)。実測 16 分 43 秒 |
+| 適応済みの重み 2 つ | 手順 4 で再学習(`--threads 3`) | **ビット一致**(2/2: `1f3f5b48…`・`ab6d17ac…`)。実測 27 分(幅 256 が約 11 分、幅 384 が約 16 分) |
+| 較正のダンプ | 手順 6 を `calib500` の先頭 3 ページ(348 セル)と 10 ページ(1,160 セル。基本・適応済みの両方)で再実行して、既存のダンプの先頭と比較 | `--threads 3` で**全行一致**(10 ページ × 2)。`--threads` が 2・4・既定(0)だと、セル種別の確率(`cls_probs`)が 1e-9 程度ずれて、348 行中 313 行が一致しない(判定の値・要確認・正誤は同じ)。**ダンプは `--threads 3` で作る**。全ページの再実行は未実施 |
+| 確信度モデル 2 つ | 既存のダンプに手順 7 を再実行 | **ビット一致**(`5204f5d5…`・`9741f716…`)。25 秒 |
+
+→ 結論: 同じコード・同じフォント・同じ依存・同じスレッド数なら、合成データ・セル種別分類器・リハーサルの束・確信度の当てはめは、ビット単位で作り直せる。全ページ規模の再生成(データ 1,600 ページ・ダンプ 700 ページ × 2)は未実施だが、ページ単位で決定的な処理の抜き取りが一致しているので、通しで作り直してもビット一致する見込み。
+CPU の命令セットや torch の版が違うと、学習の数値が(わずかに)変わりうる。その場合は、次の §7.4 の「一致しなかった場合」に進む。
+
+### 7.4 作り直したあとにすること
+
+1. 重みを `$M`(と `$M/adapted/`)に置き、`python scripts/model_provenance.py --reconvert` を実行する(C1〜C6・SHA256 の一覧。拒否リストが要る)。
+2. 一覧の SHA256 が `docs/model_provenance.md` §2 の表と**一致した**なら、重みは同じ(再ビルドした zip は、zip の項目の時刻が入るので SHA256 が変わる)。
+3. **一致しなかった**なら(版・CPU の違い等):
+   - `docs/model_provenance.md` §2 の SHA256 の表と、「実行したスクリプトとコミット」の表(日時・コミット)を更新する(束に入る文書なので、束も作り直す)。
+   - 重みの質を確かめ直す: `docs/recognition.md` の最終評価(合成の評価用データでの列別の文字・金額の正解率と、要確認の判定の見逃し率・要確認率)を再実行し、以前の値(`docs/recognition.md`・`docs/phase4_method_validation.md`)と同程度であること(摘要の文字一致率が下がっていないこと、見逃し率が列別の目標以下であること)を確認する。
+4. 束を作る: `cd web && npm ci && npm run build` → `python scripts/make_trial_bundle.py` → `python scripts/verify_trial_bundle.py <zip> --sha256 <別経路で伝える値>`(B1〜B7)。
+5. 煙試験: 束の `models/` を取り出し、`python scripts/trial_smoke.py --python <python> --models <取り出した models> --data-dir <その親>`(§4 と同じ)。
+6. **新しい zip の SHA256 を director に報告する**。`docs/trial_rc.md` §1・§8 を更新してコミットする(コミットは、束に入るファイルを変えない)。
+
+## 8. 束に含まれる全ファイル(パス・大きさ・SHA256。`MANIFEST.sha256` 自身の行を除き、`MANIFEST.sha256` と同じ値)
 
 | パス | バイト数 | SHA256 |
 |---|---:|---|

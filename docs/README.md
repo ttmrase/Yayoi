@@ -36,7 +36,7 @@
 | 文書 | 内容 |
 |---|---|
 | [`model_provenance.md`](model_provenance.md) | 同梱する重み 9 ファイルの由来・学習/較正データ・実行したスクリプト・SHA256、実サンプルを使った処理の開示、再検査の手順 |
-| [`trial_rc.md`](trial_rc.md) | 試用版の RC の記録(作ったコミット・zip の SHA256・全ファイルの一覧・重みの突き合わせ・検査の結果)。**未公開** |
+| [`trial_rc.md`](trial_rc.md) | 試用版の RC の記録(作ったコミット・zip の SHA256・全ファイルの一覧・重みの突き合わせ・検査の結果)と、**重みの作り直しの手順・所要時間・再現性の確認(§7)**。**未公開** |
 | [`dependencies.md`](dependencies.md) | 依存ライブラリ・モデルの出所とライセンス |
 | [`fonts.md`](fonts.md) | 合成帳票用のフォント(SIL OFL 1.1)の一覧 |
 | [`LICENSE-parseq-Apache-2.0.txt`](LICENSE-parseq-Apache-2.0.txt) | PARSeq のライセンス本文 |
