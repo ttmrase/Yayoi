@@ -7,17 +7,59 @@ Windows 向け・完全オフラインのアプリです。書き手本人の字
 > **このリポジトリは public です。** サンプル画像・切り出し画像・正解データ・学習データ・モデルは
 > **絶対にコミットしません**(後述)。
 
+## 全体像
+
+```mermaid
+flowchart LR
+  subgraph PC["利用者の PC(完全オフライン。実行時にネットワークを使わない)"]
+    WIN["ウィンドウ<br/>pywebview / WebView2<br/>確認 UI(React + TypeScript)"]
+    subgraph SRV["アプリ本体のプロセス(FastAPI。127.0.0.1 だけ + 起動ごとのトークン)"]
+      API["API・セキュリティ<br/>Host/Origin 検証・CSP"]
+      RUN["runner<br/>認識待ちのページを順に処理"]
+      TRAIN["TrainManager<br/>世代の採用・監視・提案モード"]
+      EXP["出力<br/>検証 → 弥生 CSV(cp932)"]
+      DB[("SQLite<br/>確定値・設定・世代")]
+    end
+    subgraph SUB["使い捨ての別プロセス(python -I)"]
+      PROBE["probe<br/>PDF・画像の検査"]
+      REC["認識ワーカー<br/>位置合わせ → セル種別 → PARSeq → 後処理 → 確信度"]
+      TW["train_worker<br/>追加学習 → 採用ゲート"]
+      BW["backup_worker<br/>zip の作成・検査・取り出し"]
+    end
+    FILES[("データ領域<br/>画像・世代の重み・出力")]
+  end
+  WIN <-->|"HTTP(トークン)"| API
+  API --> PROBE
+  API --> RUN
+  RUN --> REC
+  API --> EXP
+  API --> TRAIN
+  TRAIN --> TW
+  API --> BW
+  API <--> DB
+  REC --> FILES
+  TW --> FILES
+  BW --> FILES
+  EXP --> FILES
+```
+
+流れ: 帳票(PDF・画像)を取り込む → 認識(要確認の印つき)→ 利用者が確認して確定 → 弥生インポート形式の CSV を出力。確定したページは次の認識に使われ、貯まると裏で追加学習して「世代」を作る。
+新しい世代は、学習に使わなかった確定ページで試し、見逃しが増えないときだけ採用する(採用後も監視し、悪化すれば自動で前の世代に戻す)。
+利用者が持ち込んだファイル(PDF・画像・バックアップの zip)の解読は、トークンと DB を持つ本体のプロセスでは行わず、使い捨ての別プロセスで行う。
+
 ## 開発状況
 
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 0 | 骨組み・データモデル・様式テンプレート・合成帳票生成器(書き手シミュレーション) | 完了 |
-| 1 | 前処理・表の位置合わせ・セル切り出し | 完了 |
-| 2 | 認識(セル種別・PARSeq・後処理・見覚えメモリ・確信度の較正) | 進行中(`docs/recognition.md`) |
-| 3 | 確認フェーズ(Web UI) | 未着手 |
-| 4 | バックグラウンド学習(世代管理・巻き戻し) | 未着手 |
-| 5 | 弥生 CSV 出力(`docs/yayoi_export.md`) | 実装済み(試用版。弥生の実ファイルとの突き合わせは未実施) |
-| 6 | インストーラ・ログ・精度レポート | 未着手 |
+| 1 | 前処理・表の位置合わせ・セル切り出し(`docs/layout.md`) | 完了 |
+| 2 | 認識(セル種別・PARSeq・後処理・見覚えメモリ・確信度の較正。`docs/recognition.md`) | 完了(数字専用の R2 は、実データの N≥50 がそろうまで保留) |
+| 3 | 確認フェーズ(Web UI。`docs/phase3_design.md`) | 完了 |
+| 4 | 追加学習(世代管理・採用ゲート・監視と自動ロールバック・提案モード。`docs/phase4_design.md`) | 完了 |
+| 5 | 弥生 CSV 出力(`docs/yayoi_export.md`) | 完了(試用版。弥生の実環境での取り込みは未確認) |
+| 6 | 配布(Windows のセットアップ・ログ・ライセンス表示・手引き・バックアップ・アンインストール。`docs/phase6_packaging.md`) | 試用版の RC 作成済み(`docs/trial_rc.md`、未公開)。Windows 実機の確認は未実施 |
+
+試用版の公開は、利用者の承認を待っている。文書の一覧は `docs/README.md`。
 
 ## セットアップ
 
@@ -133,13 +175,24 @@ src/yayoi_ocr/
   ingest.py       取り込み(PDF / PNG / JPEG / TIFF / EXIF 回転)
   preprocess.py   前処理(照明補正・コントラスト正規化・ノイズ除去)
   layout/         表の位置合わせ・セル切り出し(見出し帯 → 外枠 → 罫線 1 本ずつ)
-  recognize/      認識(セル種別・PARSeq・列ごとの解決・ページ単位の解決・確信度)
-  app/            確認 UI のサーバ(FastAPI: セキュリティ・DB・取り込み・認識の実行・出力・設定・学習状態)。static/ にフロントのビルド成果物
-  review.py / learn.py / export.py / storage.py   (旧スタブ。実装は app/ と recognize/learning.py にある)
-  models.py       Document → Page → Row → Cell
-  template.py     様式テンプレート(templates/form_v1.json)
+  recognize/      認識(セル種別・PARSeq・列ごとの解決・ページ単位の解決・確信度・追加学習)
+  postprocess.py  後処理(文法・辞書・〃/矢印/波線/年の継承)
+  app/            アプリ本体(確認 UI のサーバ)
+    server / security / launcher        API・セキュリティ(127.0.0.1・トークン・CSP)・起動(ウィンドウ)
+    db / store / paths / settings       SQLite(移行つき)・確定値・データ領域・設定
+    uploads / probe / runner / worker   取り込み・検査(別プロセス)・認識の実行(別プロセス)
+    training / trainers / train_worker  追加学習(別プロセス)
+    gens / gate / monitor / recalibrate / suggest   世代の管理・採用ゲート・監視と自動ロールバック・再較正・提案モード
+    exports / validate / tax / rowtax   弥生 CSV の出力・出力前の検証・税区分
+    backup / backup_mgr / backup_worker バックアップと復元(別プロセス・入れ替えは次の起動の最初)
+    logs / licenses / metrics / retention   ログ(値を出さない)・ライセンス表示・計測・実データの保管方針
+    static/                              フロントのビルド成果物(コミットしない)
+  models.py / template.py / templates/   Document → Page → Row → Cell・様式テンプレート
   synth/          合成帳票の生成器(テスト・学習用)
-docs/             設計メモ・依存ライブラリの記録・正解データのスキーマ
+  review.py / learn.py / export.py / storage.py   (旧スタブ。実装は app/ と recognize/ にある)
+docs/             設計・仕様・手順・記録(索引は docs/README.md)
 web/              確認 UI のフロントエンド(React + TypeScript + Vite、Vitest、Playwright)
-scripts/          check_no_private_data.py・評価・学習・方法検証のスクリプトと git フック
+scripts/          実データ混入チェック・評価・学習・方法検証・配布物の作成と検査のスクリプト、git フック、Windows 用(scripts/windows)
+tests/            自動テスト(合成データ)
+requirements/     Windows 試用版の依存の固定(バージョン + ハッシュ)
 ```

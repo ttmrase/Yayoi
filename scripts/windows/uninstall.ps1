@@ -75,6 +75,8 @@ foreach ($name in $targets) {
         $removed++
     }
 }
+# 既定(データを残す)で、世代が無く models\ が空になったら、models\ も消す(世代があれば残る)
+if ((Test-Path $modelsDir) -and -not (Get-ChildItem -Force $modelsDir -ErrorAction SilentlyContinue)) { Remove-Item -Force $modelsDir }
 # デスクトップのショートカット
 try {
     $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "yayoi-ocr.lnk"

@@ -201,10 +201,14 @@ jobs:
           $d = "$env:RUNNER_TEMP\yayoi-ocr"
           New-Item -ItemType Directory -Force -Path "$d\images\1" | Out-Null
           Set-Content "$d\app.sqlite3" "x"; Set-Content "$d\images\1\1.png" "x"
-          # 1) プログラムだけ削除。データは残る
+          New-Item -ItemType Directory -Force -Path "$d\models\1\gen_0001" | Out-Null
+          Set-Content "$d\models\1\gen_0001\keep.txt" "x"   # 学習した世代(データ)。出荷時の重み(プログラム)と models\ に同居する
+          # 1) プログラムだけ削除。データ(学習した世代を含む)は残り、出荷時の重みは消える
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$d\uninstall.ps1" -InstallDir $d
           if ($LASTEXITCODE -ne 0) { Write-Host "uninstall failed"; exit 1 }
-          foreach ($n in "venv", "python", "models", "start-yayoi-ocr.cmd") { if (Test-Path "$d\$n") { Write-Host "program remains: $n"; exit 1 } }
+          foreach ($n in "venv", "python", "start-yayoi-ocr.cmd") { if (Test-Path "$d\$n") { Write-Host "program remains: $n"; exit 1 } }
+          if ((Test-Path "$d\models\NDLmoji.yaml") -or (Get-ChildItem "$d\models" -Filter *.pt -ErrorAction SilentlyContinue)) { Write-Host "shipped weights remain"; exit 1 }
+          if (-not (Test-Path "$d\models\1\gen_0001\keep.txt")) { Write-Host "a generation was removed"; exit 1 }
           if (-not (Test-Path "$d\app.sqlite3") -or -not (Test-Path "$d\images\1\1.png")) { Write-Host "data was removed"; exit 1 }
           # 2) -DeleteData: 違う文字では中止(何も消えない)
           "no" | & powershell -NoProfile -ExecutionPolicy Bypass -File "$d\uninstall.ps1" -InstallDir $d -DeleteData
@@ -226,4 +230,12 @@ jobs:
           "DELETE" | & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\uninstall.ps1" -InstallDir "$env:RUNNER_TEMP\yayoi-ocr-other" -Force -DeleteData
           if ($LASTEXITCODE -eq 0) { Write-Host "should refuse an unmarked folder even with -Force"; exit 1 }
           if (-not (Test-Path "$env:RUNNER_TEMP\yayoi-ocr-other\images\keep.png")) { Write-Host "unmarked folder was modified"; exit 1 }
+          # 6) 世代が無ければ、出荷時の重みを消したあと models\ も残らない(データの DB は残る)
+          $e = "$env:RUNNER_TEMP\nogen\yayoi-ocr"
+          New-Item -ItemType Directory -Force -Path "$e\models" | Out-Null
+          Set-Content "$e\models\NDLmoji.yaml" "x"; Set-Content "$e\start-yayoi-ocr.cmd" "x"; Set-Content "$e\app.sqlite3" "x"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\uninstall.ps1" -InstallDir $e
+          if ($LASTEXITCODE -ne 0) { Write-Host "uninstall (no generations) failed"; exit 1 }
+          if (Test-Path "$e\models") { Write-Host "models folder remains without generations"; exit 1 }
+          if (-not (Test-Path "$e\app.sqlite3")) { Write-Host "data was removed"; exit 1 }
           exit 0  # 最後に実行した外部コマンドの終了コード(拒否の 1)を、このステップの結果にしない
