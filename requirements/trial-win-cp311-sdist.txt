@@ -1,0 +1,4 @@
+# 自動生成: wheel が無い(sdist だけの)純 Python パッケージ。配布物を作るとき、ハッシュ検証つきで wheel を作る:
+#   pip wheel --no-deps --require-hashes -w wheels -r この-ファイル
+proxy-tools==0.1.0 \
+    --hash=sha256:ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010

@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""試用版の配布物(zip)を作る(開発用。リポジトリの外に出力する)。
+"""試用版の配布物(zip)を作る(開発用。リポジトリの外に出力する)。**オフライン版だけ**を作る。
 
-    python scripts/make_trial_bundle.py [--out DIR] [--models DIR] [--with-wheels] [--python-version 3.11]
+    python scripts/make_trial_bundle.py [--out DIR] [--models DIR] [--python-installer FILE]
 
 zip の中身:
   wheels/yayoi_ocr-*.whl      このリポジトリのビルド(フロントエンドのビルド成果物 app/static を含む。先に `cd web && npm run build`)
-  wheels/<依存>.whl           --with-wheels のとき: Windows 向けの依存(torch の CPU 版など)。無ければセットアップ時に pip がネットワークから取得する
-  models/                     認識の重み(許可リストの名前だけ。実データは含まない: NDLOCR-Lite 由来 + 合成データでの追加学習)
-  setup.ps1, start-yayoi-ocr.cmd, README.txt, NOTICE.txt, windows_setup.md, windows_checklist.md
+  wheels/<依存>.whl           Windows 64 ビット・Python 3.11 向け。バージョン固定 + ハッシュつきの lock(requirements/trial-win-cp311.txt)から
+                              `pip download --require-hashes` で取得して検証したもの(torch は PyPI の Windows 向け = CPU 版)。
+                              sdist しかない純 Python のパッケージは、lock のハッシュを検証してから wheel にする
+  requirements-lock.txt       上の lock(setup.ps1 が `pip install --no-index --require-hashes` に使う)
+  models/                     認識の重み(許可リストの名前だけ。docs/model_provenance.md)
+  python-installer.exe        --python-installer を指定したときだけ(python.org の 3.11 の公式インストーラ。setup.ps1 が Python 3.11 が無いときに使う)
+  setup.ps1, start-yayoi-ocr.cmd, README.txt, NOTICE.txt, windows_setup.md, windows_checklist.md, yayoi_export.md, model_provenance.md
   MANIFEST.sha256             配布物のハッシュ一覧
 
-重みと zip は **コミットしない**(出力先がリポジトリの内側なら拒否する)。
+重みと zip は **コミットしない**(出力先がリポジトリの内側なら拒否する)。zip の SHA256 は最後に表示し、`<zip>.sha256` に書く
+(配布経路とは別の経路で利用者に伝える)。
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -42,9 +48,13 @@ NOTICE = """\
 yayoi-ocr 試用版 — 利用しているもの
 
 - 文字列認識モデル: 国立国会図書館「NDLOCR-Lite」の学習済みモデル(CC BY 4.0)。
-  https://github.com/ndl-lab/ndlocr-lite  形式変換(ONNX → PyTorch のテンソル)と、合成データでの追加学習を行った派生物を含む。
+  https://github.com/ndl-lab/ndlocr-lite
+  models\\*.pt は、その ONNX を PyTorch のテンソルに形式変換したもの(値は変更していない)。
+  models\\adapted\\*.pt は、それを合成データで追加学習した派生物。
 - モデルのコード: baudm/parseq (Apache License 2.0)。
-- 追加学習に使ったのは合成データ(実際の帳票は含まない)。
+- セル種別分類器・確信度モデル・追加学習の重みは、合成データ(架空の帳票。実際の帳票は含まない)だけで学習・較正した。
+  重みの出所(由来・データ・スクリプト・SHA256)は model_provenance.md に記録している。
+- 依存ライブラリ(PyTorch・NumPy・OpenCV・FastAPI など)は requirements-lock.txt のとおり。ライセンスは各配布元の表示に従う。
 """
 
 
@@ -111,22 +121,51 @@ def build_wheel(out: Path) -> Path:
     return wheels[-1]
 
 
-def download_wheels(out: Path, python_version: str) -> None:
-    """Windows 向けの依存を取得する(開発機のネットワークを使う。配布先はオフラインでよい)。torch は CPU 版。"""
-    base = [
-        sys.executable, "-m", "pip", "download", "--dest", str(out),
-        "--platform", "win_amd64", "--python-version", python_version,
-        "--implementation", "cp", "--only-binary=:all:",
-    ]  # fmt: skip
-    # torch は CPU 版の索引から、それ以外は PyPI から
+def download_wheels(out: Path) -> None:
+    """lock(バージョン固定 + ハッシュ)から、Windows 64 ビット・Python 3.11 向けの wheel を取得して検証する。
+    ハッシュが合わなければ pip が失敗する。torch は lock が CPU 版であることを確認済み(make_trial_lock.py)。"""
+    lock = ROOT / "requirements/trial-win-cp311.txt"
+    sdist = ROOT / "requirements/trial-win-cp311-sdist.txt"
+    if not lock.is_file():
+        raise SystemExit("lock がありません: python scripts/make_trial_lock.py")
     subprocess.run(
-        [*base, "--index-url", "https://download.pytorch.org/whl/cpu", "torch>=2.4"], check=True
-    )
-    subprocess.run(
-        [*base, "numpy>=1.26", "opencv-python-headless>=4.9", "Pillow>=10.0", "pypdfium2>=4.30",
-         "pydantic>=2.5", "PyYAML>=6", "fastapi>=0.115", "uvicorn>=0.30", "pywebview>=5.0"],
+        [
+            sys.executable, "-m", "pip", "download", "--no-deps", "--only-binary=:all:", "--require-hashes",
+            "--platform", "win_amd64", "--python-version", "3.11", "--implementation", "cp",
+            "--dest", str(out), "-r", str(lock),
+        ],
         check=True,
     )  # fmt: skip
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--require-hashes",
+            "-w",
+            str(out),
+            "-r",
+            str(sdist),
+        ],
+        check=True,
+    )
+    expected = {
+        m.group(1).lower().replace("-", "_").replace(".", "_")
+        for m in re.finditer(
+            r"^([A-Za-z0-9_.-]+)==",
+            lock.read_text(encoding="utf-8") + sdist.read_text(encoding="utf-8"),
+            re.M,
+        )
+    }
+    got = {
+        w.name.split("-")[0].lower().replace("-", "_").replace(".", "_") for w in out.glob("*.whl")
+    }
+    got.discard("yayoi_ocr")
+    if expected - got:
+        raise SystemExit(f"lock にあるのに wheel が無い: {sorted(expected - got)}")
+    shutil.copy2(lock, out.parent / "requirements-lock.txt")
 
 
 def main() -> int:
@@ -136,12 +175,10 @@ def main() -> int:
     ap.add_argument("--out", type=Path, help="出力先(既定: $YAYOI_PRIVATE_DATA/trial)")
     ap.add_argument("--models", type=Path, help="重みの置き場(既定: models_dir())")
     ap.add_argument(
-        "--with-wheels",
-        action="store_true",
-        help="Windows 向けの依存の wheel も同梱(オフラインでセットアップできる)",
-    )
-    ap.add_argument(
-        "--python-version", default="3.11", help="--with-wheels の対象の Python(既定 3.11)"
+        "--python-installer",
+        type=Path,
+        help="python.org の 3.11 の公式インストーラ(python-3.11.x-amd64.exe)。同梱すると、Python が無い PC で"
+        " setup.ps1 が静かに導入する。配布元(python.org の公開チェックサム)で検証してから渡すこと",
     )
     args = ap.parse_args()
 
@@ -152,8 +189,11 @@ def main() -> int:
     (stage / "wheels").mkdir(parents=True)
 
     build_wheel(stage / "wheels")
-    if args.with_wheels:
-        download_wheels(stage / "wheels", args.python_version)
+    download_wheels(stage / "wheels")
+    if args.python_installer:
+        if not re.fullmatch(r"python-3\.11\.\d+-amd64\.exe", args.python_installer.name):
+            raise SystemExit("python-3.11.x-amd64.exe を指定してください")
+        shutil.copy2(args.python_installer, stage / "python-installer.exe")
     collect_models(args.models or models_dir(), stage / "models")
 
     for src, name in (
@@ -166,6 +206,7 @@ def main() -> int:
         (ROOT / "docs/windows_setup.md", "windows_setup.md"),
         (ROOT / "docs/windows_checklist.md", "windows_checklist.md"),
         (ROOT / "docs/yayoi_export.md", "yayoi_export.md"),
+        (ROOT / "docs/model_provenance.md", "model_provenance.md"),
     ):
         shutil.copy2(src, stage / name)
     (stage / "NOTICE.txt").write_bytes(NOTICE.replace("\n", "\r\n").encode("utf-8-sig"))
@@ -180,8 +221,13 @@ def main() -> int:
         for p in sorted(stage.rglob("*")):
             if p.is_file():
                 z.write(p, p.relative_to(stage).as_posix())
+    digest = sha256(zip_path)
+    (out / (zip_path.name + ".sha256")).write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8")
     print(f"作成: {zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB, {len(files) + 1} ファイル)")
-    print(f"SHA256: {sha256(zip_path)}")
+    print(f"SHA256: {digest}")
+    print(
+        "→ この SHA256 は、zip の配布経路とは別の経路で利用者に伝えてください(docs/windows_setup.md)。"
+    )
     return 0
 
 

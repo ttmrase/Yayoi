@@ -108,8 +108,11 @@ def load_denylist() -> tuple[list[str], list[re.Pattern[str]]] | None:
     return words, numbers
 
 
-# ロックファイルの完全性ハッシュ(sha512-… の base64)。短い語が偶然含まれる誤検出が多いので、検査の前に取り除く
-INTEGRITY_RE = re.compile(r"sha(?:1|256|384|512)-[A-Za-z0-9+/=]{20,}")
+# ロックファイルの完全性ハッシュ(npm の sha512-… の base64、pip の --hash=sha256:… の 16 進数)。短い語・数字の並びが偶然含まれる誤検出が多いので、検査の前に取り除く
+INTEGRITY_RE = re.compile(
+    r"sha(?:1|256|384|512)-[A-Za-z0-9+/=]{20,}"  # npm の完全性ハッシュ
+    r"|sha(?:1|256|384|512):[0-9a-fA-F]{40,}"  # pip の --hash=sha256:<16 進数>
+)
 
 
 def check_denylist(text: str, deny: tuple[list[str], list[re.Pattern[str]]]) -> list[str]:

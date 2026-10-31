@@ -1,0 +1,15 @@
+# 試用版(Windows 10/11・64 ビット・Python 3.11)の依存の入力。
+# 固定とハッシュは scripts/make_trial_lock.py が trial-win-cp311.txt に書く(これを編集したら作り直す)。
+# pyproject.toml の依存 [project].dependencies + extras [app, desktop, ml] と同じ顔ぶれ。
+numpy
+opencv-python-headless
+Pillow
+pypdfium2
+pydantic
+PyYAML
+torch
+fastapi
+uvicorn
+pywebview
+# pip は --platform を指定しても環境マーカーをホスト(Linux)で評価するので、Windows 専用の依存はここに書く
+pythonnet

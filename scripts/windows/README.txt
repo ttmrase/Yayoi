@@ -1,6 +1,9 @@
 ﻿yayoi-ocr 試用版
 
+0. この zip は、配布元を確認できるものだけを使ってください。展開の前に、開発者から別の連絡手段で伝えられた SHA256 と、次のコマンドの結果が一致することを確かめます。
+       Get-FileHash .\yayoi-ocr-trial-0.1.0.zip -Algorithm SHA256
 1. この zip を展開し、そのフォルダで次を実行します(右クリック → 「PowerShell で実行」ではなく、下のコマンドを使ってください)。
+   Python 3.11(64 ビット)が必要です(zip に python-installer.exe が入っていれば、自動で導入されます)。インターネットには接続しません。
        powershell -ExecutionPolicy Bypass -File .\setup.ps1
 2. 完了後、デスクトップの「yayoi-ocr」から起動します。
 3. 初回起動では「初期設定」が出ます(支払手段・ページのタイトル・税区分)。あとで「設定」画面で変えられます。

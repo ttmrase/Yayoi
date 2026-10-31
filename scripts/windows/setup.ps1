@@ -3,7 +3,8 @@
 #     powershell -ExecutionPolicy Bypass -File .\setup.ps1
 # 何をするか: ① Python 3.11 以降と WebView2 を確認 ② 配布物のハッシュを検証 ③ 専用の仮想環境を作って依存を入れる
 #            ④ 認識の重みをコピー ⑤ 起動用のショートカットを作る ⑥ 動作確認(インポートとヘルプ)。
-# wheels\ に torch の wheel が同梱されていれば完全にオフラインで入る。無ければ pip が(このセットアップの間だけ)ネットワークを使う。
+# 完全にオフラインで入る(wheels\ の依存は、バージョン固定 + ハッシュつきの requirements-lock.txt のとおり。ネットワークは使わない)。
+# Python 3.11(64 ビット)が必要。無ければ、同梱の python-installer.exe(あれば)で現在のユーザー用に導入する。
 # アプリ本体は実行時にネットワークを使わない。
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "yayoi-ocr"),
@@ -16,17 +17,32 @@ function Step($msg) { Write-Host ""; Write-Host "== $msg" -ForegroundColor Cyan 
 function Fail($msg) { Write-Host "エラー: $msg" -ForegroundColor Red; exit 1 }
 
 Step "1/6 Python と WebView2 の確認"
-$py = $null
-foreach ($cand in @(@("py", "-3.12"), @("py", "-3.11"), @("python"))) {
-    try {
-        $out = & $cand[0] @($cand[1..($cand.Length - 1)]) -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $out) {
-            $v = [version]$out
-            if ($v -ge [version]"3.11" -and $v -lt [version]"3.14") { $py = $cand; Write-Host "Python $out を使います"; break }
-        }
-    } catch { }
+function Find-Python311 {
+    $cands = @(
+        @{ exe = "py"; args = @("-3.11") },
+        @{ exe = "python"; args = @() },
+        @{ exe = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"); args = @() }
+    )
+    foreach ($c in $cands) {
+        try {
+            $out = & $c.exe @($c.args) -c "import sys; print('%d.%d.%d' % sys.version_info[:3]); print(sys.maxsize > 2**32)" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $out -and ($out -join " ") -match "^3\.11\.\d+ True$") { return $c }
+        } catch { }
+    }
+    return $null
 }
-if (-not $py) { Fail "Python 3.11〜3.13 が見つかりません。https://www.python.org/downloads/windows/ から 64 ビット版を入れ、再実行してください(「Add python.exe to PATH」にチェック)。" }
+$py = Find-Python311
+if (-not $py) {
+    $installer = Join-Path $here "python-installer.exe"
+    if (Test-Path $installer) {
+        Write-Host "Python 3.11 が無いので、同梱のインストーラで導入します(現在のユーザー用。管理者権限は要りません)"
+        $p = Start-Process -FilePath $installer -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_launcher=0", "Include_test=0", "Include_doc=0", "Shortcuts=0" -Wait -PassThru
+        if ($p.ExitCode -ne 0) { Fail "Python の導入に失敗しました(終了コード $($p.ExitCode))" }
+        $py = Find-Python311
+    }
+}
+if (-not $py) { Fail "Python 3.11(64 ビット)が見つかりません。python.org の Windows installer (64-bit) の 3.11 系を入れてから、もう一度実行してください。" }
+Write-Host "Python 3.11 を使います: $($py.exe) $($py.args -join ' ')"
 
 $wv2Keys = @(
     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
@@ -54,28 +70,27 @@ if (-not $SkipVerify) {
     } else { Write-Warning "MANIFEST.sha256 がありません(検証を省略)" }
 } else { Step "2/6 配布物の検証(省略)" }
 
-Step "3/6 仮想環境と依存の導入"
+Step "3/6 仮想環境と依存の導入(オフライン・ハッシュ検証つき)"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $venv = Join-Path $InstallDir "venv"
 if (-not (Test-Path (Join-Path $venv "Scripts\python.exe"))) {
-    & $py[0] @($py[1..($py.Length - 1)]) -m venv $venv
+    & $py.exe @($py.args) -m venv $venv
     if ($LASTEXITCODE -ne 0) { Fail "仮想環境を作れませんでした" }
 }
 $vpy = Join-Path $venv "Scripts\python.exe"
 $wheels = Join-Path $here "wheels"
+$lock = Join-Path $here "requirements-lock.txt"
 $app = Get-ChildItem $wheels -Filter "yayoi_ocr-*.whl" | Select-Object -First 1
-if (-not $app) { Fail "wheels\yayoi_ocr-*.whl がありません" }
-$offline = [bool](Get-ChildItem $wheels -Filter "torch-*.whl" -ErrorAction SilentlyContinue)
-if ($offline) {
-    Write-Host "同梱の wheel から入れます(オフライン)"
-    & $vpy -m pip install --no-index --find-links $wheels "$($app.FullName)[app,desktop,ml]"
-} else {
-    Write-Host "torch(CPU 版)を取得します(ネットワークを使います。これはセットアップの間だけです)"
-    & $vpy -m pip install --upgrade pip
-    & $vpy -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-    & $vpy -m pip install --find-links $wheels "$($app.FullName)[app,desktop,ml]"
-}
-if ($LASTEXITCODE -ne 0) { Fail "依存の導入に失敗しました" }
+$proxy = Get-ChildItem $wheels -Filter "proxy_tools-*.whl" | Select-Object -First 1
+if (-not $app -or -not $proxy -or -not (Test-Path $lock)) { Fail "配布物が足りません(wheels\yayoi_ocr-*.whl・proxy_tools-*.whl・requirements-lock.txt)" }
+# 依存はすべて lock のバージョン・ハッシュと一致するものだけを入れる(--no-index: ネットワークを使わない)
+& $vpy -m pip install --no-index --find-links $wheels --no-deps --require-hashes -r $lock
+if ($LASTEXITCODE -ne 0) { Fail "依存の導入に失敗しました(ハッシュが合わない場合は、zip をもう一度展開してください)" }
+# このアプリと、sdist しか無かった純 Python の依存(配布物のハッシュは MANIFEST.sha256 で検証済み)
+& $vpy -m pip install --no-index --no-deps $app.FullName $proxy.FullName
+if ($LASTEXITCODE -ne 0) { Fail "アプリの導入に失敗しました" }
+& $vpy -m pip check
+if ($LASTEXITCODE -ne 0) { Fail "依存の整合性の確認に失敗しました" }
 
 Step "4/6 認識の重みをコピー"
 $models = Join-Path $InstallDir "models"

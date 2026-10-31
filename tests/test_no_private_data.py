@@ -178,3 +178,15 @@ def test_denylist_ignores_lockfile_integrity_hashes():
     h = "sha512-" + "xyz" * 5 + "abc" + "QRS/+=" * 5  # base64 の途中に短い語が偶然含まれる
     assert checker.check_denylist(f'"integrity": "{h}"', deny) == []
     assert checker.check_denylist("name = 'abc'", deny)  # ふつうの本文は検出する
+
+
+def test_denylist_ignores_pip_lock_hashes():
+    import re
+
+    deny = (["secret"], [re.compile(r"(?<![0-9,.])123456(?![0-9]|,\d)")])
+    # pip の --hash=sha256:<16 進数 64 桁> の途中に、数字の並びが偶然含まれる
+    digest = "ab" + "123456" + "cd" * 26 + "ef" * 2
+    assert len(digest) == 64
+    assert checker.check_denylist(f"pkg==1.0 \\\n    --hash=sha256:{digest}", deny) == []
+    # ハッシュの外にある同じ数字は検出される
+    assert checker.check_denylist("x 123456 y", deny) != []
