@@ -84,7 +84,11 @@ def test_stage_commands_reproduce_the_documented_commands(tmp_path):
     (cmd,) = tci.stage_commands("celltype", "full", d, m, e)
     assert cmd[2:4] == ["scripts/train_celltype.py", "--train"] and "--epochs" in cmd
     cmds = tci.stage_commands("fit", "full", d, m, e)
-    assert len(cmds) == 2 and all("--margins" in c and "amount=0.4" in c for c in cmds)
+    assert len(cmds) == 2
+    for c in cmds:
+        # 確信度の較正の余裕: 科目 0.3・金額 0.4(director が事前に固定した値)、ほかは 0.6。基本と適応済みの両方
+        assert c[c.index("--margins") + 1] == "account=0.3,amount=0.4"
+        assert c[c.index("--margin") + 1] == "0.6"
     (dump,) = tci.stage_commands("dump", "full", d, m, e, dataset="calib500", weights="adapted")
     assert "--models-dir" in dump and str(m / "adapted") in dump
     (base,) = tci.stage_commands("dump", "full", d, m, e, dataset="calib500", weights="base")
@@ -202,6 +206,7 @@ def make_release(tmp_path: Path, **override) -> tuple[Path, Path, Path]:
         "verify_bundle": {"ok": True},
         "smoke_windows": {"ok": True},
         "github": {"run_id": "99", "sha": "e" * 40},
+        "fit_margins": {"default": tci.FIT_MARGIN, **tci.FIT_MARGINS},
     }
     info.update(override.pop("info", {}))
     eval_override = override.pop("eval", {})
@@ -223,6 +228,7 @@ def make_release(tmp_path: Path, **override) -> tuple[Path, Path, Path]:
         "eval_run_id": "100",
         "mode": "full",
         "passed": True,
+        "holdout": tci.FINAL_HOLDOUT,
         "criteria_version": tci.EVAL_CRITERIA_VERSION,
         "checks": [{"id": i, "ok": True} for i in tci.required_eval_check_ids()],
     }
@@ -358,6 +364,7 @@ def good_result(weights: str, pages: int = 200) -> dict:
     columns = {c: stats(0.0005, base[c] - 0.01) for c in base}
     return {
         "weights": weights,
+        "holdout": tci.FINAL_HOLDOUT,
         "pages": pages,
         "overall": stats(0.002, 0.6, 23200),
         "columns": columns,
@@ -367,27 +374,44 @@ def good_result(weights: str, pages: int = 200) -> dict:
     }
 
 
-def test_the_eval_plan_is_the_documented_final_holdout_and_disjoint_from_training():
-    shards = tci.plan("full")["eval_shards"]
-    assert [s["dataset"] for s in shards] == [
+def _ranges(shards: list[dict]) -> tuple[set[int], set[int]]:
+    seeds = {s["seed0"] + i for s in shards for i in range(s["n"])}
+    writers = {s["writer0"] + i for s in shards for i in range(s["n"])}
+    return seeds, writers
+
+
+def test_the_final_holdout_is_new_and_disjoint_from_training_calibration_and_the_first_holdout():
+    pl = tci.plan("full")
+    final, first = pl["eval_shards"], pl["eval_shards_v1"]
+    assert [s["dataset"] for s in final] == [
+        "final2_std",
+        "final2_gen",
+        "final2_uf_std",
+        "final2_uf_gen",
+    ]
+    assert [s["dataset"] for s in first] == [
         "final_std",
         "final_gen",
         "final_uf_std",
         "final_uf_gen",
     ]
-    assert sum(s["n"] for s in shards) == 200
-    train_pages = {
-        s0 + i for s in tci.plan("full")["shards"] for s0 in [s["seed0"]] for i in range(s["n"])
-    }
-    train_writers = {
-        w0 + i for s in tci.plan("full")["shards"] for w0 in [s["writer0"]] for i in range(s["n"])
-    }
-    for s in shards:
-        assert not (set(range(s["seed0"], s["seed0"] + s["n"])) & train_pages)
-        assert not (set(range(s["writer0"], s["writer0"] + s["n"])) & train_writers)
-    uf = [s for s in shards if "uf" in s["dataset"]]
+    assert sum(s["n"] for s in final) == 200 and sum(s["n"] for s in first) == 200
+    f_seeds, f_writers = _ranges(final)
+    # 学習・較正・最初の評価の、どの seed・書き手 ID とも重ならない
+    for other in (pl["shards"], first):
+        o_seeds, o_writers = _ranges(other)
+        assert not (f_seeds & o_seeds) and not (f_writers & o_writers)
+    # 4 つのデータセットの間でも重ならない(各 50 ページ = 50 人)
+    assert len(f_seeds) == 200 and len(f_writers) == 200
+    uf = [s for s in final if "uf" in s["dataset"]]
     assert all("--font-include" in s["extra"] for s in uf)  # 未知のフォントの組を含む
     assert tci.plan("mini")["eval_shards"][0]["n"] == 6
+
+
+def test_the_shard_stage_can_generate_both_holdouts_and_the_training_data(tmp_path):
+    for sid in ("final2_uf_gen.0", "final_std.0", "train.typical.0"):
+        (cmd,) = tci.stage_commands("shard", "full", tmp_path, tmp_path, tmp_path, id=sid)
+        assert cmd[2] == "scripts/build_synth_cells.py"
 
 
 def test_a_result_that_meets_the_criteria_passes_for_both_weights():
@@ -504,6 +528,136 @@ def test_a_release_spec_without_an_eval_run_is_invalid(tmp_path):
     sp, notes, _art = make_release(tmp_path, eval_run_id="abc")
     with pytest.raises(SystemExit):
         tci.load_release_spec(sp, notes)
+
+
+def test_a_result_from_another_holdout_cannot_pass():
+    old = good_result("adapted")
+    old["holdout"] = "v1"
+    out = tci.merge_eval(good_result("base"), old, {"mode": "full"})
+    assert out["passed"] is False and [c["id"] for c in out["checks"] if not c["ok"]] == ["holdout"]
+
+
+def test_the_release_needs_the_final_holdout_and_the_fixed_confidence_margins(tmp_path):
+    sp, notes, art = make_release(tmp_path)
+    assert check(sp, notes, art) == 0
+    d1 = tmp_path / "old_holdout"
+    d1.mkdir()
+    sp1, n1, a1 = make_release(d1, eval={"holdout": "v1"})
+    assert check(sp1, n1, a1) == 1
+    for k, margins in (
+        (
+            "old_margins",
+            {"default": 0.6, "amount": 0.4},
+        ),  # 科目の余裕が 0.6 のまま(科目 0.62% だった束)
+        ("no_margins", None),
+        ("other_margin", {"default": 0.6, "account": 0.4, "amount": 0.4}),
+    ):
+        d = tmp_path / k
+        d.mkdir()
+        sp2, n2, a2 = make_release(d, info={"fit_margins": margins})
+        assert check(sp2, n2, a2) == 1, k
+
+
+def _good_infos(mode, d, m, e):
+    exp = tci.expected_reused_commands(mode, d, m, e)
+    return [
+        {"stage": st, "id": i, "mode": mode, "commands": [c.replace("<python>", "/x/python3.13")]}
+        for (st, i), cmds in exp.items()
+        for c in [cmds[0]]
+    ]
+
+
+def test_reuse_is_allowed_only_when_the_earlier_run_used_the_same_recipe_and_code(tmp_path):
+    d, m, e = tmp_path / "d", tmp_path / "m", tmp_path / "e"
+    infos = _good_infos("full", d, m, e)
+    assert len(infos) == 16 + 3 + 4  # シャード + celltype・adapt・rehearsal + ダンプ 4
+    ok = tci.reuse_problems(
+        "full", infos, ["scripts/trial_ci.py", "docs/x.md", "tests/t.py"], d, m, e
+    )
+    assert (
+        ok == []
+    )  # インタプリタのパスの違いは無視される。trial_ci.py・docs・tests の変更は再利用を妨げない
+    # 段階の記録が足りない
+    assert tci.reuse_problems("full", infos[:-1], [], d, m, e)
+    # コマンドが違う(例: エポック数を変えた)
+    bad = [dict(r) for r in infos]
+    k = next(i for i, r in enumerate(bad) if r["stage"] == "celltype")
+    bad[k]["commands"] = [bad[k]["commands"][0].replace("--epochs 8", "--epochs 9")]
+    assert any("celltype" in p for p in tci.reuse_problems("full", bad, [], d, m, e))
+    # モードが違う
+    other = [dict(r, mode="mini") for r in infos]
+    assert tci.reuse_problems("full", other, [], d, m, e)
+    # 学習・認識・合成に関わるファイルが変わっている
+    for f in (
+        "src/yayoi_ocr/recognize/page.py",
+        "requirements/trial-build-linux.txt",
+        "pyproject.toml",
+        "scripts/train_adapt.py",
+    ):
+        assert tci.reuse_problems("full", infos, [f], d, m, e), f
+    # 前の run が fit の記録しか持たない(再利用の連鎖)なら不可
+    assert tci.reuse_problems(
+        "full", [{"stage": "fit", "id": "", "mode": "full", "commands": []}], [], d, m, e
+    )
+
+
+def test_the_fit_stage_is_never_reused_and_its_command_carries_the_new_margins(tmp_path):
+    d, m, e = tmp_path / "d", tmp_path / "m", tmp_path / "e"
+    assert not any(st == "fit" for st, _ in tci.expected_reused_commands("full", d, m, e))
+    assert tci.REUSED_STAGES == ("shard", "celltype", "adapt", "rehearsal", "dump")
+
+
+def test_the_provenance_says_which_run_the_weights_come_from_when_they_are_reused(tmp_path):
+    models = tmp_path / "models"
+    for rel in tci.MODEL_FILES:
+        f = models / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(rel.encode())
+    summ = tmp_path / "summaries"
+    summ.mkdir()
+    for i, name in enumerate(("train", "calib")):
+        (summ / f"summary.x.{name}.json").write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "pages": 1,
+                    "cells": 4,
+                    "bad": [],
+                    "seed_set": [i],
+                    "writer_set": [i],
+                    "fonts": {"f": 1},
+                }
+            )
+        )
+    template = (ROOT / "docs" / "model_provenance.md").read_text(encoding="utf-8")
+    infos = [
+        {
+            "stage": "fit",
+            "id": "",
+            "seconds": 5,
+            "commands": ["fit"],
+            "cpu": "X",
+            "versions": {},
+            "run_id": "200",
+        },
+        {
+            "stage": "celltype",
+            "id": "",
+            "seconds": 7,
+            "commands": ["ct"],
+            "cpu": "X",
+            "versions": {},
+            "run_id": "100",
+        },
+    ]
+    kw = dict(run_id="200", commit="b" * 40, mode="full", ref="r" * 40, now="t")
+    md = tci.build_provenance(
+        template, models, summ, infos, reuse={"run_id": "100", "commit": "a" * 40}, **kw
+    )
+    assert "run 100" in md and "a" * 40 in md and "再利用" in md and "科目 0.3" in md
+    assert "確信度の較正(`fit`)だけ" in md
+    plain = tci.build_provenance(template, models, summ, infos, **kw)
+    assert "再利用" not in plain and "科目 0.3" in plain  # 再利用でなくても、科目の余裕は書く
 
 
 def test_run_check_accepts_only_the_expected_workflow_branch_and_commit(tmp_path):

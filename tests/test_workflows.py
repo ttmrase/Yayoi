@@ -1,4 +1,4 @@
-"""GitHub Actions のワークフローの安全の約束(ファイルの文面の検査。PyYAML に依存しない): 外部アクションはコミットの SHA で固定・
+"""GitHub Actions のワークフローの安全の約束(ファイルの文面の検査。構造の検査だけ PyYAML があれば行う): 外部アクションはコミットの SHA で固定・
 trial-build は読み取りだけ・trial-publish は手動(workflow_dispatch)だけで、書き込みの権限は publish ジョブにだけ・PAT や secrets を使わない。"""
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def test_no_workflow_uses_secrets_or_privileged_triggers(path):
 
 def test_trial_build_only_reads_and_never_publishes():
     t = text("trial-build.yml")
-    assert re.search(r"^permissions:\n  contents: read\n", t, re.M)
+    assert re.search(r"^permissions:\n  contents: read\n  actions: read", t, re.M)  # 読み取りだけ
     assert not re.search(r":\s*write\b", t)
     assert "gh release" not in t and "git push" not in t and "git tag" not in t
     # 起動は、要求ファイルの変更の push と、手動だけ
@@ -100,3 +100,57 @@ def test_trial_publish_requires_the_quality_evaluation_and_the_expected_runs():
     # ワークフローのパス・ブランチ・コミットを確かめる(W-2)
     assert ".github/workflows/trial-build.yml" in t and ".github/workflows/trial-eval.yml" in t
     assert t.count("claude/handwritten-document-ocr-sgf76h") >= 2
+
+
+def _yaml():
+    # PyYAML は ml の extra にだけある(pyproject.toml は、重みの再利用の照合の対象なので、ここでは変えない)。無い環境では、構造の検査を飛ばす
+    return pytest.importorskip("yaml")
+
+
+def _build_jobs() -> dict:
+    return _yaml().safe_load(text("trial-build.yml"))["jobs"]
+
+
+def test_a_manual_build_defaults_to_the_small_test_run_not_the_distribution_build():
+    on = _yaml().safe_load(text("trial-build.yml"))[True]
+    assert on["workflow_dispatch"]["inputs"]["mode"]["default"] == "mini"
+
+
+def test_the_reuse_path_skips_the_heavy_stages_and_runs_only_the_tail():
+    jobs = _build_jobs()
+    for name in ("shards", "base-weights"):
+        assert jobs[name]["if"] == "needs.plan.outputs.reuse == ''"  # 再利用のときは作らない
+    for name in ("confidence", "bundle"):
+        assert (
+            jobs[name]["if"] == "${{ !cancelled() && !failure() }}"
+        )  # 前の段階が skipped でも進む
+    assert "reuse" not in str(jobs["smoke-windows"].get("if", "")) and "if" not in jobs["finalize"]
+
+
+def test_the_reuse_path_checks_the_earlier_run_before_using_anything_from_it():
+    plan_steps = _build_jobs()["plan"]["steps"]
+    runs = "\n".join(str(s.get("run", "")) for s in plan_steps)
+    assert "run-check" in runs and ".github/workflows/trial-build.yml" in runs
+    assert "reuse-check" in runs  # コマンドの一致とコードの変更の照合
+    ck = next(i for i, s in enumerate(plan_steps) if "reuse-check" in str(s.get("run", "")))
+    assert plan_steps[0]["with"]["fetch-depth"] == 0  # コミットの差を調べるため、履歴が要る
+    assert ck > next(i for i, s in enumerate(plan_steps) if s.get("id") == "reuse")
+
+
+def test_the_only_artifacts_taken_from_the_earlier_run_carry_its_run_id_and_the_new_confidence_comes_from_this_run():
+    steps = _build_jobs()["bundle"]["steps"]
+    downloads = [
+        s for s in steps if str(s.get("uses", "")).startswith("actions/download-artifact@")
+    ]
+    from_earlier = [s for s in downloads if "run-id" in s["with"]]
+    assert {s["with"].get("name") or s["with"].get("pattern") for s in from_earlier} == {
+        "w.base",
+        "w.celltype",
+        "w.adapted",
+        "meta.*",
+    }
+    assert all(s["with"]["run-id"] == "${{ needs.plan.outputs.reuse }}" for s in from_earlier)
+    assert all("github-token" in s["with"] for s in from_earlier)
+    # 確信度(w.confidence)とその記録(meta.fit)は、必ずこの run のもの(前の run の古い較正を使わない)
+    here = [s for s in downloads if "run-id" not in s["with"] and s.get("if", "").endswith("!= ''")]
+    assert {s["with"].get("name") for s in here} == {"w.confidence", "meta.fit"}

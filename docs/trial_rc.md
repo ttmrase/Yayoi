@@ -117,6 +117,7 @@ python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経
 - 4 と 5 は 2 だけに依存し、3 と並行できる(CPU が 4 コアなので、並行すると互いに遅くなる)。6 は 3 と(適応済みの方は)4 が要る。
 - 所要時間: 手順 2 は、アイドルの CPU で 30 ページを 109 秒で作った実測(3.6 秒/ページ)から 1,600 ページ分を、3・4 は再学習の実測、6 は 10 ページの実測からの外挿。逐次で合計 **4 時間弱**(約 1.6 時間 + 17 分 + 27 分 + 1.5 時間)。作業記録(`model_provenance.md` §2 の実行時刻。ほかの作業と並行していた)の実績より速い。
 - 学習・ダンプのスレッド数(`--threads`)は、**上の値に揃える**(§7.3)。
+- **確信度の較正の余裕(`--margins`)は、CI のビルドと、ここ(コンテナでの作り直し)で違う**: `docs/model_provenance.md` §3 の記録は、コンテナで作った RC の値(`--margin 0.6 --margins amount=0.4`)。`scripts/trial_ci.py` が実行する CI のビルドは、科目も 0.3(`--margins account=0.3,amount=0.4`)。コンテナで作り直す重みも配るなら、`trial_ci.py run fit` と同じ値にすること(`docs/trial_ci_build.md` §4)。
 - `docs/model_provenance.md` §3 の較正のダンプのコマンドには `--threads` が書かれていない。**§7.2 の `--threads 3` を使う**(`model_provenance.md` は束に入る文書なので、次に束を作り直すときに追記する)。
 
 ### 7.3 再現性の確認(2026-10-31、RC のビルド元と同じコードで実施。結果は SHA256 / 行の一致)

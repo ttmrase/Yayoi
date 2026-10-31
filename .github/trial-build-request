@@ -1,6 +1,10 @@
 # このファイルを変更して push すると、trial-build ワークフロー(.github/workflows/trial-build.yml)が動く。公開はしない(公開は trial-publish.yml。ユーザーが GitHub の画面で実行する)。
-#   mode: full  = 配布用の本番ビルド(合成データ 1,600 ページ → 学習 → 較正 → 束 → 検査 → Windows の煙試験)。数時間かかる。実行・再実行は director の指示があるときだけ
+#   mode: full  = 配布用の本番ビルド(合成データ 1,600 ページ → 学習 → 較正 → 束 → 検査 → Windows の煙試験)。数時間かかる。実行・再実行は director / planning の指示があるときだけ
 #   mode: mini  = 通し試験(同じ経路を、ごく小さなデータ・1 エポックで通す。重みは使い物にならない。配布しない)
-# request は、同じ mode でもう一度ビルドしたいときに変える番号。
-mode: full
-request: 3
+# reuse_run_id: 成功した前の run の ID を書くと、その run の重み・較正のダンプを再利用し、確信度の較正以降(束・検査・Windows の煙試験)だけを実行する(約 10 分)。空 = 全部作る。
+#   再利用の前に、前の run のコマンドといまのコミットの処理が同じであること、学習・認識・合成に関わるコードが変わっていないことを照合する。前の run の artifact は 2 日で消える。
+# request は、同じ内容でもう一度ビルドしたいときに変える番号。
+# ふだんは mode: mini の状態にしておく(このファイルは、変更して push するだけでビルドが始まるため。本番を始めるときだけ full を書き、始めたら mini に戻す〔[skip ci] を付ける〕)。
+mode: mini
+reuse_run_id: 41220750716
+request: 4

@@ -67,6 +67,23 @@ EVAL_RECIPES = [
         ["--font-include", "yusei", "klee", "--vocab", "general-eval"],
     ),
 ]
+# 最終ホールドアウト v2(director 指示): 科目の見逃し率が基準を超えたあと、確信度の較正を直した束の**最終の確認**に使う、重ならない新しい 200 ページ。
+# 学習・較正・v1 のどの seed・書き手 ID とも重ならない(試験で確かめる)。構成は v1 と同じ(標準語彙・一般語彙 x 未使用の書き手・未知フォント 各 50 ページ)。
+EVAL_RECIPES_V2 = [
+    ("final2_std", "typical", 50, 9940000, 940000, FONT_EXCLUDE),
+    ("final2_gen", "typical", 50, 9950000, 950000, [*FONT_EXCLUDE, "--vocab", "general-eval"]),
+    ("final2_uf_std", "typical", 50, 9960000, 960000, ["--font-include", "yusei", "klee"]),
+    (
+        "final2_uf_gen",
+        "typical",
+        50,
+        9970000,
+        970000,
+        ["--font-include", "yusei", "klee", "--vocab", "general-eval"],
+    ),
+]
+HOLDOUT_RECIPES = {"v1": EVAL_RECIPES, "v2": EVAL_RECIPES_V2}
+FINAL_HOLDOUT = "v2"  # trial-eval が使い、trial-publish が要求するホールドアウト
 # 公開の合格基準(director 指示): 点推定で、全体の見逃し率 <= 0.5%、金額 <= 0.1%。列ごとの値の正解率(空欄を除く)が、コンテナでの出荷時の評価
 # から 3 ポイントを超えて下がっていない。基本の重みと適応済みの重みの両方に適用する。
 MISS_LIMIT_ALL = 0.005
@@ -74,16 +91,28 @@ MISS_LIMIT_ALL = 0.005
 MISS_LIMIT_COLUMN = {"date": 0.005, "account": 0.005, "description": 0.005, "amount": 0.001}
 MISS_LIMIT_AMOUNT = MISS_LIMIT_COLUMN["amount"]
 ACC_DROP_LIMIT = 0.03
+# 確信度の較正の余裕(margin。目標の見逃し率 0.5% に掛ける係数。小さいほど、要確認が増えて見逃しが減る)。director の判断で、事前に固定した値:
+# 科目 0.3(最終ホールドアウト v1 で、科目の見逃し率が 0.62% と基準 0.5% を超えたため。新しいホールドアウト v2 を見る前に決めた)、金額 0.4、日付・摘要 0.6。基本と適応済みの両方に適用する。
+FIT_MARGIN = 0.6
+FIT_MARGINS = {"account": 0.3, "amount": 0.4}
 # 評価の結果(JSON)の、基準の版。2 = 列ごとの見逃し率の基準を含む。trial-publish は、この版以上の結果だけを受け付ける。
 EVAL_CRITERIA_VERSION = 2
 COLUMN_LABELS = {"date": "日付", "account": "科目", "description": "摘要", "amount": "金額"}
 # コンテナで出荷した重み(RC の束。SHA256 5d69f666…)を、元の最終ホールドアウト(200 ページ)に、この評価と同じコード(`evaluate_weights`)で
 # 当てて測った値(列ごとの accuracy_nonblank。小数第 3 位に丸めた)。見逃し数・要確認率は docs/recognition.md の表と一致することを確かめてある
 # (適応済み: 見逃し 12/21/8/2 件)。docs の表の「値の正解率」は定義が少し違う(空欄の扱い)ため、基準には、測り直した値を使う。
-BASELINE_ACCURACY = {
-    "adapted": {"date": 0.586, "account": 0.853, "description": 0.443, "amount": 0.642},
-    "base": {"date": 0.409, "account": 0.726, "description": 0.203, "amount": 0.540},
+BASELINES = {
+    "v1": {
+        "adapted": {"date": 0.586, "account": 0.853, "description": 0.443, "amount": 0.642},
+        "base": {"date": 0.409, "account": 0.726, "description": 0.203, "amount": 0.540},
+    },
+    # v2: コンテナで出荷した重みを、ホールドアウト v2 に当てて測り直した値
+    "v2": {  # TEMP: 測定中(測り直した値で置き換える)
+        "adapted": {"date": 0.586, "account": 0.853, "description": 0.443, "amount": 0.642},
+        "base": {"date": 0.409, "account": 0.726, "description": 0.203, "amount": 0.540},
+    },
 }
+BASELINE_ACCURACY = BASELINES[FINAL_HOLDOUT]
 MODES = {
     "full": {
         "chunk": 100,
@@ -143,6 +172,23 @@ def sha256(path: Path) -> str:
 # ---------------------------------------------------------------- 計画
 
 
+def eval_shards(mode: str, holdout: str) -> list[dict]:
+    """最終ホールドアウトのシャード(1 データセット = 1 シャード)。mini は eval_pages ページ。"""
+    cfg = MODES[mode]
+    return [
+        {
+            "id": f"{name}.0",
+            "dataset": name,
+            "preset": preset,
+            "n": cfg["eval_pages"] or n,
+            "seed0": seed0,
+            "writer0": writer0,
+            "extra": extra,
+        }
+        for name, preset, n, seed0, writer0, extra in HOLDOUT_RECIPES[holdout]
+    ]
+
+
 def plan(mode: str) -> dict:
     cfg = MODES[mode]
     shards = []
@@ -161,22 +207,11 @@ def plan(mode: str) -> dict:
                     "extra": FONT_EXCLUDE + extra,
                 }
             )
-    eval_shards = [
-        {
-            "id": f"{name}.0",
-            "dataset": name,
-            "preset": preset,
-            "n": cfg["eval_pages"] or n,
-            "seed0": seed0,
-            "writer0": writer0,
-            "extra": extra,
-        }
-        for name, preset, n, seed0, writer0, extra in EVAL_RECIPES
-    ]
     return {
         "mode": mode,
         "shards": shards,
-        "eval_shards": eval_shards,
+        "eval_shards": eval_shards(mode, FINAL_HOLDOUT),  # trial-eval が使う最終ホールドアウト(v2)
+        "eval_shards_v1": eval_shards(mode, "v1"),  # 最初の評価に使ったホールドアウト(履歴)
         "celltype": cfg["celltype"],
         "adapt": cfg["adapt"],
         "dump": cfg["dump"],
@@ -192,8 +227,11 @@ def stage_commands(
 ) -> list[list[str]]:
     cfg = MODES[mode]
     if stage == "shard":
+        pl = plan(mode)
         s = next(
-            x for x in [*plan(mode)["shards"], *plan(mode)["eval_shards"]] if x["id"] == kw["id"]
+            x
+            for x in [*pl["shards"], *pl["eval_shards"], *pl["eval_shards_v1"]]
+            if x["id"] == kw["id"]
         )
         return [
             [
@@ -282,9 +320,9 @@ def stage_commands(
                     "--out",
                     str(dest),
                     "--margin",
-                    "0.6",
+                    str(FIT_MARGIN),
                     "--margins",
-                    "amount=0.4",
+                    ",".join(f"{k}={v}" for k, v in FIT_MARGINS.items()),
                     "--column-dump",
                     f"description={evals / f'calib_gen_{w}.jsonl'}",
                 ]
@@ -347,6 +385,131 @@ def run_stage(args: argparse.Namespace) -> int:
         }
         Path(args.info).parent.mkdir(parents=True, exist_ok=True)
         Path(args.info).write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
+    return 0
+
+
+# ---------------------------------------------------------------- 重みの再利用(確信度の較正だけをやり直すビルド)
+
+# 前の run で作った重み・較正のダンプを再利用してよいのは、その run を作った処理が、いまのコミットで実行する処理と同じとき。
+# ① 学習・ダンプの段階のコマンドが、前の run の記録と一致する(レシピ・seed・スレッド数・引数)。② 前の run のコミットが、いまのコミットの祖先。
+# ③ 学習・認識・合成に関わるコード(下の一覧)が、前の run のコミットから変わっていない。確信度の較正(fit)は、いまのコミットの処理でやり直す。
+REUSED_STAGES = ("shard", "celltype", "adapt", "rehearsal", "dump")
+REUSE_PROTECTED = (
+    "src/",
+    "requirements/",
+    "pyproject.toml",
+    "scripts/build_synth_cells.py",
+    "scripts/train_celltype.py",
+    "scripts/train_adapt.py",
+    "scripts/build_rehearsal.py",
+    "scripts/eval_recognize.py",
+    "scripts/fetch_models.py",
+    "scripts/fetch_fonts.py",
+)
+_PY_HEAD = re.compile(r"^\S*python[0-9.]* -I ")
+
+
+def _normalize_command(cmd: str) -> str:
+    """インタプリタのパス(ランナーの Python の版で変わる)を無視して、コマンドを比べる。"""
+    return _PY_HEAD.sub("<python> -I ", cmd)
+
+
+def expected_reused_commands(
+    mode: str, data: Path, models: Path, evals: Path
+) -> dict[tuple[str, str], list[str]]:
+    """再利用する段階(shard・celltype・adapt・rehearsal・dump)について、いまのコミットが実行するコマンド。キーは (段階, 記録の id)。"""
+    pl = plan(mode)
+
+    def norm(cmds: list[list[str]]) -> list[str]:
+        return [_normalize_command(" ".join(c)) for c in cmds]
+
+    out: dict[tuple[str, str], list[str]] = {}
+    for sh in pl["shards"]:
+        out[("shard", sh["id"])] = norm(
+            stage_commands("shard", mode, data, models, evals, id=sh["id"], jobs=3)
+        )
+    for st in ("celltype", "adapt", "rehearsal"):
+        out[(st, "")] = norm(stage_commands(st, mode, data, models, evals))
+    for d in pl["dumps"]:
+        out[("dump", f"{d['dataset']}_{d['weights']}")] = norm(
+            stage_commands(
+                "dump", mode, data, models, evals, dataset=d["dataset"], weights=d["weights"]
+            )
+        )
+    return out
+
+
+def reuse_problems(
+    mode: str,
+    infos: list[dict],
+    changed_files: list[str],
+    data: Path,
+    models: Path,
+    evals: Path,
+) -> list[str]:
+    """前の run の段階の記録(infos)とコミットの差が、再利用してよいものか。問題の一覧(空なら再利用してよい)。"""
+    problems = []
+    expected = expected_reused_commands(mode, data, models, evals)
+    got: dict[tuple[str, str], dict] = {}
+    for r in infos:
+        if r.get("stage") in REUSED_STAGES:
+            got[(r["stage"], r.get("id", ""))] = r
+    for key in sorted(set(expected) - set(got)):
+        problems.append(f"前の run に、段階の記録がない: {key[0]} {key[1]}".rstrip())
+    for key in sorted(set(got) - set(expected)):
+        problems.append(f"前の run に、いまの計画に無い段階がある: {key[0]} {key[1]}".rstrip())
+    for key in sorted(set(expected) & set(got)):
+        rec = got[key]
+        if rec.get("mode") != mode:
+            problems.append(
+                f"モードが違う: {key[0]} {key[1]}(前の run: {rec.get('mode')})".rstrip()
+            )
+        recorded = [_normalize_command(c) for c in rec.get("commands", [])]
+        if recorded != expected[key]:
+            problems.append(f"コマンドが違う: {key[0]} {key[1]}".rstrip())
+    for f in changed_files:
+        if any(f == p or (p.endswith("/") and f.startswith(p)) for p in REUSE_PROTECTED):
+            problems.append(
+                f"学習・認識・合成に関わるファイルが、前の run のコミットから変わっている: {f}"
+            )
+    return problems
+
+
+def cmd_reuse_check(args: argparse.Namespace) -> int:
+    base = args.base_commit
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        raise SystemExit("--base-commit は 40 桁の 16 進(前の run のコミット)")
+    infos = [
+        json.loads(p.read_text(encoding="utf-8"))
+        for p in sorted(Path(args.infos).glob("*.json"))
+        if not p.name.startswith("info.fit")
+    ]
+    problems = []
+    anc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", base, "HEAD"], cwd=ROOT, capture_output=True
+    )
+    if anc.returncode != 0:
+        problems.append("前の run のコミットが、いまのコミットの祖先ではない")
+        changed: list[str] = []
+    else:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", base, "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        changed = [x for x in diff.stdout.splitlines() if x]
+    problems += reuse_problems(
+        args.mode, infos, changed, Path(args.data), Path(args.models), Path(args.evals)
+    )
+    print(
+        f"前の run のコミット {base[:12]} → いまのコミット: 変更 {len(changed)} ファイル・段階の記録 {len(infos)} 件"
+    )
+    if problems:
+        print("\n".join(f"[NG] {p}" for p in problems), file=sys.stderr)
+        return 1
+    print("再利用してよい: 学習・ダンプの段階のコマンドが一致し、関わるコードの変更もない")
     return 0
 
 
@@ -429,8 +592,10 @@ def build_provenance(
     mode: str,
     ref: str,
     now: str,
+    reuse: dict | None = None,
 ) -> str:
-    """リポジトリの docs/model_provenance.md を、この束の重みの SHA256 と、ビルドの記録で書き直す。"""
+    """リポジトリの docs/model_provenance.md を、この束の重みの SHA256 と、ビルドの記録で書き直す。
+    reuse = {"run_id", "commit"} のとき、重みと較正のダンプは前の run で作ったものの再利用(確信度の較正だけをこの run でやり直した)と書く。"""
     hashes = {f"models/{rel}": (models / rel) for rel in MODEL_FILES}
     for rel, p in hashes.items():
         if not p.is_file():
@@ -488,7 +653,7 @@ def build_provenance(
             vers.setdefault(k, set()).add(v)
     ver_text = "・".join(f"{k} {', '.join(sorted(v))}" for k, v in sorted(vers.items()))
     stage_rows = "\n".join(
-        f"| `{r['stage']}` | {('`' + r['id'] + '`') if r['id'] else '—'} | {r['seconds']:.0f} 秒 | `{r['commands'][0][:230]}` |"
+        f"| `{r['stage']}` | {('`' + r['id'] + '`') if r['id'] else '—'} | {r.get('run_id') or run_id} | {r['seconds']:.0f} 秒 | `{r['commands'][0][:230]}` |"
         for r in sorted(infos, key=lambda r: (r["stage"], r["id"]))
         if r["stage"] != "shard"
     )
@@ -499,9 +664,28 @@ def build_provenance(
         f" {', '.join(f'{k} {v}' for k, v in sorted(merged[n]['fonts'].items()))} |"
         for n in names
     )
+    margins = "・".join(
+        [f"{COLUMN_LABELS[c]} {m}" for c, m in FIT_MARGINS.items()]
+        + [
+            f"{'・'.join(COLUMN_LABELS[c] for c in COLUMN_LABELS if c not in FIT_MARGINS)} {FIT_MARGIN}"
+        ]
+    )
+    if reuse:
+        built = (
+            f"GitHub Actions で、合成データだけから作り直したものです(重みの学習と較正のダンプは run {reuse['run_id']}"
+            f"〔コミット `{reuse['commit']}`〕、確信度の較正は run {run_id}〔コミット `{commit}`〕)"
+        )
+        reuse_row = (
+            f"\n| 再利用 | シャード(合成データ)・セル種別分類器・基本/適応済みの重み・リハーサルの束・較正のダンプは、**run {reuse['run_id']}(コミット `{reuse['commit']}`)で作ったものを再利用**した。"
+            f"再利用の前に、学習・ダンプの段階のコマンドが、その run の記録と一致すること、学習・認識・合成に関わるコードが変わっていないことを照合している。"
+            f"**この run でやり直したのは、確信度の較正(`fit`)だけ**で、余裕(margin)を変えた(科目 0.6 → 0.3。ほかは同じ) |"
+        )
+    else:
+        built = f"GitHub Actions(run {run_id}、コミット `{commit}`)で、合成データだけから作り直したものです"
+        reuse_row = ""
     head = f"""# 同梱する重みの出所(この束は GitHub Actions でビルドした)
 
-> **この束の重みは、GitHub Actions(run {run_id}、コミット `{commit}`)で、合成データだけから作り直したものです。**
+> **この束の重みは、{built}。**
 > §0 がこのビルドの記録です。§1 以降は、開発のコンテナでビルドした重みについての記録(リポジトリの `docs/model_provenance.md`)で、
 > **§2 の SHA256 の表だけを、この束の重みの実際の値に置き換えてあります**(CPU・ライブラリの違いで、コンテナで作った重みとは値が一致しないことがあります)。
 > §4 の検査(C4・C6: 拒否リストの走査)は、コンテナでビルドした重みについての記録です。**この束の重みには行っていません**(拒否リストを CI に置けないため)。
@@ -515,10 +699,10 @@ def build_provenance(
 | 入力の固定 | フォント: google/fonts の `{ref}`(全 14 ファイルの SHA256 を `requirements/fonts.sha256` と照合)。基本の重み: NDLOCR-Lite の `e57f7c6bd9cfb3de5f12f008e71ad2122bd44bfd`(ONNX の SHA256 を検証)。同梱の Python・wheel: lock とハッシュで固定 |
 | 実行環境 | CPU: {cpus}。{ver_text} |
 | 合成データ | {n_shards} 個のシャードに分けて並列に生成(ページごとに seed・書き手 ID が決まるので、1 回で作ったときと同じページになる) |
-| 手順 | `docs/model_provenance.md` §3・`docs/trial_rc.md` §7.2 と同じ(seed 0。セル種別分類器 `--threads 4`、適応済みの重み `--threads 3`、ダンプ `--threads 3`) |
+| 手順 | `docs/model_provenance.md` §3・`docs/trial_rc.md` §7.2 と同じ(seed 0。セル種別分類器 `--threads 4`、適応済みの重み `--threads 3`、ダンプ `--threads 3`)。**ただし、確信度の較正の余裕(margin)は {margins}**(コンテナで作った重みは、科目も 0.6。§3 の記録はコンテナの値) |{reuse_row}
 
-| 段階 | 対象 | 所要時間 | コマンド(1 つ目) |
-|---|---|---:|---|
+| 段階 | 対象 | run | 所要時間 | コマンド(1 つ目) |
+|---|---|---|---:|---|
 {stage_rows}
 
 **合成データの要約**(シャードを合わせたもの。検査 C2: 全ページが生成器の署名を持つ = 署名のないページ {bad_pages}。C3: データセット間の seed・書き手 ID の重なり = {overlaps or "なし"}。C1: 実サンプルの置き場を参照するコード = なし)
@@ -542,8 +726,19 @@ def build_provenance(
 def cmd_provenance(args: argparse.Namespace) -> int:
     template = Path(args.template).read_text(encoding="utf-8")
     infos = [
-        json.loads(p.read_text(encoding="utf-8")) for p in sorted(Path(args.info).glob("*.json"))
+        {**json.loads(p.read_text(encoding="utf-8")), "run_id": args.run_id}
+        for p in sorted(Path(args.info).glob("*.json"))
     ]
+    reuse = None
+    if args.reuse_run_id:
+        if not (args.reuse_commit and args.reuse_info):
+            raise SystemExit("--reuse-run-id には --reuse-commit と --reuse-info が要る")
+        reuse = {"run_id": args.reuse_run_id, "commit": args.reuse_commit}
+        infos += [
+            {**json.loads(p.read_text(encoding="utf-8")), "run_id": args.reuse_run_id}
+            for p in sorted(Path(args.reuse_info).glob("*.json"))
+            if not p.name.startswith("info.fit")
+        ]
     pin = Path(ROOT / "requirements" / "fonts-pin.txt").read_text(encoding="utf-8")
     ref = re.search(r"^ref=(\w+)", pin, re.M).group(1)
     text = build_provenance(
@@ -556,12 +751,15 @@ def cmd_provenance(args: argparse.Namespace) -> int:
         mode=args.mode,
         ref=ref,
         now=time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
+        reuse=reuse,
     )
     Path(args.out).write_text(text, encoding="utf-8")
     info = {
         "run_id": args.run_id,
         "commit": args.commit,
         "mode": args.mode,
+        "reuse": reuse,
+        "fit_margins": {"default": FIT_MARGIN, **FIT_MARGINS},
         "weights": {f"models/{rel}": sha256(Path(args.models) / rel) for rel in MODEL_FILES},
         "stages": infos,
     }
@@ -580,7 +778,12 @@ def _nan_to_none(d: dict) -> dict:
 
 
 def evaluate_weights(
-    models: Path, data: Path, names: list[str], weights: str, threads: int = 3
+    models: Path,
+    data: Path,
+    names: list[str],
+    weights: str,
+    threads: int = 3,
+    holdout: str = FINAL_HOLDOUT,
 ) -> dict:
     """束の重み(base = 素 / adapted = 適応済み)で、最終ホールドアウトのページを認識して、列ごとの正解率・要確認率・見逃し率を数える。
     `scripts/eval_recognize.py` と同じ処理(出荷設定の確信度・種別分類器・辞書なし = cold)。"""
@@ -627,6 +830,7 @@ def evaluate_weights(
         print(f"{weights} {name}: {len(pages)} ページ", flush=True)
     return {
         "weights": weights,
+        "holdout": holdout,
         "pages": sum(d["pages"] for d in per_dataset.values()),
         "overall": _nan_to_none(summarize(rows_all)["all"]),
         "columns": {
@@ -644,7 +848,7 @@ def required_eval_check_ids() -> list[str]:
         ids.append(f"{w}:miss:overall")
         ids += [f"{w}:miss:{c}" for c in MISS_LIMIT_COLUMN]
         ids += [f"{w}:acc:{c}" for c in BASELINE_ACCURACY[w]]
-    ids.append("pages")
+    ids += ["holdout", "pages"]
     return ids
 
 
@@ -670,7 +874,7 @@ def eval_checks(result: dict, weights: str) -> list[dict]:
                 "ok": rate is not None and rate <= limit,
             }
         )
-    for col, base in BASELINE_ACCURACY[weights].items():
+    for col, base in BASELINES[result.get("holdout", FINAL_HOLDOUT)][weights].items():
         acc = result["columns"][col]["accuracy_nonblank"]
         floor = round(base - ACC_DROP_LIMIT, 4)
         out.append(
@@ -721,6 +925,16 @@ def format_eval_table(result: dict) -> list[str]:
 def merge_eval(base: dict, adapted: dict, meta: dict) -> dict:
     checks = eval_checks(base, "base") + eval_checks(adapted, "adapted")
     pages_ok = base["pages"] >= 200 and adapted["pages"] >= 200 if meta["mode"] == "full" else True
+    holdout = base.get("holdout")
+    checks.append(
+        {
+            "id": "holdout",
+            "name": f"最終ホールドアウトは {FINAL_HOLDOUT}(重ならない新しい seed)",
+            "value": holdout,
+            "limit": FINAL_HOLDOUT,
+            "ok": holdout == adapted.get("holdout") == FINAL_HOLDOUT,
+        }
+    )
     checks.append(
         {
             "id": "pages",
@@ -733,12 +947,13 @@ def merge_eval(base: dict, adapted: dict, meta: dict) -> dict:
     return {
         **meta,
         "criteria_version": EVAL_CRITERIA_VERSION,
+        "holdout": holdout,
         "criteria": {
             "miss_limit_all": MISS_LIMIT_ALL,
             "miss_limit_column": MISS_LIMIT_COLUMN,
             "miss_limit_amount": MISS_LIMIT_AMOUNT,
             "accuracy_drop_limit": ACC_DROP_LIMIT,
-            "baseline_accuracy": BASELINE_ACCURACY,
+            "baseline_accuracy": BASELINES.get(holdout, BASELINE_ACCURACY),
         },
         "results": {"base": base, "adapted": adapted},
         "checks": checks,
@@ -747,8 +962,11 @@ def merge_eval(base: dict, adapted: dict, meta: dict) -> dict:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
+    names = (
+        args.datasets.split(",") if args.datasets else [r[0] for r in HOLDOUT_RECIPES[args.holdout]]
+    )
     result = evaluate_weights(
-        Path(args.models), Path(args.data), args.datasets.split(","), args.weights, args.threads
+        Path(args.models), Path(args.data), names, args.weights, args.threads, args.holdout
     )
     Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     o = result["overall"]
@@ -915,6 +1133,8 @@ def cmd_release_check(args: argparse.Namespace) -> int:
         == spec["zip_sha256"],
         "束の検査(B1〜B7)が OK": info.get("verify_bundle", {}).get("ok") is True,
         "Windows の煙試験が OK": info.get("smoke_windows", {}).get("ok") is True,
+        "確信度の較正の余裕が、固定した値(科目 0.3・金額 0.4・ほか 0.6)": info.get("fit_margins")
+        == {"default": FIT_MARGIN, **FIT_MARGINS},
     }
     if args.eval_dir:
         try:
@@ -932,6 +1152,8 @@ def cmd_release_check(args: argparse.Namespace) -> int:
                 "評価の run が JSON の eval_run_id と同じ": str(ev.get("eval_run_id"))
                 == spec["eval_run_id"],
                 "評価の mode が full": ev.get("mode") == "full",
+                "評価のホールドアウトが、最終のもの(v2。重ならない新しい seed)": ev.get("holdout")
+                == FINAL_HOLDOUT,
                 "重みの質の評価が合格": ev.get("passed") is True,
                 "評価の基準の版が、列ごとの見逃し率を含む版以上": isinstance(
                     ev.get("criteria_version"), int
@@ -980,6 +1202,12 @@ def main() -> int:
     v.add_argument("--models", required=True)
     v.add_argument("--summaries", required=True)
     v.add_argument("--info", required=True)
+    v.add_argument(
+        "--reuse-run-id",
+        help="重みと較正のダンプを再利用した run(確信度の較正だけをこの run でやり直した)",
+    )
+    v.add_argument("--reuse-commit", help="再利用した run のコミット")
+    v.add_argument("--reuse-info", help="再利用した run の段階の記録(meta.* の infos)のフォルダ")
     v.add_argument("--run-id", required=True)
     v.add_argument("--commit", required=True)
     v.add_argument("--mode", choices=sorted(MODES), default="full")
@@ -995,7 +1223,10 @@ def main() -> int:
     e.add_argument("--models", required=True)
     e.add_argument("--data", required=True)
     e.add_argument("--weights", choices=["base", "adapted"], required=True)
-    e.add_argument("--datasets", default=",".join(r[0] for r in EVAL_RECIPES))
+    e.add_argument("--holdout", choices=sorted(HOLDOUT_RECIPES), default=FINAL_HOLDOUT)
+    e.add_argument(
+        "--datasets", help="評価するデータセット名(カンマ区切り)。既定は --holdout の 4 つ"
+    )
     e.add_argument("--threads", type=int, default=3)
     e.add_argument("--out", required=True)
     em = sub.add_parser("eval-merge")
@@ -1007,6 +1238,15 @@ def main() -> int:
     em.add_argument("--build-commit", required=True)
     em.add_argument("--mode", choices=sorted(MODES), required=True)
     em.add_argument("--out", required=True)
+    ru = sub.add_parser("reuse-check")
+    ru.add_argument("--mode", choices=sorted(MODES), required=True)
+    ru.add_argument(
+        "--infos", required=True, help="前の run の段階の記録(meta.* の infos)のフォルダ"
+    )
+    ru.add_argument("--base-commit", required=True, help="前の run のコミット(40 桁)")
+    ru.add_argument("--data", required=True)
+    ru.add_argument("--models", required=True)
+    ru.add_argument("--evals", required=True)
     rk = sub.add_parser("run-check")
     rk.add_argument("--run", required=True)
     rk.add_argument("--workflow-path", required=True)
@@ -1025,6 +1265,8 @@ def main() -> int:
         return cmd_eval(args)
     if args.cmd == "eval-merge":
         return cmd_eval_merge(args)
+    if args.cmd == "reuse-check":
+        return cmd_reuse_check(args)
     if args.cmd == "run-check":
         return cmd_run_check(args)
     if args.cmd == "release-spec":

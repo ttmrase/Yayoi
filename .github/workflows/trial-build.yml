@@ -5,7 +5,10 @@ name: Trial build
 #   plan → shards(合成データ。100 ページずつ並列)→ base-weights / celltype / adapt(適応済みの重み + リハーサルの束)→ dumps(較正のダンプ 4 つ)
 #        → confidence(確信度モデル)→ bundle(出所の文書を実際の重みの SHA256 で作り、束を作って検査)→ smoke-windows(この束そのものを Windows で)→ finalize
 #
-# 起動: .github/trial-build-request を変更して push する(mode: full = 配布物 / mini = 通し試験。mini の重みは使い物にならず、配布しない)。画面から手動でも起動できる。
+# 起動: .github/trial-build-request を変更して push する(mode: full = 配布用の本番ビルド / mini = 通し試験。mini の重みは使い物にならず、配布しない)。画面から手動でも起動できる。
+# 重みの再利用: reuse_run_id に、成功した前の run を指定すると、シャード・セル種別分類器・基本/適応済みの重み・較正のダンプはその run の artifact を使い、
+#   確信度の較正(confidence)以降(bundle → 検査 → Windows の煙試験 → finalize)だけをこの run で実行する。再利用の前に、前の run の段階のコマンドといまのコミットの処理が
+#   同じであること、学習・認識・合成に関わるコードが変わっていないことを照合する(scripts/trial_ci.py reuse-check)。出所の文書に、再利用元の run・コミットと変更点を書く。
 # 手順・seed・スレッド数は、docs/model_provenance.md §3 と docs/trial_rc.md §7.2 の手順(scripts/trial_ci.py が実行する)。
 # 重みは、開発のコンテナで作ったものとビット単位では一致しない(CPU が違う)。束の出所の表は、実際に作った重みの SHA256 で作る。
 # 成果物: artifact「trial-bundle」(mini は「trial-bundle-mini」)= zip・.sha256・出所の文書・ビルドの記録・検査の結果。
@@ -18,13 +21,19 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "full = 配布物のビルド / mini = 通し試験(配布しない)"
+        description: "full = 配布用の本番ビルド / mini = 通し試験(配布しない)"
         type: choice
         options: [full, mini]
-        default: full
+        default: mini # 誤って本番のビルドを始めないよう、既定は mini
+      reuse_run_id:
+        description: "重みと較正のダンプを再利用する、成功した trial-build の run_id(空 = 全部作る)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
+  actions: read # 再利用する run の確認と、その artifact のダウンロード(読み取りだけ)
 
 concurrency:
   group: trial-build
@@ -43,29 +52,65 @@ jobs:
       shards: ${{ steps.p.outputs.shards }}
       dumps: ${{ steps.p.outputs.dumps }}
       artifact: ${{ steps.p.outputs.artifact }}
+      reuse: ${{ steps.p.outputs.reuse }}
+      reuse_commit: ${{ steps.reuse.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # 再利用する run のコミットとの差を調べる
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - id: p
         env:
           INPUT_MODE: ${{ inputs.mode }}
+          INPUT_REUSE: ${{ inputs.reuse_run_id }}
         run: |
-          MODE="${INPUT_MODE:-}"
-          if [ -z "$MODE" ]; then MODE=$(sed -n 's/^mode: *//p' .github/trial-build-request | head -1 | tr -d '[:space:]'); fi
+          MODE="${INPUT_MODE:-}"; REUSE="${INPUT_REUSE:-}"
+          if [ -z "$MODE" ]; then
+            MODE=$(sed -n 's/^mode: *//p' .github/trial-build-request | head -1 | tr -d '[:space:]')
+            REUSE=$(sed -n 's/^reuse_run_id: *//p' .github/trial-build-request | head -1 | tr -d '[:space:]')
+          fi
           case "$MODE" in full|mini) ;; *) echo "mode が不正です: '$MODE'"; exit 1 ;; esac
+          case "$REUSE" in *[!0-9]*) echo "reuse_run_id が不正です: '$REUSE'"; exit 1 ;; esac
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "reuse=$REUSE" >> "$GITHUB_OUTPUT"
           echo "shards=$(python scripts/trial_ci.py plan --mode "$MODE" --field shards)" >> "$GITHUB_OUTPUT"
           echo "dumps=$(python scripts/trial_ci.py plan --mode "$MODE" --field dumps)" >> "$GITHUB_OUTPUT"
           if [ "$MODE" = full ]; then echo "artifact=trial-bundle" >> "$GITHUB_OUTPUT"; else echo "artifact=trial-bundle-mini" >> "$GITHUB_OUTPUT"; fi
-          echo "モード: $MODE(コミット $GITHUB_SHA)"
+          echo "モード: $MODE(コミット $GITHUB_SHA)。再利用する run: ${REUSE:-なし}"
+      - name: Check the run to reuse (this workflow, this branch, succeeded)
+        id: reuse
+        if: steps.p.outputs.reuse != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE: ${{ steps.p.outputs.reuse }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE" > "$RUNNER_TEMP/reuse-run.json"
+          python scripts/trial_ci.py run-check --run "$RUNNER_TEMP/reuse-run.json" \
+            --workflow-path .github/workflows/trial-build.yml --branch claude/handwritten-document-ocr-sgf76h
+          echo "commit=$(python -c "import json; print(json.load(open('$RUNNER_TEMP/reuse-run.json'))['head_sha'])")" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.p.outputs.reuse != ''
+        with:
+          pattern: meta.*
+          merge-multiple: true
+          run-id: ${{ steps.p.outputs.reuse }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/reused-meta
+      - name: Check that the reused stages were made by the same recipe and code
+        if: steps.p.outputs.reuse != ''
+        run: >
+          python scripts/trial_ci.py reuse-check --mode "${{ steps.p.outputs.mode }}"
+          --infos "$RUNNER_TEMP/reused-meta/infos" --base-commit "${{ steps.reuse.outputs.commit }}"
+          --data "$RUNNER_TEMP/yayoi_private/datasets" --models "$RUNNER_TEMP/yayoi_private/models" --evals "$RUNNER_TEMP/yayoi_private/evals"
 
   shards:
     name: data ${{ matrix.shard.id }}
     needs: plan
+    if: needs.plan.outputs.reuse == ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -115,6 +160,7 @@ jobs:
   base-weights:
     name: base weights
     needs: plan
+    if: needs.plan.outputs.reuse == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -326,6 +372,8 @@ jobs:
   confidence:
     name: confidence models
     needs: [plan, dumps]
+    # 再利用のとき、dumps は実行されない(skipped)。失敗・取り消しがなければ実行する
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -346,9 +394,19 @@ jobs:
       - name: Install
         run: python -m pip install -e . -c requirements/trial-build-linux.txt
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse == ''
         with:
           pattern: dump.*
           merge-multiple: true
+          path: ${{ runner.temp }}/yayoi_private/evals
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          pattern: dump.*
+          merge-multiple: true
+          run-id: ${{ needs.plan.outputs.reuse }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/yayoi_private/evals
       - name: Fit the confidence models (base and adapted weights)
         run: >
@@ -373,6 +431,7 @@ jobs:
   bundle:
     name: bundle + verify
     needs: [plan, shards, base-weights, celltype, adapt, confidence]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -405,19 +464,74 @@ jobs:
           npm run build
         working-directory: web
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse == ''
         with:
           pattern: w.*
           merge-multiple: true
           path: ${{ runner.temp }}/yayoi_private/models
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse == ''
         with:
           pattern: meta.*
           merge-multiple: true
           path: ${{ runner.temp }}/meta
+      # 再利用: 重みは前の run のもの(w.base・w.celltype・w.adapted)、確信度は、この run で較正し直したもの(w.confidence)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          name: w.base
+          run-id: ${{ needs.plan.outputs.reuse }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/yayoi_private/models
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          name: w.celltype
+          run-id: ${{ needs.plan.outputs.reuse }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/yayoi_private/models
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          name: w.adapted
+          run-id: ${{ needs.plan.outputs.reuse }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/yayoi_private/models
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          name: w.confidence
+          path: ${{ runner.temp }}/yayoi_private/models
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          pattern: meta.*
+          merge-multiple: true
+          run-id: ${{ needs.plan.outputs.reuse }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/meta_reused
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.plan.outputs.reuse != ''
+        with:
+          name: meta.fit
+          path: ${{ runner.temp }}/meta
       - name: Generate the provenance document (SHA-256 of the weights actually built) and the build record
+        if: needs.plan.outputs.reuse == ''
         run: >
           python scripts/trial_ci.py provenance --mode "${{ needs.plan.outputs.mode }}"
           --models "$YAYOI_PRIVATE_DATA/models" --summaries "$META/summaries" --info "$META/infos"
+          --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA"
+          --out "$RUNNER_TEMP/model_provenance.generated.md" --build-info "$RUNNER_TEMP/build-info.json"
+      - name: Generate the provenance document (weights reused from an earlier run; only the confidence fit is new)
+        if: needs.plan.outputs.reuse != ''
+        run: >
+          python scripts/trial_ci.py provenance --mode "${{ needs.plan.outputs.mode }}"
+          --models "$YAYOI_PRIVATE_DATA/models" --summaries "$RUNNER_TEMP/meta_reused/summaries" --info "$META/infos"
+          --reuse-run-id "${{ needs.plan.outputs.reuse }}" --reuse-commit "${{ needs.plan.outputs.reuse_commit }}" --reuse-info "$RUNNER_TEMP/meta_reused/infos"
           --run-id "$GITHUB_RUN_ID" --commit "$GITHUB_SHA"
           --out "$RUNNER_TEMP/model_provenance.generated.md" --build-info "$RUNNER_TEMP/build-info.json"
       - name: Build the trial bundle (offline, complete)
