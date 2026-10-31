@@ -81,8 +81,14 @@ class JobRunner:
                 break
             try:
                 self.run_job(job_id)
-            except Exception:  # 想定外でもスレッドは生かす(次のジョブを処理する)
-                pass
+            except Exception as exc:  # 想定外でもスレッドは生かす(次のジョブを処理する)。握りつぶさず、型名を記録する
+                try:
+                    with self.lock:
+                        store.fail_job(self.con, job_id, type(exc).__name__)
+                except Exception:  # 記録そのものが失敗しても、スレッドは止めない(型名だけログへ)
+                    store.log.error(
+                        "job %s: could not record failure (%s)", job_id, type(exc).__name__
+                    )
             finally:
                 with self.lock:
                     self._queued.discard(job_id)

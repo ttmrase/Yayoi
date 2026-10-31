@@ -137,7 +137,7 @@ test("⑰ 検証エラー(タイトル未入力)は確認画面へのリンク�
   await expect(page.getByTestId("export-ok")).toBeVisible();
 });
 
-test("⑱ 学習画面: 確定したページの実績(値は出さない)と、世代 0 だけで戻す操作は無効", async ({ page, request }) => {
+test("⑱ 学習画面: 確定したページの実績(値は出さない)と、世代 0 だけで戻す操作は無効、学習データの削除は確認を経て実行", async ({ page, request }) => {
   await putSettings(request);
   const job = await createJob(request, 903);
   await openApp(page);
@@ -150,7 +150,11 @@ test("⑱ 学習画面: 確定したページの実績(値は出さない)と、
   await expect(page.getByTestId("trend")).toBeVisible();
   await expect(page.getByTestId("generations")).toContainText("世代 0(出荷時)");
   await expect(page.getByRole("button", { name: "この世代に戻す" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /リセット/ })).toBeDisabled();
+  // 学習データの削除(リセット): 確定したページがあるので押せる。確認を経て、切り出し画像を削除する
+  await expect(page.getByTestId("reset-learning")).toBeEnabled();
+  await page.getByTestId("reset-learning").click();
+  await page.getByTestId("reset-learning-confirm").click();
+  await expect(page.getByTestId("reset-message")).toContainText("削除しました");
 });
 
 test("⑲ タイトル欄は日本語入力の変換中の Enter で送らない(IME)", async ({ page, request }) => {

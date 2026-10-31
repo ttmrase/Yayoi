@@ -12,6 +12,7 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from ..recognize.state import ConfirmedCell, update_from_confirmed
+from .retention import learned_since
 from .settings import Settings
 
 MAX_ACCOUNTS = 60
@@ -33,8 +34,12 @@ def build_state(con: sqlite3.Connection, profile_id: int, settings: Settings) ->
     )
     pages = con.execute(
         "SELECT p.id, p.title FROM pages p JOIN jobs j ON j.id = p.job_id"
-        " WHERE j.profile_id = ? AND p.status = 'confirmed' ORDER BY j.id, p.idx",
-        (profile_id,),
+        " WHERE j.profile_id = ? AND p.status = 'confirmed' AND COALESCE(p.confirmed_at, 0) >= ?"
+        " ORDER BY j.id, p.idx",
+        (
+            profile_id,
+            learned_since(con),
+        ),  # 学習画面の「リセット」より前に確定したページは、学習に使わない
     ).fetchall()
     for pg in pages:
         rows = con.execute(

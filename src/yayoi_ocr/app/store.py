@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,10 @@ from pathlib import Path
 
 from .db import transaction
 from .validate import ERROR_LABELS, validate_value
+
+log = logging.getLogger(
+    "yayoi_ocr.app"
+)  # ログには ID と例外の型名だけを出す(実データの値・ファイル名は出さない)
 
 EDIT_KINDS = ("none", "unchanged", "corrected", "candidate", "expanded_edit")
 R_AMBIGUITY = "dash_digit_ambiguity"
@@ -229,11 +234,24 @@ def fail_page(con: sqlite3.Connection, page_id: int, code: str) -> None:
         p = con.execute("SELECT job_id FROM pages WHERE id = ?", (page_id,)).fetchone()
         if p is None:
             return
+        log.warning("page %s failed: %s", page_id, code[:80])
         con.execute(
             "UPDATE pages SET status = 'failed', error = ? WHERE id = ? AND status = 'processing'",
             (code[:80], page_id),
         )
         _refresh_job_status(con, p["job_id"])
+
+
+def fail_job(con: sqlite3.Connection, job_id: int, code: str) -> None:
+    """ジョブの処理が想定外の例外で止まったとき: 型名をジョブに残し、認識待ちのページを「失敗」にする(画面から再試行できる)。"""
+    log.error("job %s failed: %s", job_id, code[:80])
+    with transaction(con):
+        con.execute("UPDATE jobs SET error = ? WHERE id = ?", (code[:80], job_id))
+        con.execute(
+            "UPDATE pages SET status = 'failed', error = ? WHERE job_id = ? AND status = 'processing'",
+            (code[:80], job_id),
+        )
+        _refresh_job_status(con, job_id)
 
 
 def retry_page(con: sqlite3.Connection, page_id: int) -> int:
@@ -245,6 +263,7 @@ def retry_page(con: sqlite3.Connection, page_id: int) -> int:
         if p["status"] != "failed":
             raise StoreError(409, "page_not_failed")
         con.execute("UPDATE pages SET status = 'processing', error = NULL WHERE id = ?", (page_id,))
+        con.execute("UPDATE jobs SET error = NULL WHERE id = ?", (p["job_id"],))
         _refresh_job_status(con, p["job_id"])
     return int(p["job_id"])
 
@@ -708,6 +727,13 @@ def request_recut(con: sqlite3.Connection, page_id: int, corners: list[list[floa
         ]
         if info is None:
             raise StoreError(409, "layout_not_available")
+        gone = con.execute(
+            "SELECT 1 FROM pages p JOIN uploads u ON u.id = p.upload_id"
+            " WHERE p.id = ? AND u.deleted_at IS NOT NULL",
+            (page_id,),
+        ).fetchone()
+        if gone is not None:  # 設定「元画像の保管: 出力後に削除」で元ファイルを削除済み
+            raise StoreError(409, "original_deleted")
         size = json.loads(info)
         try:
             pts = validate_corners(corners, (int(size["height"]), int(size["width"])))

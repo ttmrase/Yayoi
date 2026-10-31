@@ -181,6 +181,8 @@ export interface AppSettings {
   payments: PaymentMap[];
   titles: TitleMap[];
   default_tax: AccountTax[];
+  /** 取り込んだ元画像の保管: keep = 残す(既定)/ delete_after_export = そのファイルの全ページを出力したら削除 */
+  original_retention: "keep" | "delete_after_export";
 }
 export interface SettingsResponse {
   settings: AppSettings;

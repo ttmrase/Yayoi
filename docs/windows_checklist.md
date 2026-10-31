@@ -5,7 +5,7 @@
 
 - 前提: Windows 10 / 11、WebView2 ランタイム(Windows 11 は標準。Windows 10 は未導入のことがある)、Python 3.11 以上。
   配布形式(インストーラ)は Phase 6。それまでは `pip install -e .[app,desktop]` と、重み・フォントの取得(`scripts/fetch_models.py`・`fetch_fonts.py`)で動かす。
-- 起動: `yayoi-ocr app`(ウィンドウが開く)。開発用に `yayoi-ocr app --no-window --backend fake` でブラウザからも開ける。
+- 起動: `yayoi-ocr app`(ウィンドウが開く)。開発専用に `yayoi-ocr app --dev --no-window --backend fake` でブラウザからも開ける(URL にトークンが出るので、共有 PC では使わない)。
 - データの置き場所: `%LOCALAPPDATA%\yayoi-ocr`(DB・取り込んだファイル・切り出し画像・出力ファイル)。
 
 ## A. 起動と接続

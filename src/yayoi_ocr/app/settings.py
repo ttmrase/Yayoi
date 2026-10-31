@@ -55,6 +55,8 @@ class Settings(BaseModel):
     payments: list[PaymentMap] = Field(default_factory=list, max_length=MAX_ITEMS)
     titles: list[TitleMap] = Field(default_factory=list, max_length=MAX_ITEMS)
     default_tax: list[AccountTax] = Field(default_factory=list, max_length=MAX_ITEMS)
+    # 取り込んだ元画像(実帳票)の保管: keep = 残す(既定)/ delete_after_export = そのファイルの全ページを出力したら削除する
+    original_retention: Literal["keep", "delete_after_export"] = "keep"
 
 
 def _encodable(s: str) -> bool:

@@ -40,6 +40,8 @@ export const runExport = (pageIds: number[], format: string, acceptDuplicates: b
   api<ExportRecord>("/api/exports", json("POST", { page_ids: pageIds, format, accept_duplicates: acceptDuplicates }));
 export const exportFile = (id: number) => apiBlobUrl(`/api/exports/${id}/file`);
 export const fetchLearning = () => api<LearningData>("/api/learning");
+export const resetLearning = () =>
+  api<{ deleted_images: number }>("/api/learning/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 
 export type CellAction = "pass" | "edit" | "confirm" | "candidate" | "revert";
 

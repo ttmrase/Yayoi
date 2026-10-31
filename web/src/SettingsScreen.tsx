@@ -176,6 +176,24 @@ export default function SettingsScreen() {
           </select>
         </label>
       </fieldset>
+      <fieldset>
+        <legend>データの保管</legend>
+        <label>
+          取り込んだ元画像(実帳票){" "}
+          <select
+            data-testid="original-retention"
+            value={cfg.original_retention}
+            onChange={(e) => edit({ original_retention: e.target.value as AppSettings["original_retention"] })}
+          >
+            <option value="keep">残す(既定)</option>
+            <option value="delete_after_export">そのファイルの全ページを出力したら削除する</option>
+          </select>
+        </label>
+        <p className="hint">
+          削除すると、そのページの罫線の再切り出しはできなくなります(確定した値・出力の履歴は残ります)。どのジョブにも使われなかったアップロードは、
+          起動時に 24 時間を過ぎていれば自動で削除されます。確定したセルの切り出し画像は学習データで、「学習」画面で削除できます。
+        </p>
+      </fieldset>
       <Table
         group="payments"
         title="支払手段 → 貸方科目"

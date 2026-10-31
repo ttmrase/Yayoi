@@ -133,6 +133,14 @@ MIGRATIONS: list[str] = [
     ALTER TABLE exports ADD COLUMN file_name TEXT;        -- アプリのデータ置き場の exports ディレクトリの中のファイル名
     ALTER TABLE exports ADD COLUMN format_label TEXT;
     """,
+    # --- v5: ジョブ全体の失敗の型名(runner の想定外の例外。値は入れない)
+    """
+    ALTER TABLE jobs ADD COLUMN error TEXT;
+    """,
+    # --- v6: 元画像の保管方針(出力後に削除した印)
+    """
+    ALTER TABLE uploads ADD COLUMN deleted_at REAL;
+    """,
 ]
 
 

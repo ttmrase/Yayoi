@@ -98,7 +98,7 @@ python scripts/sim_learning.py --data SEQ_DIR --classifier ... --dictionary --me
 ```sh
 pip install -e ".[app,desktop]"                 # FastAPI + pywebview(Windows は WebView2)。認識を使うには [ml] と重み(上の fetch_models.py)も要る
 yayoi-ocr app                                   # ウィンドウが開く(データは %LOCALAPPDATA%\yayoi-ocr、開発では $YAYOI_PRIVATE_DATA/app)
-yayoi-ocr app --no-window --backend fake        # ブラウザで開く開発用(合成の認識結果。torch・重みが要らない)
+yayoi-ocr app --dev --no-window --backend fake  # ブラウザで開く開発専用(合成の認識結果。torch・重みが要らない。URL にトークンが出る)
 # フロントエンド(React + TypeScript + Vite)。ビルド成果物は src/yayoi_ocr/app/static に出力され、アプリに同梱される
 cd web && npm ci && npm run build && npm test   # 型検査・Vitest・ビルド
 PW_CHROMIUM=/path/to/chrome npm run e2e         # Playwright(Chromium)の E2E。サーバは自動で起動する(--dev --backend fake)
@@ -107,8 +107,8 @@ PW_CHROMIUM=/path/to/chrome npm run e2e         # Playwright(Chromium)の E2E。
 - 画面: ジョブ(取り込み・進捗)/ 確認(行モード・列モード・罫線の確認と補正)/ 設定 / 出力 / 学習。キー操作: Enter で次のセル(要確認のセルは 250 ms 見るまで進まない)、
   Alt+1〜9 で候補、Ctrl+Z / Ctrl+Y、Ctrl+L(行 ↔ 列)、Ctrl+↓/↑(未通過の要確認へ)、Ctrl+Enter(ページの確定)。日本語入力の変換中の Enter では進まない。
 - 要確認のセルを飛ばしたまま、あるいは 10 倍違いの金額(末尾が「-」か数字か)を選ばないまま確定することはできない(画面・サーバの両方で検証)。
-- セキュリティ: 127.0.0.1 のランダムなポート + 起動ごとのトークン(URL のフラグメント)、Host/Origin の検証、CORS なし、CSP、外部リソースなし、
-  ファイルはアップロードで受け取る(サーバが任意のパスを読まない)。ログに実データの値を出さない。
+- セキュリティ: 127.0.0.1 のランダムなポート + 起動ごとのトークン(URL のフラグメント)、**`--token` / `--port` / `--no-window` / `--backend fake` は開発専用**(`--dev` が無いと受け付けない。プロセス一覧からトークンが見えるので共有マシンでは使わない)、Host/Origin の検証、CORS なし、CSP、外部リソースなし、
+  ファイルはアップロードで受け取る(サーバが任意のパスを読まない)。アップロードされた PDF・画像のデコードは使い捨ての別プロセス(タイムアウトつき)で行い、サーバのプロセスでは行わない。ログに実データの値を出さない。
 - 出力の形式は**暫定**(弥生のインポート形式は Phase 5 で確定)。
 
 ## テスト

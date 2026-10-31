@@ -62,6 +62,7 @@ class RunningServer:
         return f"http://127.0.0.1:{self.port}/#token={self.token}"
 
     def start(self) -> RunningServer:
+        self.app.state.purge_unused()  # どのジョブにも使われず 24 時間を過ぎたアップロードを削除
         runner = self.app.state.runner
         if runner is not None:
             runner.start()  # 前回中断した認識の続きもここで始まる

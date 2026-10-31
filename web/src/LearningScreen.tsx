@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchLearning } from "./pageApi";
+import { fetchLearning, resetLearning } from "./pageApi";
 import type { LearningData, PageMetric } from "./types";
 
 const pct = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(1)}%`);
@@ -40,9 +40,20 @@ function Trend({ pages }: { pages: PageMetric[] }) {
 export default function LearningScreen() {
   const [data, setData] = useState<LearningData | null>(null);
   const [error, setError] = useState(false);
-  useEffect(() => {
-    void fetchLearning().then(setData).catch(() => setError(true));
-  }, []);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const load = () => void fetchLearning().then(setData).catch(() => setError(true));
+  useEffect(load, []);
+  const doReset = async () => {
+    try {
+      const r = await resetLearning();
+      setMessage(`削除しました(切り出し画像 ${r.deleted_images} 枚)。`);
+    } catch {
+      setMessage("削除できませんでした");
+    }
+    setConfirmReset(false);
+    load();
+  };
   if (error) return <p role="alert">読み込めません</p>;
   if (!data) return <p>読み込み中…</p>;
   const s = data.summary;
@@ -111,11 +122,30 @@ export default function LearningScreen() {
         <button disabled={!data.can_rollback} title="世代が増えると選べるようになります">
           この世代に戻す
         </button>{" "}
-        <button disabled={!data.can_reset} title="追加学習した世代ができると使えます(出荷時の重みに戻します)">
-          出荷時の重みに戻す(リセット)
-        </button>{" "}
         <span className="hint">追加学習した世代ができるまでは、戻す対象がありません。</span>
       </p>
+      <h2>学習データの削除(リセット)</h2>
+      <p className="hint">
+        確定したセルの切り出し画像(学習データ)を削除し、学習(摘要の辞書・科目の語彙・金額の履歴)を最初からやり直します。確定した値・出力の履歴・設定は残ります。
+        削除後は、確定済みのページでも切り出し画像は表示されません。
+      </p>
+      {!confirmReset ? (
+        <button data-testid="reset-learning" disabled={!data.can_reset} onClick={() => setConfirmReset(true)}>
+          学習データを削除する(リセット)
+        </button>
+      ) : (
+        <span role="alert">
+          <button data-testid="reset-learning-confirm" className="danger" onClick={() => void doReset()}>
+            本当に削除する
+          </button>{" "}
+          <button onClick={() => setConfirmReset(false)}>やめる</button>
+        </span>
+      )}
+      {message && (
+        <p role="status" data-testid="reset-message">
+          {message}
+        </p>
+      )}
     </section>
   );
 }

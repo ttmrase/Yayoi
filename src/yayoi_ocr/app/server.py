@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, exports, metrics, store, uploads
+from . import db, exports, metrics, retention, store, uploads
 from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
@@ -108,6 +108,9 @@ def create_app(
     app.state.db_lock = lock
     runner = JobRunner(con, lock, images, uploads_root, backend) if backend is not None else None
     app.state.runner = runner  # 起動は launcher(テストは run_job を直接呼ぶ)
+    app.state.purge_unused = lambda: uploads.purge_unused(
+        con, lock, uploads_root
+    )  # 起動時に launcher が呼ぶ
 
     @app.get("/api/health")
     def health() -> dict:
@@ -148,9 +151,16 @@ def create_app(
                 "summary": metrics.summary(rows),
                 # Phase 4 まで: 世代は出荷時(世代 0)だけなので、戻す・リセットは無効
                 "can_rollback": False,
-                "can_reset": False,
+                "can_reset": any(
+                    r["n_text"] for r in rows
+                ),  # 確定したページがあれば、学習データ(切り出し画像・学習状態)を削除できる
                 "phase": 3,
             }
+
+    @app.post("/api/learning/reset")
+    def learning_reset() -> dict:
+        """学習データの削除(確定したセルの切り出し画像 + 学習状態)。確定した値・出力の履歴は残る。"""
+        return retention.reset_learning(con, lock, images)
 
     @app.get("/api/exports")
     def exports_list() -> dict:
@@ -172,9 +182,13 @@ def create_app(
     @app.post("/api/exports")
     def exports_run(body: ExportBody) -> dict:
         with lock:
-            return exports.run_export(
+            rec = exports.run_export(
                 con, exports_root, body.page_ids, body.format, body.accept_duplicates
             )
+            keep = app_settings.load(con).original_retention
+        if keep == "delete_after_export":  # 設定「元画像の保管: 出力後に削除」
+            retention.delete_originals(con, lock, uploads_root, images, body.page_ids)
+        return rec
 
     @app.get("/api/exports/{export_id}/file")
     def exports_file(export_id: int) -> FileResponse:

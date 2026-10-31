@@ -110,9 +110,17 @@ def _attach_fake_view(spec: PageSpec, corners) -> None:
 class FakeBackend:
     """合成の認識結果を返す。`delay` 秒だけ待つ(進捗表示のテスト用)。`fail_next` 回だけ失敗する(失敗の表示・再試行のテスト用)。"""
 
-    def __init__(self, delay: float = 0.0, fill_rows: int = 10) -> None:
+    def __init__(
+        self,
+        delay: float = 0.0,
+        fill_rows: int = 10,
+        error_rate: float = 0.15,
+        review_rate: float = 0.6,
+    ) -> None:
         self.delay = delay
         self.fill_rows = fill_rows
+        self.error_rate = error_rate
+        self.review_rate = review_rate
         self.fail_next = 0
         self.layout_ok = (
             True  # False にすると、隅の指定が無いページはレイアウト要確認で返す(E2E 用)
@@ -131,8 +139,8 @@ class FakeBackend:
         spec, _ = fake_page(
             seed,
             fill_rows=self.fill_rows,
-            error_rate=0.15,
-            review_rate=0.6,
+            error_rate=self.error_rate,
+            review_rate=self.review_rate,
             layout_status="ok" if payload.corners or self.layout_ok else "needs_review",
         )
         _attach_fake_view(spec, payload.corners)
