@@ -48,6 +48,8 @@ MODEL_NAMES = [
     *MODEL_FILES.values(),
 ]
 ADAPTED_NAMES = ["confidence.json", *MODEL_FILES.values()]
+# --smoke(CI の動作確認用。**配布しない**)で、無くてもよい重み。基本の重み(NDLOCR-Lite の ONNX から変換したもの)だけで束を作れる
+SMOKE_OPTIONAL = {"celltype.pt", "confidence.json", "rehearsal.npz"}
 
 NOTICE = """\
 yayoi-ocr 試用版 — 利用しているもの
@@ -80,8 +82,9 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def collect_models(src: Path, dest: Path) -> list[Path]:
-    """許可リストにある重みだけを dest にコピーする。足りないものは例外(中途半端な配布物を作らない)。"""
+def collect_models(src: Path, dest: Path, smoke: bool = False) -> list[Path]:
+    """許可リストにある重みだけを dest にコピーする。足りないものは例外(中途半端な配布物を作らない)。
+    `smoke`: セル種別分類器・確信度・リハーサルの束が無くてもよい(CI の動作確認用。そのような束は配布しない)。"""
     copied: list[Path] = []
     missing: list[str] = []
     for sub, names in (("", MODEL_NAMES), ("adapted", ADAPTED_NAMES)):
@@ -89,7 +92,7 @@ def collect_models(src: Path, dest: Path) -> list[Path]:
             s = src / sub / n if sub else src / n
             if not s.is_file():
                 # 適応済みの重みと、その確信度モデルは無くてもよい(素の重みだけで動く)
-                if sub == "adapted":
+                if sub == "adapted" or (smoke and n in SMOKE_OPTIONAL):
                     continue
                 missing.append(str(s))
                 continue
@@ -216,6 +219,11 @@ def main() -> int:
         help="python.org の 3.11 の公式インストーラ(python-3.11.x-amd64.exe)。同梱すると、Python が無い PC で"
         " setup.ps1 が静かに導入する。配布元(python.org の公開チェックサム)で検証してから渡すこと",
     )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="CI の動作確認用: 基本の重みだけで束を作る(セル種別分類器・確信度・リハーサルの束が無くてよい)。zip の名前に -SMOKE を付ける。**配布しない**",
+    )
     args = ap.parse_args()
 
     out = assert_safe_output_dir(args.out or private_data_dir() / "trial")
@@ -238,7 +246,12 @@ def main() -> int:
         if not re.fullmatch(r"python-3\.11\.\d+-amd64\.exe", args.python_installer.name):
             raise SystemExit("python-3.11.x-amd64.exe を指定してください")
         shutil.copy2(args.python_installer, stage / "python-installer.exe")
-    collect_models(args.models or models_dir(), stage / "models")
+    collect_models(args.models or models_dir(), stage / "models", smoke=args.smoke)
+    if args.smoke:
+        (stage / "SMOKE-ONLY.txt").write_text(
+            "This bundle is for CI smoke tests only (base weights, no calibrated confidence). Do not distribute.\n",
+            encoding="ascii",
+        )
 
     for src, name in (
         (ROOT / "scripts/windows/setup.ps1", "setup.ps1"),
@@ -260,7 +273,7 @@ def main() -> int:
         "".join(f"{sha256(p)}  {p.relative_to(stage).as_posix()}\n" for p in files),
         encoding="utf-8",
     )
-    zip_path = out / f"yayoi-ocr-trial-{__version__}.zip"
+    zip_path = out / f"yayoi-ocr-trial-{__version__}{'-SMOKE' if args.smoke else ''}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
         for p in sorted(stage.rglob("*")):
             if p.is_file():

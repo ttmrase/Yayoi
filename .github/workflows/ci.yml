@@ -98,3 +98,83 @@ jobs:
       - name: End-to-end tests (Playwright)
         run: npm run e2e
         working-directory: web
+
+  trial-windows:
+    # 試用版の束 → setup.ps1(同梱の Python・オフライン・ハッシュ検証)→ 開発用でないモードで起動 → HTTP の煙試験
+    # (合成ページの取り込み → 認識 → 確定 → 弥生インポート形式の出力 → cp932 の検証 → バックアップ)。
+    # 重みは、固定コミットの NDLOCR-Lite の ONNX から変換した基本の重みだけ(セル種別分類器・較正は無い)。この束は配布しない。
+    # IME・高 DPI・GPU・弥生への実際の取り込みは実機の確認項目(docs/windows_checklist.md)。
+    name: trial bundle + setup.ps1 + smoke (windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set private data dir (outside the repository)
+        shell: bash
+        run: echo "YAYOI_PRIVATE_DATA=$RUNNER_TEMP/yayoi_private" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # 同梱の Python と同じ系統(wheel の取得も 3.11 / win_amd64)
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install (build tools, and the ML deps to convert the base weights)
+        run: python -m pip install -e ".[dev,app,app-dev,ml,ml-dev]" wheel
+
+      - name: Build the frontend
+        run: |
+          npm ci
+          npm run build
+        working-directory: web
+
+      - name: Fetch handwriting fonts (for the synthetic smoke page)
+        run: python scripts/fetch_fonts.py
+
+      - name: Convert the base weights (NDLOCR-Lite ONNX at a pinned commit, SHA-256 verified)
+        run: python scripts/fetch_models.py --dest "$env:RUNNER_TEMP\base-models"
+
+      - name: Build the trial bundle (smoke)
+        run: python scripts/make_trial_bundle.py --smoke --out "$env:RUNNER_TEMP\trial" --models "$env:RUNNER_TEMP\base-models"
+
+      - name: Install with setup.ps1 (Windows PowerShell 5.1, bundled Python, offline, hash-verified)
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem "$env:RUNNER_TEMP\trial" -Filter "yayoi-ocr-trial-*-SMOKE.zip" | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\bundle" | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xf $zip.FullName -C "$env:RUNNER_TEMP\bundle"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\setup.ps1" -InstallDir "$env:RUNNER_TEMP\yayoi-install"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test (non-dev server over HTTP)
+        run: >
+          python scripts/trial_smoke.py
+          --python "$env:RUNNER_TEMP\yayoi-install\venv\Scripts\python.exe"
+          --models "$env:RUNNER_TEMP\yayoi-install\models"
+          --timeout 1500
+
+      - name: Window launch check (informational)
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $env:YAYOI_MODELS_DIR = "$env:RUNNER_TEMP\yayoi-install\models"
+          $env:YAYOI_APP_DATA = "$env:RUNNER_TEMP\window-data"
+          $out = "$env:RUNNER_TEMP\window.out"; $err = "$env:RUNNER_TEMP\window.err"
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\yayoi-install\venv\Scripts\python.exe" -ArgumentList "-m","yayoi_ocr.app" -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          Start-Sleep -Seconds 30
+          if ($p.HasExited) { Write-Host "exited early: $($p.ExitCode)"; Get-Content $err -Tail 40; exit 1 }
+          $conn = Get-NetTCPConnection -OwningProcess $p.Id -State Listen -ErrorAction SilentlyContinue
+          $conn | Format-Table LocalAddress, LocalPort
+          if (-not $conn) { Write-Host "no listener"; exit 1 }
+          if ($conn | Where-Object { $_.LocalAddress -ne "127.0.0.1" }) { Write-Host "non-loopback listener"; exit 1 }
+          Stop-Process -Id $p.Id -Force
