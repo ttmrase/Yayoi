@@ -220,7 +220,8 @@ test("⑳ Enter の連打(キーリピート)では要確認セルを通過で�
   expect(passed).toBeLessThan(total / 2); // ほとんどが未通過のまま
   await expect(page.getByTestId("confirm-page")).toBeDisabled();
   // サーバにも下限がある(クライアントが壊れていても、値を直さない連打は通過に数えない)
-  const todo = (await apiPage(request, pid)).cells.filter((c) => c.review && !c.passed).slice(0, 3);
+  // 画面でフォーカス中のセル(滞在で通過になり得る)を避けて、ページの末尾側のセルで確かめる
+  const todo = (await apiPage(request, pid)).cells.filter((c) => c.review && !c.passed).slice(-3);
   // 同時に送る(順に送ると、サーバが忙しいときに間隔が 250 ms を超えて、試験が不安定になる)
   const flags = await Promise.all(
     todo.map(async (c) => {
