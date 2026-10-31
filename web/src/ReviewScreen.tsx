@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { CellField } from "./CellField";
-import { classifyKey } from "./keys";
+import { classifyKey, isImeComposing } from "./keys";
 import LayoutPanel from "./LayoutPanel";
 import { activeColumn, initialFocus, isNavigable, nextId, nextUnpassedId, prevId, verticalId, type Mode } from "./nav";
 import {
@@ -9,8 +9,10 @@ import {
   confirmPage,
   fetchJob,
   fetchPage,
+  fetchSettings,
   patchCell,
   putPosition,
+  putTitle,
   redoPage,
   reopenPage,
   retryPage,
@@ -25,11 +27,13 @@ const DRAFT_MS = 300; // 入力中の自動保存のデバウンス
 
 interface Props {
   pageId: number;
+  /** 最初にフォーカスするセル(出力の検証の指摘から開いたとき) */
+  startCell?: number | null;
   onOpenPage: (id: number) => void;
   onExit: () => void;
 }
 
-export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
+export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onExit }: Props) {
   const [page, setPage] = useState<Page | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -38,6 +42,8 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
   const [prompt, setPrompt] = useState(false); // 最後のセルで Enter → 「ページを確定」の確認
   const [block, setBlock] = useState<Summary | null>(null); // 確定を拒否された理由
   const [reloadKey, setReloadKey] = useState(0); // 認識が終わった・再試行したときに読み直す
+  const [titles, setTitles] = useState<string[]>([]); // 設定のタイトル(入力の候補)
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("row"); // 行モード(紙の並び)/ 列モード(1 列ずつ)
   const [layoutOpen, setLayoutOpen] = useState(false); // 罫線の確認・補正のパネル
   const modeRef = useRef<Mode>("row");
@@ -75,13 +81,14 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
     setPrompt(false);
     setBlock(null);
     setNotice(null);
+    setTitleDraft(null);
     active.current = { last: performance.now(), seconds: 0 };
     (async () => {
       try {
         const p = await fetchPage(pageId);
         const job = await fetchJob(p.job_id);
         if (!alive) return;
-        saved.current = job.last_page_id === pageId ? job.last_cell : null;
+        saved.current = startCell ?? (job.last_page_id === pageId ? job.last_cell : null);
         setPage(p);
         setFocusId(initialFocus(p.cells, saved.current, modeRef.current));
       } catch (e) {
@@ -103,6 +110,13 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
     }, 1000);
     return () => window.clearInterval(t);
   }, [page?.status, pageId]);
+
+  // ---- タイトルの候補(設定から)
+  useEffect(() => {
+    void fetchSettings()
+      .then((r) => setTitles(r.settings.titles.map((t) => t.name)))
+      .catch(() => undefined);
+  }, []);
 
   // ---- 位置の保存(中断・再開)
   useEffect(() => {
@@ -195,6 +209,18 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
   );
 
   const shown = (c: Cell) => drafts[c.id] ?? c.value;
+
+  const saveTitle = (value: string | null) => {
+    const p = pageRef.current;
+    if (!p || value === null || value.trim() === (p.title ?? "")) {
+      setTitleDraft(null);
+      return;
+    }
+    setTitleDraft(null);
+    void enqueue(async () => {
+      setPage(await putTitle(p.id, value));
+    });
+  };
 
   const tryConfirmPage = useCallback(async () => {
     await queue.current;
@@ -395,6 +421,40 @@ export default function ReviewScreen({ pageId, onOpenPage, onExit }: Props) {
           {confirmed ? "再オープン" : "ページを確定 (Ctrl+Enter)"}
         </button>
         <button onClick={onExit}>ジョブ一覧へ</button>
+      </div>
+
+      <div className="titlebar" data-testid="titlebar">
+        <label>
+          ページのタイトル(勘定科目名){" "}
+          <input
+            data-testid="page-title"
+            list="title-options"
+            maxLength={40}
+            disabled={confirmed}
+            value={titleDraft ?? page.title ?? ""}
+            placeholder={page.title_suggestion ?? ""}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={() => saveTitle(titleDraft)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" || isImeComposing(e)) return; // 変換中の Enter は変換の確定(送らない)
+              e.preventDefault();
+              saveTitle(titleDraft);
+              const first = initialFocus(page.cells, null, modeRef.current);
+              if (first !== null) setFocusId(first);
+            }}
+          />
+        </label>
+        <datalist id="title-options">
+          {titles.map((t) => (
+            <option key={t} value={t} />
+          ))}
+        </datalist>
+        {!confirmed && !page.title && page.title_suggestion && titleDraft === null && (
+          <button data-testid="title-suggest" onClick={() => saveTitle(page.title_suggestion)}>
+            「{page.title_suggestion}」にする
+          </button>
+        )}
+        {!page.title && titleDraft === null && <span className="ng small">未入力(出力に必要です)</span>}
       </div>
 
       {page.layout_status !== "ok" && (

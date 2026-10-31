@@ -233,17 +233,26 @@ def test_unused_upload_can_be_cancelled_but_a_used_one_cannot(tmp_path):
         assert c.delete(f"/api/uploads/{b['id']}").status_code == 404
 
 
-def test_accounts_setting_is_passed_to_the_recognizer(tmp_path):
+def test_settings_feed_the_recognizer_vocabulary(tmp_path):
     rec = Recording()
     app = make_app(tmp_path, rec)
     with client_of(app) as c:
-        app.state.db.execute(
-            "INSERT INTO settings (key, value) VALUES ('accounts', ?)", ('["現金", "普通預金"]',)
+        r = c.put(
+            "/api/settings",
+            json={
+                "payments": [
+                    {"name": "現金", "credit_account": "現金"},
+                    {"name": "普通預金", "credit_account": "普通預金", "credit_sub": "A銀行"},
+                ],
+                "titles": [{"name": "旅費交通費", "debit_account": "旅費交通費"}],
+            },
         )
+        assert r.status_code == 200 and r.json()["missing"] == []
         up = upload(c, "a.png", png_bytes()).json()
         job = create_job(c, [up["id"]])
         app.state.runner.run_job(job["job_id"])
         assert rec.calls[0].accounts == ("現金", "普通預金")
+        assert rec.calls[0].titles == ("旅費交通費",)
 
 
 def test_fake_backend_is_deterministic_per_page(tmp_path):

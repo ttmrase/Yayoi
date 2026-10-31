@@ -16,7 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, store, uploads
+from . import db, exports, metrics, store, uploads
+from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
 from .security import SecurityMiddleware
@@ -55,6 +56,16 @@ class DevFakeBody(BaseModel):
     layout_ok: bool = True  # False: 隅の指定が無いページはレイアウト要確認で返す
 
 
+class ExportBody(BaseModel):
+    page_ids: list[int] = Field(min_length=1, max_length=2000)
+    format: str = exports.DEFAULT_FORMAT
+    accept_duplicates: bool = False
+
+
+class TitleBody(BaseModel):
+    title: str = Field(max_length=200)
+
+
 class RecutBody(BaseModel):
     corners: list[list[float]] = Field(
         min_length=4, max_length=4
@@ -86,6 +97,8 @@ def create_app(
     images.mkdir(parents=True, exist_ok=True)
     uploads_root = uploads_dir if uploads_dir is not None else AppPaths(db_path.parent).uploads
     uploads_root.mkdir(parents=True, exist_ok=True)
+    exports_root = AppPaths(db_path.parent).exports
+    exports_root.mkdir(parents=True, exist_ok=True)
     con = db.connect(db_path)
     db.migrate(con)
     lock = threading.RLock()  # 1 接続を複数スレッドで共有するので直列化する
@@ -111,6 +124,63 @@ def create_app(
         with lock:
             rows = con.execute("SELECT id, name FROM profiles ORDER BY id").fetchall()
         return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+    @app.get("/api/settings")
+    def settings_get() -> dict:
+        with lock:
+            cur = app_settings.load(con)
+        return {"settings": cur.model_dump(), "missing": app_settings.readiness(cur)}
+
+    @app.put("/api/settings")
+    def settings_put(body: app_settings.Settings) -> dict:
+        with lock:
+            app_settings.save(con, body)
+        return {"settings": body.model_dump(), "missing": app_settings.readiness(body)}
+
+    @app.get("/api/learning")
+    def learning(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
+        with lock:
+            rows = metrics.page_metrics(con, profile_id)
+            return {
+                "profile_id": profile_id,
+                "generations": metrics.generations(con, profile_id),
+                "pages": rows,
+                "summary": metrics.summary(rows),
+                # Phase 4 まで: 世代は出荷時(世代 0)だけなので、戻す・リセットは無効
+                "can_rollback": False,
+                "can_reset": False,
+                "phase": 3,
+            }
+
+    @app.get("/api/exports")
+    def exports_list() -> dict:
+        with lock:
+            return {
+                "exports": exports.list_exports(con),
+                "formats": [
+                    {"id": f.id, "label": f.label, "provisional": f.provisional}
+                    for f in exports.FORMATS.values()
+                ],
+                "candidates": exports.candidates(con),
+            }
+
+    @app.post("/api/exports/validate")
+    def exports_validate(body: ExportBody) -> dict:
+        with lock:
+            return exports.validate(con, body.page_ids, body.format)
+
+    @app.post("/api/exports")
+    def exports_run(body: ExportBody) -> dict:
+        with lock:
+            return exports.run_export(
+                con, exports_root, body.page_ids, body.format, body.accept_duplicates
+            )
+
+    @app.get("/api/exports/{export_id}/file")
+    def exports_file(export_id: int) -> FileResponse:
+        with lock:
+            path = exports.export_file(con, exports_root, export_id)
+        return FileResponse(path, media_type="text/csv; charset=Shift_JIS", filename=path.name)
 
     @app.get("/api/jobs")
     def jobs() -> list[dict]:
@@ -163,6 +233,11 @@ def create_app(
         with lock:
             path = store.cell_image_path(con, images, page_id, cell_id)
         return FileResponse(path, media_type="image/png")
+
+    @app.put("/api/pages/{page_id}/title")
+    def page_title(page_id: int, body: TitleBody) -> dict:
+        with lock:
+            return store.set_title(con, page_id, body.title)
 
     @app.post("/api/pages/{page_id}/retry")
     def page_retry(page_id: int) -> dict:

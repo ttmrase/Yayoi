@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { ApiError, api, hasToken } from "./api";
+import ExportScreen from "./ExportScreen";
 import JobsScreen from "./JobsScreen";
+import LearningScreen from "./LearningScreen";
 import ReviewScreen from "./ReviewScreen";
+import SettingsScreen from "./SettingsScreen";
 
 type Health = { ok: boolean; version: string; schema: number; dev: boolean };
 type Profile = { id: number; name: string };
@@ -14,6 +17,7 @@ export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [tab, setTab] = useState<(typeof TABS)[number]>("ジョブ");
   const [pageId, setPageId] = useState<number | null>(null); // 確認中のページ(確認タブ)
+  const [startCell, setStartCell] = useState<number | null>(null); // 出力の検証の指摘から開くときの、最初のフォーカス
 
   useEffect(() => {
     if (!hasToken()) {
@@ -65,14 +69,27 @@ export default function App() {
           (pageId === null ? (
             <p>ジョブ一覧から開いてください。</p>
           ) : (
-            <ReviewScreen pageId={pageId} onOpenPage={setPageId} onExit={() => setTab("ジョブ")} />
+            <ReviewScreen
+              pageId={pageId}
+              startCell={startCell}
+              onOpenPage={(id) => {
+                setStartCell(null);
+                setPageId(id);
+              }}
+              onExit={() => setTab("ジョブ")}
+            />
           ))}
-        {tab !== "ジョブ" && tab !== "確認" && (
-          <>
-            <h1>{tab}</h1>
-            <p>この画面は未実装です。</p>
-          </>
+        {tab === "設定" && <SettingsScreen />}
+        {tab === "出力" && (
+          <ExportScreen
+            onOpenCell={(id, cell) => {
+              setStartCell(cell);
+              setPageId(id);
+              setTab("確認");
+            }}
+          />
         )}
+        {tab === "学習" && <LearningScreen />}
       </main>
     </div>
   );

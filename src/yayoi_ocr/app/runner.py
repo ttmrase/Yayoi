@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from . import store
+from . import learned, settings, store
 from .worker import Backend, PagePayload, upload_path
 
 
@@ -89,16 +89,6 @@ class JobRunner:
                     if not self._queued:
                         self._idle.set()
 
-    def _accounts(self) -> tuple[str, ...]:
-        r = self.con.execute("SELECT value FROM settings WHERE key = 'accounts'").fetchone()
-        if r is None:
-            return ()
-        try:
-            v = json.loads(r["value"])
-        except ValueError:
-            return ()
-        return tuple(x for x in v if isinstance(x, str) and x) if isinstance(v, list) else ()
-
     def run_job(self, job_id: int) -> None:
         """このジョブの認識待ちのページを、上から順に全部認識する。"""
         while not self._stopping.is_set():
@@ -108,7 +98,12 @@ class JobRunner:
                     return
                 row = rows[0]
                 prev_year = store.previous_year(self.con, job_id, int(row["idx"]))
-                accounts = self._accounts()
+                profile = int(
+                    self.con.execute(
+                        "SELECT profile_id FROM jobs WHERE id = ?", (job_id,)
+                    ).fetchone()[0]
+                )
+                ctx = learned.build_context(self.con, profile, settings.load(self.con))
             page_id = int(row["id"])
             try:
                 payload = PagePayload(
@@ -116,7 +111,10 @@ class JobRunner:
                     source_index=int(row["source_index"]),
                     page_key=f"{row['upload_id']}:{row['source_index']}",
                     prev_year=prev_year,
-                    accounts=accounts,
+                    accounts=tuple(ctx.accounts),
+                    titles=tuple(ctx.titles),
+                    dictionary=ctx.dictionary,
+                    amount_history=ctx.amount_history,
                     corners=(
                         None
                         if row["layout_override"] is None

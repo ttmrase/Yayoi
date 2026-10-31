@@ -26,9 +26,9 @@ class ConfirmedCell:
     resolved: str  # 展開後の値(日付は 'R7.11.19'、金額は '3456')
 
 
-def confirm_page(ctx: JobContext, result: PageResult, cells: list[ConfirmedCell]) -> int:
-    """確定セルで ctx を更新する。メモリに入れた件数を返す。"""
-    n_mem = 0
+def update_from_confirmed(ctx: JobContext, cells: list[ConfirmedCell]) -> None:
+    """確定セルから、画像を持たない学習状態(摘要の頻度辞書・科目の語彙・金額の履歴・年)を更新する。
+    画面のアプリは、確定済みページからこの状態を作り直す(何度呼んでも同じ結果になるよう、呼び出し側が空の状態から始める)。"""
     last_year: int | None = None
     n = 4  # 列数(日付・科目・摘要・金額)
     for row in range(len(cells) // n):
@@ -44,7 +44,7 @@ def confirm_page(ctx: JobContext, result: PageResult, cells: list[ConfirmedCell]
             for k in keys:
                 h = ctx.amount_history.setdefault(k, {})
                 h[v] = h.get(v, 0) + 1
-    for r, c in zip(result.cells, cells, strict=True):
+    for c in cells:
         if c.kind == "blank":
             continue
         if c.column == "description" and c.resolved:
@@ -55,6 +55,17 @@ def confirm_page(ctx: JobContext, result: PageResult, cells: list[ConfirmedCell]
             d = parse_date(c.resolved)
             if d is not None and d.era_year is not None:
                 last_year = d.era_year
+    if last_year is not None:
+        ctx.prev_year = last_year
+
+
+def confirm_page(ctx: JobContext, result: PageResult, cells: list[ConfirmedCell]) -> int:
+    """確定セルで ctx を更新する(状態の更新 + 見覚えメモリへの追加)。メモリに入れた件数を返す。"""
+    update_from_confirmed(ctx, cells)
+    n_mem = 0
+    for r, c in zip(result.cells, cells, strict=True):
+        if c.kind == "blank":
+            continue
         if (
             ctx.memory is not None
             and c.kind == "text"
@@ -64,9 +75,7 @@ def confirm_page(ctx: JobContext, result: PageResult, cells: list[ConfirmedCell]
         ):
             ctx.memory.add(c.column, r.out.embedding, c.raw)
             n_mem += 1
-    if last_year is not None:
-        ctx.prev_year = last_year
     return n_mem
 
 
-__all__ = ["ConfirmedCell", "confirm_page", "repair_date"]
+__all__ = ["ConfirmedCell", "confirm_page", "repair_date", "update_from_confirmed"]

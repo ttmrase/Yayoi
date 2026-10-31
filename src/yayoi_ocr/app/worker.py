@@ -34,6 +34,11 @@ class PagePayload:
     page_key: str  # ページを識別する文字列(合成の種に使う。値は含まない)
     prev_year: int | None = None  # 前のページの最後の年(年を書かない先頭行が継承する)
     accounts: tuple[str, ...] = ()  # 科目(支払方法)の閉じた語彙。空なら自由認識
+    titles: tuple[str, ...] = ()  # ページのタイトル(勘定科目名)の語彙。空ならタイトルは認識しない
+    dictionary: dict[str, int] | None = None  # 摘要の頻度辞書(確定済みページから)
+    amount_history: dict[str, dict[int, int]] | None = (
+        None  # 金額の履歴(同じ摘要・科目の過去の確定金額)
+    )
     corners: tuple[tuple[float, float], ...] | None = (
         None  # 利用者が指定した表の 4 隅(元画像 px)。無ければ自動検出
     )
@@ -253,12 +258,20 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
         corners=payload.corners,
     )
     rec = _recognizer(variant or variants.default_variant())
-    ctx = JobContext(prev_year=payload.prev_year, accounts=list(payload.accounts))
+    ctx = JobContext(
+        prev_year=payload.prev_year,
+        accounts=list(payload.accounts),
+        titles=list(payload.titles),
+        dictionary=dict(payload.dictionary or {}),
+        amount_history=dict(payload.amount_history or {}),
+    )
     result = rec.recognize_page(from_layout(layout), ctx)
     spec = to_page_spec(result, layout)
     spec.view_jpeg, spec.view_scale = view_jpeg(layout)
     spec.layout_info = overlay_info(layout)
     spec.approved = payload.corners is not None
+    if result.title is not None and result.title.value:
+        spec.title_recognized = result.title.value
     return PageOutcome(spec, last_year=result.last_year, seconds=time.time() - t)
 
 

@@ -66,6 +66,7 @@ class PageSpec:
     view_scale: float | None = None  # 表示 px / 元画像 px
     layout_info: dict | None = None  # 検出した表の 4 隅・罫線(元画像 px)
     approved: bool = False  # 利用者が表の隅を指定した(レイアウト由来の要確認は付けない)
+    title_recognized: str | None = None  # 認識したタイトル(語彙があるときの第 1 候補)
 
 
 def _j(x) -> str:
@@ -199,7 +200,8 @@ def fill_page(
             "UPDATE pages SET status = 'review', layout_status = ?, layout_reasons = ?, layout_approved = ?,"
             " last_year = ?, error = NULL, recognized_at = ?, recognize_seconds = ?,"
             " view_path = COALESCE(?, view_path), view_scale = COALESCE(?, view_scale),"
-            " layout_info = COALESCE(?, layout_info), revision = revision + 1 WHERE id = ?",
+            " layout_info = COALESCE(?, layout_info), title_recognized = ?, revision = revision + 1"
+            " WHERE id = ?",
             (
                 "ok" if spec.approved else spec.layout_status,
                 _j([] if spec.approved else spec.layout_reasons),
@@ -210,6 +212,7 @@ def fill_page(
                 view_path,
                 spec.view_scale,
                 None if spec.layout_info is None else _j(spec.layout_info),
+                spec.title_recognized,
                 page_id,
             ),
         )
@@ -322,10 +325,42 @@ def get_page(con: sqlite3.Connection, page_id: int) -> dict:
         "prev_page_id": ids[pos - 1] if pos > 0 else None,
         "next_page_id": ids[pos + 1] if pos + 1 < len(ids) else None,
         "status": p["status"], "error": p["error"], "layout_status": p["layout_status"],
+        "title": p["title"], "title_recognized": p["title_recognized"],
+        "title_suggestion": _title_suggestion(con, p),
         "layout_reasons": json.loads(p["layout_reasons"]), "layout_approved": bool(p["layout_approved"]),
         "revision": p["revision"], "cells": cells, "summary": summarize(cells),
         "can_undo": _has_edit(con, page_id, undone=False), "can_redo": _has_edit(con, page_id, undone=True),
     }  # fmt: skip
+
+
+def _title_suggestion(con: sqlite3.Connection, p: sqlite3.Row) -> str | None:
+    """タイトルの候補: 認識した値 > 同じジョブの直前のページのタイトル(同じ科目の続きのことが多い)。"""
+    if p["title_recognized"]:
+        return p["title_recognized"]
+    r = con.execute(
+        "SELECT title FROM pages WHERE job_id = ? AND idx < ? AND title IS NOT NULL AND title != ''"
+        " ORDER BY idx DESC LIMIT 1",
+        (p["job_id"], p["idx"]),
+    ).fetchone()
+    return None if r is None else r["title"]
+
+
+def set_title(con: sqlite3.Connection, page_id: int, title: str) -> dict:
+    title = title.strip()
+    if len(title) > 40:
+        raise StoreError(422, "title_too_long")
+    if title:
+        try:
+            title.encode("cp932")
+        except UnicodeEncodeError as exc:
+            raise StoreError(422, "cp932_unencodable") from exc
+    with transaction(con):
+        _require_open(con, page_id)
+        con.execute(
+            "UPDATE pages SET title = ?, revision = revision + 1 WHERE id = ?",
+            (title or None, page_id),
+        )
+    return get_page(con, page_id)
 
 
 def cell_image_path(con: sqlite3.Connection, images_dir: Path, page_id: int, cell_id: int) -> Path:

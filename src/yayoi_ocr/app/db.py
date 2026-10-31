@@ -126,6 +126,13 @@ MIGRATIONS: list[str] = [
     ALTER TABLE pages ADD COLUMN layout_info TEXT;        -- JSON: 元画像の大きさ・検出した表の 4 隅・罫線の折れ線(元画像 px)
     ALTER TABLE pages ADD COLUMN layout_override TEXT;    -- JSON: 利用者が指定した表の 4 隅(元画像 px)。再切り出しで使う
     """,
+    # --- v4: ページのタイトル(借方科目の元)・出力ファイル(M4)
+    """
+    ALTER TABLE pages ADD COLUMN title TEXT;              -- 利用者が確認した(または入力した)ページのタイトル(帳票の上部の勘定科目名)
+    ALTER TABLE pages ADD COLUMN title_recognized TEXT;   -- 認識したタイトル(語彙があるときの第 1 候補。無ければ NULL)
+    ALTER TABLE exports ADD COLUMN file_name TEXT;        -- アプリのデータ置き場の exports ディレクトリの中のファイル名
+    ALTER TABLE exports ADD COLUMN format_label TEXT;
+    """,
 ]
 
 

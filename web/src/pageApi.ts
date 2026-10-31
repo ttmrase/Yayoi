@@ -1,5 +1,18 @@
 import { api, apiBlobUrl, apiUpload } from "./api";
-import type { JobDetail, JobSummary, LayoutData, Page, Pt, Upload } from "./types";
+import type {
+  AppSettings,
+  ExportList,
+  ExportRecord,
+  ExportValidation,
+  JobDetail,
+  JobSummary,
+  LayoutData,
+  LearningData,
+  Page,
+  Pt,
+  SettingsResponse,
+  Upload,
+} from "./types";
 
 export const fetchJobs = () => api<JobSummary[]>("/api/jobs");
 export const fetchJob = (id: number) => api<JobDetail>(`/api/jobs/${id}`);
@@ -16,6 +29,17 @@ export const deleteUpload = (id: string) => api<{ ok: boolean }>(`/api/uploads/$
 export const createJob = (uploadIds: string[], name: string) =>
   api<{ job_id: number; page_ids: number[] }>("/api/jobs", json("POST", { upload_ids: uploadIds, name }));
 export const retryPage = (pageId: number) => api<{ ok: boolean }>(`/api/pages/${pageId}/retry`, json("POST", {}));
+
+export const fetchSettings = () => api<SettingsResponse>("/api/settings");
+export const saveSettings = (s: AppSettings) => api<SettingsResponse>("/api/settings", json("PUT", s));
+export const putTitle = (pageId: number, title: string) => api<Page>(`/api/pages/${pageId}/title`, json("PUT", { title }));
+export const fetchExports = () => api<ExportList>("/api/exports");
+export const validateExport = (pageIds: number[], format: string) =>
+  api<ExportValidation>("/api/exports/validate", json("POST", { page_ids: pageIds, format }));
+export const runExport = (pageIds: number[], format: string, acceptDuplicates: boolean) =>
+  api<ExportRecord>("/api/exports", json("POST", { page_ids: pageIds, format, accept_duplicates: acceptDuplicates }));
+export const exportFile = (id: number) => apiBlobUrl(`/api/exports/${id}/file`);
+export const fetchLearning = () => api<LearningData>("/api/learning");
 
 export type CellAction = "pass" | "edit" | "confirm" | "candidate" | "revert";
 

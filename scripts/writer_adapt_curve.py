@@ -139,6 +139,14 @@ def main() -> int:
         "--replay-frac", type=float, default=0.5, help="書き手のセル数に対する混ぜる割合"
     )
     ap.add_argument("--replay-pages", type=int, default=40)
+    ap.add_argument(
+        "--max-passes",
+        type=int,
+        default=0,
+        help="1 回の追加学習で見るサンプル数(のべ)の上限。N を増やしても学習量(勾配の更新回数)を一定にして、"
+        "データの多様さだけを増やす(0 = 従来: エポック数 = clamp(steps-samples / サンプル数, min-epochs, 40))",
+    )
+    ap.add_argument("--min-epochs", type=int, default=3)
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--forget-data", nargs="*", default=[], help="忘却の測定に使うデータセット")
     ap.add_argument("--forget-limit", type=int, default=15)
@@ -219,7 +227,19 @@ def main() -> int:
                         samples = samples + [
                             pool[i] for i in rrng.choice(len(pool), k, replace=False)
                         ]
-                    epochs = int(np.clip(round(args.steps_samples / len(samples)), 3, 40))
+                    if (
+                        args.max_passes
+                    ):  # 学習量を一定に: 多すぎれば無作為に間引き、1 エポック未満にはしない
+                        if len(samples) > args.max_passes:
+                            keep = np.random.default_rng(w % 1000 + n).choice(
+                                len(samples), args.max_passes, replace=False
+                            )
+                            samples = [samples[i] for i in sorted(keep)]
+                        epochs = int(np.clip(round(args.max_passes / len(samples)), 1, 40))
+                    else:
+                        epochs = int(
+                            np.clip(round(args.steps_samples / len(samples)), args.min_epochs, 40)
+                        )
                     cfg = FinetuneConfig(
                         width=width,
                         epochs=epochs,

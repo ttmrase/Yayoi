@@ -58,6 +58,10 @@ export interface Page {
   status: "processing" | "failed" | "review" | "reviewing" | "confirmed";
   /** 認識に失敗したときの原因(例外の型名。値は含まない) */
   error: string | null;
+  /** ページのタイトル(帳票の上部の勘定科目名)。title = 確認した値、recognized = 認識した値、suggestion = 候補 */
+  title: string | null;
+  title_recognized: string | null;
+  title_suggestion: string | null;
   layout_status: string;
   layout_reasons: string[];
   layout_approved: boolean;
@@ -154,3 +158,118 @@ export interface LayoutData {
   manual: boolean;
   override: Pt[] | null;
 }
+
+// ---- 設定(M4)
+export interface PaymentMap {
+  name: string;
+  credit_account: string;
+  credit_sub: string;
+}
+export interface TitleMap {
+  name: string;
+  debit_account: string;
+  debit_sub: string;
+}
+export interface AccountTax {
+  account: string;
+  tax_category: string;
+}
+export interface AppSettings {
+  business_type: "individual" | "corporate";
+  tax_method: "inclusive" | "exclusive" | "exempt";
+  accounting_method: "cash" | "accrual";
+  payments: PaymentMap[];
+  titles: TitleMap[];
+  default_tax: AccountTax[];
+}
+export interface SettingsResponse {
+  settings: AppSettings;
+  /** 出力に足りない設定(コード) */
+  missing: string[];
+}
+export interface SettingsProblem {
+  path: string;
+  code: string;
+}
+
+// ---- 出力(M4)
+export interface ExportIssue {
+  code: string;
+  label: string;
+  page_id: number;
+  cell_id: number | null;
+  row: number | null;
+}
+export interface ExportValidation {
+  n_rows: number;
+  issues: ExportIssue[];
+  duplicates: { page_id: number; export_ids: number[] }[];
+  missing_settings: string[];
+  provisional: boolean;
+}
+export interface ExportCandidate {
+  id: number;
+  job_id: number;
+  job_name: string;
+  idx: number;
+  title: string | null;
+  exported: boolean;
+}
+export interface ExportRecord {
+  id: number;
+  format: string;
+  format_label: string;
+  created_at: number;
+  n_pages: number;
+  n_rows: number;
+  file_sha256: string;
+  file_name: string | null;
+}
+export interface ExportList {
+  exports: ExportRecord[];
+  formats: { id: string; label: string; provisional: boolean }[];
+  candidates: ExportCandidate[];
+}
+
+// ---- 学習(M4)
+export interface PageMetric {
+  page_id: number;
+  generation: number;
+  confirmed_at: number | null;
+  review_seconds: number;
+  n_text: number;
+  n_review: number;
+  n_corrected: number;
+  n_unflagged_corrected: number;
+  review_rate: number | null;
+  correction_rate: number | null;
+}
+export interface LearningData {
+  profile_id: number;
+  generations: { id: number; parent_id: number | null; created_at: number; n_pages: number; score: number | null; status: string; n_recognized: number }[];
+  pages: PageMetric[];
+  summary: {
+    n_pages: number;
+    n_cells: number;
+    review_rate: number | null;
+    correction_rate: number | null;
+    unflagged_corrected: number;
+    median_review_seconds: number | null;
+  };
+  can_rollback: boolean;
+  can_reset: boolean;
+  phase: number;
+}
+
+export const SETTINGS_PROBLEM_LABEL: Record<string, string> = {
+  duplicate: "同じ名前が重複しています",
+  empty: "空にできません",
+  surrounding_space: "前後に空白があります",
+  cp932_unencodable: "インポートできない文字が含まれています",
+};
+export const MISSING_LABEL: Record<string, string> = {
+  no_payments: "支払手段が 1 つも登録されていません",
+  payment_without_credit_account: "貸方科目が空の支払手段があります",
+  no_titles: "タイトル → 借方科目が 1 つも登録されていません",
+  title_without_debit_account: "借方科目が空のタイトルがあります",
+};

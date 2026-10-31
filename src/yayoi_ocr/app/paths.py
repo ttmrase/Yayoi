@@ -38,7 +38,11 @@ class AppPaths:
     def uploads(self) -> Path:
         return self.root / "uploads"
 
+    @property
+    def exports(self) -> Path:
+        return self.root / "exports"
+
     def ensure(self) -> AppPaths:
-        for d in (self.root, self.images, self.uploads):
+        for d in (self.root, self.images, self.uploads, self.exports):
             d.mkdir(parents=True, exist_ok=True)
         return self
