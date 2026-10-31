@@ -1,9 +1,9 @@
 {
   "tag": "trial-v0.1.0",
-  "commit": "504d0b26ca125a5558240ce8701fe74a4779760f",
-  "run_id": "41221885298",
-  "eval_run_id": "41228799781",
+  "commit": "b4fad53c72c8febf6bb02f931c20f879a572b135",
+  "run_id": "41239593018",
+  "eval_run_id": "41243306134",
   "zip_name": "yayoi-ocr-trial-0.1.0.zip",
-  "zip_sha256": "1c03fecb35a85f856fac2bcc399c80a69a043c56ebd1616f0109dd9df8a3d963",
+  "zip_sha256": "201df22d8d2b197969767bb3c16da3f42e9a9b1f2a6e9dd28d8d849143808623",
   "title": "yayoi-ocr 試用版 0.1.0(試用版・pre-release)"
 }
