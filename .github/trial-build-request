@@ -5,6 +5,6 @@
 #   再利用の前に、前の run のコマンドといまのコミットの処理が同じであること、学習・認識・合成に関わるコードが変わっていないことを照合する。前の run の artifact は 2 日で消える。
 # request は、同じ内容でもう一度ビルドしたいときに変える番号。
 # ふだんは mode: mini の状態にしておく(このファイルは、変更して push するだけでビルドが始まるため。本番を始めるときだけ full を書き、始めたら mini に戻す〔[skip ci] を付ける〕)。
-mode: full
-reuse_run_id: 41221885298
-request: 6
+mode: mini
+reuse_run_id:
+request: 7
