@@ -500,3 +500,15 @@ ul.plain {
   border-radius: 6px;
   padding: 1px 8px;
 }
+.jobs tr.active-row td {
+  background: #eef3fb;
+  font-weight: 600;
+}
+.reset-choice {
+  margin: 8px 0 12px;
+  max-width: 70em;
+}
+.reset-choice label {
+  display: block;
+  margin: 4px 0;
+}

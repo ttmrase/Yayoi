@@ -151,7 +151,7 @@ test("⑰ 検証エラー(タイトル未入力)は確認画面へのリンク�
   await expect(page.getByTestId("export-ok")).toBeVisible();
 });
 
-test("⑱ 学習画面: 確定したページの実績(値は出さない)と、世代 0 だけで戻す操作は無効、学習データの削除は確認を経て実行", async ({ page, request }) => {
+test("⑱ 学習画面: 確定したページの実績(値は出さない)と、世代 0 だけなら戻す操作は出ない、リセット(確定データを残す/削除する)は確認を経て実行", async ({ page, request }) => {
   await putSettings(request);
   const job = await createJob(request, 903);
   await openApp(page);
@@ -163,11 +163,20 @@ test("⑱ 学習画面: 確定したページの実績(値は出さない)と、
   await expect(page.getByTestId("learning-summary")).toContainText("確定したページ");
   await expect(page.getByTestId("trend")).toBeVisible();
   await expect(page.getByTestId("generations")).toContainText("世代 0(出荷時)");
-  await expect(page.getByRole("button", { name: "この世代に戻す" })).toBeDisabled();
-  // 学習データの削除(リセット): 確定したページがあるので押せる。確認を経て、切り出し画像を削除する
+  await expect(page.getByTestId("active-generation")).toHaveText("世代 0(出荷時)");
+  await expect(page.getByRole("button", { name: "この世代に戻す" })).toHaveCount(0); // 戻せる過去の世代がまだない
+  // リセット: 確定したページがあるので押せる。既定は「確定データを残す」(切り出し画像は残る)
+  await expect(page.getByTestId("reset-keep-data")).toBeChecked();
   await expect(page.getByTestId("reset-learning")).toBeEnabled();
   await page.getByTestId("reset-learning").click();
   await page.getByTestId("reset-learning-confirm").click();
+  await expect(page.getByTestId("reset-message")).toContainText("確定データは残してあります");
+  // 「切り出し画像と学習状態も削除する」を選ぶと、確認を経て切り出し画像を削除する
+  await page.getByTestId("reset-delete-data").check();
+  await page.getByTestId("reset-learning").click();
+  await expect(page.getByTestId("reset-learning-confirm")).toContainText("確定データも削除");
+  await page.getByTestId("reset-learning-confirm").click();
+  await expect(page.getByTestId("reset-message")).toContainText("切り出し画像");
   await expect(page.getByTestId("reset-message")).toContainText("削除しました");
 });
 

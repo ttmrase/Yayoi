@@ -121,9 +121,17 @@ def create_job(
         job_id = int(cur.lastrowid)
         for idx, spec in enumerate(pages):
             cur = con.execute(
-                "INSERT INTO pages (job_id, idx, image_sha256, status, layout_status, layout_reasons)"
-                " VALUES (?, ?, ?, 'review', ?, ?)",
-                (job_id, idx, spec.image_sha256, spec.layout_status, _j(spec.layout_reasons)),
+                "INSERT INTO pages (job_id, idx, image_sha256, status, layout_status, layout_reasons, generation)"
+                " VALUES (?, ?, ?, 'review', ?, ?, COALESCE((SELECT id FROM generations"
+                " WHERE profile_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1), 0))",
+                (
+                    job_id,
+                    idx,
+                    spec.image_sha256,
+                    spec.layout_status,
+                    _j(spec.layout_reasons),
+                    profile_id,
+                ),
             )
             page_id = int(cur.lastrowid)
             page_ids.append(page_id)
@@ -184,6 +192,7 @@ def fill_page(
     spec: PageSpec,
     last_year: int | None = None,
     seconds: float | None = None,
+    generation: int | None = None,
 ) -> None:
     """認識結果をページに書き込んで 'review' にする(再実行しても同じ結果になるよう、既存のセルは作り直す)。"""
     with transaction(con):
@@ -209,8 +218,8 @@ def fill_page(
             "UPDATE pages SET status = 'review', layout_status = ?, layout_reasons = ?, layout_approved = ?,"
             " last_year = ?, error = NULL, recognized_at = ?, recognize_seconds = ?,"
             " view_path = COALESCE(?, view_path), view_scale = COALESCE(?, view_scale),"
-            " layout_info = COALESCE(?, layout_info), title_recognized = ?, revision = revision + 1"
-            " WHERE id = ?",
+            " layout_info = COALESCE(?, layout_info), title_recognized = ?, revision = revision + 1,"
+            " generation = COALESCE(?, generation) WHERE id = ?",
             (
                 "ok" if spec.approved else spec.layout_status,
                 _j([] if spec.approved else spec.layout_reasons),
@@ -222,6 +231,7 @@ def fill_page(
                 spec.view_scale,
                 None if spec.layout_info is None else _j(spec.layout_info),
                 spec.title_recognized,
+                generation,
                 page_id,
             ),
         )

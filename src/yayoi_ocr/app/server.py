@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, exports, metrics, retention, rowtax, store, tax, uploads
+from . import db, exports, gens, metrics, retention, rowtax, store, tax, uploads
 from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
@@ -34,6 +34,12 @@ class CellPatch(BaseModel):
     action: Literal["pass", "edit", "confirm", "candidate", "revert"]
     value: str | None = Field(default=None, max_length=400)
     candidate_index: int | None = None
+
+
+class GenerationResetBody(BaseModel):
+    delete_learning_data: bool = (
+        False  # True: 切り出し画像・学習状態も削除する(False: 確定データは残す)
+    )
 
 
 class ConfirmBody(BaseModel):
@@ -108,6 +114,8 @@ def create_app(
     uploads_root.mkdir(parents=True, exist_ok=True)
     exports_root = AppPaths(db_path.parent).exports
     exports_root.mkdir(parents=True, exist_ok=True)
+    models_root = AppPaths(db_path.parent).models  # 利用者のデータから作った世代の置き場
+    models_root.mkdir(parents=True, exist_ok=True)
     con = db.connect(db_path)
     db.migrate(con)
     lock = threading.RLock()  # 1 接続を複数スレッドで共有するので直列化する
@@ -115,7 +123,11 @@ def create_app(
     app = FastAPI(title="yayoi-ocr", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db = con
     app.state.db_lock = lock
-    runner = JobRunner(con, lock, images, uploads_root, backend) if backend is not None else None
+    runner = (
+        JobRunner(con, lock, images, uploads_root, backend, models_root)
+        if backend is not None
+        else None
+    )
     app.state.runner = runner  # 起動は launcher(テストは run_job を直接呼ぶ)
     app.state.purge_unused = lambda: uploads.purge_unused(
         con, lock, uploads_root
@@ -161,18 +173,50 @@ def create_app(
     def learning(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
         with lock:
             rows = metrics.page_metrics(con, profile_id)
+            observed = metrics.by_generation(rows)
+            glist = gens.list_generations(con, models_root, profile_id)
+            for g in glist:
+                g["observed"] = observed.get(g["id"])  # この世代で認識して確定したページの実績
             return {
                 "profile_id": profile_id,
-                "generations": metrics.generations(con, profile_id),
+                "generations": glist,
+                "active_id": next((g["id"] for g in glist if g["status"] == "active"), None),
                 "pages": rows,
                 "summary": metrics.summary(rows),
-                # Phase 4 まで: 世代は出荷時(世代 0)だけなので、戻す・リセットは無効
-                "can_rollback": False,
-                "can_reset": any(
-                    r["n_text"] for r in rows
-                ),  # 確定したページがあれば、学習データ(切り出し画像・学習状態)を削除できる
-                "phase": 3,
+                # 戻せるのは、重みが残っている使用中でない世代(世代 0 を含む)
+                "can_rollback": any(g["restorable"] and g["status"] != "active" for g in glist),
+                "can_reset": any(r["n_text"] for r in rows)
+                or any(g["kind"] == "trained" and g["status"] in gens.RESTORABLE for g in glist),
+                "phase": 4,
             }
+
+    @app.get("/api/generations")
+    def generations_list(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
+        with lock:
+            glist = gens.list_generations(con, models_root, profile_id)
+        return {
+            "generations": glist,
+            "active_id": next((g["id"] for g in glist if g["status"] == "active"), None),
+        }
+
+    @app.post("/api/generations/reset")
+    def generations_reset(
+        body: GenerationResetBody, profile_id: int = db.DEFAULT_PROFILE_ID
+    ) -> dict:
+        """出荷時の重み(世代 0)に戻す。利用者のデータから作った世代の重みは消す。確定した値・出力の履歴・設定は残る。
+        `delete_learning_data` が真なら、切り出し画像・学習状態も削除する(偽なら、確定データは次の追加学習の元として残す)。"""
+        with lock:
+            discarded = gens.reset(con, models_root, profile_id)
+        out: dict = {"discarded": discarded, "deleted_images": 0}
+        if body.delete_learning_data:
+            out.update(retention.reset_learning(con, lock, images))
+        return out
+
+    @app.post("/api/generations/{gen_id}/activate")
+    def generations_activate(gen_id: int) -> dict:
+        """この世代に戻す(ロールバック)。以降に認識するページから使う。すでに認識したページは変わらない。"""
+        with lock:
+            return gens.activate(con, models_root, gen_id)
 
     @app.get("/api/learning/report")
     def learning_report(profile_id: int = db.DEFAULT_PROFILE_ID) -> JSONResponse:

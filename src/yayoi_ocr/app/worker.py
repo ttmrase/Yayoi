@@ -42,6 +42,8 @@ class PagePayload:
     corners: tuple[tuple[float, float], ...] | None = (
         None  # 利用者が指定した表の 4 隅(元画像 px)。無ければ自動検出
     )
+    weights_dir: str | None = None  # 使用中の世代の重み(Phase 4)。None なら出荷時の重み
+    confidence: str | None = None  # その世代の確信度モデル。None なら出荷時のもの
 
 
 @dataclass
@@ -171,8 +173,13 @@ def worker_threads(cpu_count: int | None = None) -> int:
     return max(2, min(4, n // 2))
 
 
-def _recognizer(variant: str):
-    if variant not in _RECOGNIZERS:
+def _recognizer(variant: str, weights_dir: str | None = None, confidence: str | None = None):
+    key = f"{variant}|{weights_dir or ''}|{confidence or ''}"
+    if key not in _RECOGNIZERS:
+        while (
+            len(_RECOGNIZERS) >= 2
+        ):  # 世代を切り替えても、読み込んだ重みを溜め込まない(古いものから捨てる)
+            _RECOGNIZERS.pop(next(iter(_RECOGNIZERS)))
         import torch
 
         from ..config import models_dir
@@ -182,13 +189,21 @@ def _recognizer(variant: str):
         from ..recognize.page import PageRecognizer
 
         torch.set_num_threads(worker_threads())
-        engine = variants.open_engine(variant)
+        if weights_dir:  # 利用者のデータから作った世代(重みの置き場が違う)
+            from pathlib import Path
+
+            from ..recognize.parseq.engine import ParseqEngine
+
+            engine = ParseqEngine(models_dir=Path(weights_dir))
+            conf_path = Path(confidence) if confidence else variants.confidence_path(variant)
+        else:
+            engine = variants.open_engine(variant)
+            conf_path = variants.confidence_path(variant)
         clf_path = models_dir() / "celltype.pt"
         clf = CellTypeClassifier.load(clf_path) if clf_path.is_file() else None
-        conf_path = variants.confidence_path(variant)
         calibrator = ConfidenceModel.load(conf_path) if conf_path.is_file() else None
-        _RECOGNIZERS[variant] = PageRecognizer(engine, clf, calibrator=calibrator)
-    return _RECOGNIZERS[variant]
+        _RECOGNIZERS[key] = PageRecognizer(engine, clf, calibrator=calibrator)
+    return _RECOGNIZERS[key]
 
 
 def _png(img) -> bytes:
@@ -265,7 +280,9 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
         sha256=lp.sha256,
         corners=payload.corners,
     )
-    rec = _recognizer(variant or variants.default_variant())
+    rec = _recognizer(
+        variant or variants.default_variant(), payload.weights_dir, payload.confidence
+    )
     ctx = JobContext(
         prev_year=payload.prev_year,
         accounts=list(payload.accounts),

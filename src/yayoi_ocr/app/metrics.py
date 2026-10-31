@@ -67,15 +67,34 @@ def summary(rows: list[dict]) -> dict:
     }
 
 
-def generations(con: sqlite3.Connection, profile_id: int) -> list[dict]:
-    rows = con.execute(
-        "SELECT g.id, g.parent_id, g.created_at, g.n_pages, g.score, g.status,"
-        " (SELECT COUNT(*) FROM pages p JOIN jobs j ON j.id = p.job_id"
-        "   WHERE j.profile_id = g.profile_id AND p.generation = g.id) AS n_recognized"
-        " FROM generations g WHERE g.profile_id = ? ORDER BY g.id",
-        (profile_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+def by_generation(rows: list[dict]) -> dict[int, dict]:
+    """確定したページを、認識に使った世代ごとに集計する(世代の実績)。件数と割合だけ(値は含まない)。
+    見逃しの観測 = 要確認でないのに利用者が直したセルの、非空欄セルに対する割合(実際の見逃しはこれ以上あり得る)。"""
+    acc: dict[int, dict[str, int]] = {}
+    for r in rows:
+        a = acc.setdefault(
+            r["generation"],
+            {
+                "n_pages": 0,
+                "n_text": 0,
+                "n_review": 0,
+                "n_corrected": 0,
+                "n_unflagged_corrected": 0,
+            },
+        )
+        a["n_pages"] += 1
+        for k in ("n_text", "n_review", "n_corrected", "n_unflagged_corrected"):
+            a[k] += r[k]
+    out: dict[int, dict] = {}
+    for gid, a in acc.items():
+        n = a["n_text"]
+        out[gid] = {
+            **a,
+            "review_rate": a["n_review"] / n if n else None,
+            "correction_rate": a["n_corrected"] / n if n else None,
+            "miss_rate": a["n_unflagged_corrected"] / n if n else None,
+        }
+    return out
 
 
 def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: float) -> dict:

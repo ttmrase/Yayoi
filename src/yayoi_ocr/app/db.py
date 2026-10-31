@@ -181,6 +181,34 @@ MIGRATIONS: list[str] = [
         UNIQUE (profile_id, description_key)
     );
     """,
+    # --- v9: Phase 4 の世代(重み + 確信度)の管理と、バックグラウンドの追加学習の実行履歴
+    """
+    ALTER TABLE generations ADD COLUMN number INTEGER NOT NULL DEFAULT 0;        -- 書き手ごとの通し番号(0 = 出荷時の重み)
+    ALTER TABLE generations ADD COLUMN kind TEXT NOT NULL DEFAULT 'trained';     -- shipped / trained
+    ALTER TABLE generations ADD COLUMN dir TEXT;                                 -- models/<プロファイル>/gen_XXXX(データ領域からの相対。shipped は NULL)
+    ALTER TABLE generations ADD COLUMN meta TEXT;                                -- JSON(元の世代・学習/評価ページの ID・評価の値…。摘要・金額などの値は入れない)
+    ALTER TABLE generations ADD COLUMN reject_reason TEXT;                       -- 不採用の理由コード
+    ALTER TABLE generations ADD COLUMN activated_at REAL;                        -- 使用中になった時刻
+    UPDATE generations SET kind = 'shipped', number = 0, activated_at = created_at;
+    UPDATE pages SET generation = COALESCE((SELECT g.id FROM generations g JOIN jobs j ON j.profile_id = g.profile_id
+                                             WHERE j.id = pages.job_id AND g.kind = 'shipped'), 0) WHERE generation = 0;
+    CREATE TABLE training_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL REFERENCES profiles(id),
+        trigger TEXT NOT NULL,             -- auto / manual
+        status TEXT NOT NULL,              -- running / adopted / rejected / deferred(評価が足りず見送り)/ failed / interrupted
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        n_new_cells INTEGER,
+        n_train_pages INTEGER,
+        n_eval_pages INTEGER,
+        cutoff REAL,                       -- この実行が見たページの最後の確定時刻(次の「新しい確定セル」の起点)
+        generation_id INTEGER,             -- 採用・不採用のとき、作った世代
+        reason TEXT,                       -- 不採用・見送り・失敗の理由コード(値は入れない)
+        stage TEXT,
+        progress REAL
+    );
+    """,
 ]
 
 
@@ -211,8 +239,9 @@ def migrate(con: sqlite3.Connection) -> int:
             (DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now),
         )
         con.execute(
-            "INSERT INTO generations (profile_id, created_at, status) VALUES (?, ?, 'active')",
-            (DEFAULT_PROFILE_ID, now),
+            "INSERT INTO generations (profile_id, created_at, status, kind, number, activated_at)"
+            " VALUES (?, ?, 'active', 'shipped', 0, ?)",
+            (DEFAULT_PROFILE_ID, now, now),
         )
     return con.execute("PRAGMA user_version").fetchone()[0]
 

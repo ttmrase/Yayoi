@@ -181,7 +181,7 @@ def test_learning_metrics_count_only_confirmed_pages_and_no_values(client):
     p1 = job["pages"][0]["id"]
     empty = client.get("/api/learning").json()
     assert empty["summary"]["n_pages"] == 0 and empty["generations"][0]["id"] > 0
-    assert not empty["can_rollback"] and not empty["can_reset"] and empty["phase"] == 3
+    assert not empty["can_rollback"] and not empty["can_reset"] and empty["phase"] == 4
     # 要確認でないセルを利用者が直した = 見逃しの観測
     page = client.get(f"/api/pages/{p1}").json()
     quiet = next(

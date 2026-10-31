@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from . import learned, settings, store
+from . import gens, learned, settings, store
 from .worker import Backend, PagePayload, upload_path
 
 
@@ -28,12 +28,14 @@ class JobRunner:
         images_dir: Path,
         uploads_dir: Path,
         backend: Backend,
+        models_root: Path | None = None,
     ) -> None:
         self.con = con
         self.lock = lock
         self.images_dir = images_dir
         self.uploads_dir = uploads_dir
         self.backend = backend
+        self.models_root = models_root  # 利用者のデータから作った世代の置き場(<データ領域>/models)
         self._queue: queue.Queue[int | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -110,6 +112,11 @@ class JobRunner:
                     ).fetchone()[0]
                 )
                 ctx = learned.build_state(self.con, profile, settings.load(self.con))
+                w = (
+                    gens.weights_for(self.con, self.models_root, profile)
+                    if self.models_root is not None
+                    else None
+                )
             page_id = int(row["id"])
             try:
                 payload = PagePayload(
@@ -126,6 +133,8 @@ class JobRunner:
                         if row["layout_override"] is None
                         else tuple(tuple(p) for p in json.loads(row["layout_override"]))
                     ),
+                    weights_dir=None if w is None or w.dir is None else str(w.dir),
+                    confidence=None if w is None or w.confidence is None else str(w.confidence),
                 )
                 outcome = self.backend.process(payload)
                 with self.lock:
@@ -136,6 +145,7 @@ class JobRunner:
                         outcome.spec,
                         outcome.last_year,
                         outcome.seconds,
+                        None if w is None else w.generation_id,
                     )
             except Exception as exc:  # 1 ページの失敗でジョブ全体を止めない
                 with self.lock:

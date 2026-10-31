@@ -286,9 +286,43 @@ export interface PageMetric {
   review_rate: number | null;
   correction_rate: number | null;
 }
+/** 世代で認識して確定したページの実績(値は含まない。見逃しの観測 = 要確認でないのに直したセル ÷ 非空欄セル) */
+export interface GenerationObserved {
+  n_pages: number;
+  n_text: number;
+  review_rate: number | null;
+  correction_rate: number | null;
+  miss_rate: number | null;
+  n_unflagged_corrected: number;
+}
+/** 採否の評価の値(評価用ページを親・新世代の両方で認識し直した結果) */
+export interface GenerationEvalSide {
+  accuracy: number;
+  review_rate: number;
+  miss_rate: number;
+  n_cells: number;
+}
+export interface Generation {
+  id: number;
+  number: number;
+  kind: "shipped" | "trained";
+  parent_id: number | null;
+  created_at: number;
+  activated_at: number | null;
+  status: "active" | "retired" | "rejected" | "discarded";
+  reject_reason: string | null;
+  n_train_pages: number | null;
+  n_eval_pages: number | null;
+  eval: { parent: GenerationEvalSide; candidate: GenerationEvalSide } | null;
+  recalibration: Record<string, unknown> | null;
+  restorable: boolean;
+  n_recognized: number | null;
+  observed?: GenerationObserved | null;
+}
 export interface LearningData {
   profile_id: number;
-  generations: { id: number; parent_id: number | null; created_at: number; n_pages: number; score: number | null; status: string; n_recognized: number }[];
+  generations: Generation[];
+  active_id: number | null;
   pages: PageMetric[];
   summary: {
     n_pages: number;

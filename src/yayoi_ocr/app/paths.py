@@ -42,7 +42,22 @@ class AppPaths:
     def exports(self) -> Path:
         return self.root / "exports"
 
+    @property
+    def models(self) -> Path:
+        """利用者のデータから作った世代の重み(models/<プロファイル ID>/gen_XXXX)。出荷時の重みは配布物の models/ にある。"""
+        return self.root / "models"
+
+    @property
+    def pagedata(self) -> Path:
+        """追加学習と世代の評価に使う、ページごとの認識の入力(pagedata/<ページ ID>.npz)。"""
+        return self.root / "pagedata"
+
+    @property
+    def training(self) -> Path:
+        """追加学習の作業ディレクトリ(training/<実行 ID>)。"""
+        return self.root / "training"
+
     def ensure(self) -> AppPaths:
-        for d in (self.root, self.images, self.uploads, self.exports):
+        for d in (self.root, self.images, self.uploads, self.exports, self.models, self.pagedata):
             d.mkdir(parents=True, exist_ok=True)
         return self

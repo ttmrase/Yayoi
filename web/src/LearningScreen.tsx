@@ -1,8 +1,16 @@
 import { useEffect, useState } from "react";
-import { fetchLearning, learningReport, resetLearning } from "./pageApi";
-import type { LearningData, PageMetric } from "./types";
+import { activateGeneration, fetchLearning, learningReport, resetGenerations } from "./pageApi";
+import type { Generation, LearningData, PageMetric } from "./types";
 
-const pct = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(1)}%`);
+const pct = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(1)}%`);
+const fmt = (t: number | null) => (t === null ? "—" : new Date(t * 1000).toLocaleString("ja-JP"));
+
+const STATUS_LABEL: Record<Generation["status"], string> = {
+  active: "使用中",
+  retired: "過去",
+  rejected: "不採用",
+  discarded: "リセットで破棄",
+};
 
 /** 確定したページ順の折れ線(要確認率・直した割合)。外部ライブラリを使わない小さな SVG。 */
 function Trend({ pages }: { pages: PageMetric[] }) {
@@ -41,17 +49,30 @@ export default function LearningScreen() {
   const [data, setData] = useState<LearningData | null>(null);
   const [error, setError] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [deleteData, setDeleteData] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const load = () => void fetchLearning().then(setData).catch(() => setError(true));
   useEffect(load, []);
   const doReset = async () => {
     try {
-      const r = await resetLearning();
-      setMessage(`削除しました(切り出し画像 ${r.deleted_images} 枚)。`);
+      const r = await resetGenerations(deleteData);
+      setMessage(
+        `出荷時の重み(世代 0)に戻しました(破棄した世代 ${r.discarded})。` +
+          (deleteData ? `切り出し画像 ${r.deleted_images} 枚と学習状態も削除しました。` : "確定データは残してあります。"),
+      );
     } catch {
-      setMessage("削除できませんでした");
+      setMessage("戻せませんでした");
     }
     setConfirmReset(false);
+    load();
+  };
+  const doRollback = async (g: Generation) => {
+    try {
+      await activateGeneration(g.id);
+      setMessage(`世代 ${g.number} を使用中にしました。これから認識するページから使います(認識済みのページは変わりません)。`);
+    } catch {
+      setMessage("戻せませんでした(この世代の重みが見つかりません)");
+    }
     load();
   };
   const downloadReport = async () => {
@@ -73,8 +94,14 @@ export default function LearningScreen() {
     <section className="learning" data-testid="learning">
       <h1>学習</h1>
       <p className="hint">
-        確認画面での実績です(値の内容は記録しません)。いまは出荷時の重み(世代 0)だけを使っています。書き手ごとの追加学習(世代の追加・採否)は今後のバージョンで入ります。
-        確定したページの摘要・科目・金額は、次のページの認識(辞書・語彙・金額の履歴)にすでに反映されています。
+        確認画面での実績です(値の内容は記録しません)。使用中の世代:{" "}
+        <b data-testid="active-generation">
+          {(() => {
+            const g = data.generations.find((x) => x.id === data.active_id);
+            return g ? (g.kind === "shipped" ? "世代 0(出荷時)" : `世代 ${g.number}`) : "—";
+          })()}
+        </b>
+        。確定したページの摘要・科目・金額は、次のページの認識(辞書・語彙・金額の履歴)にすでに反映されています。
       </p>
       <div className="tiles" data-testid="learning-summary">
         <div>
@@ -116,46 +143,79 @@ export default function LearningScreen() {
         <span className="hint">ページ数・要確認率・直した割合・確認時間だけを含みます。帳票の内容(日付・科目・摘要・金額の値)は含まれません。</span>
       </p>
       <h2>世代</h2>
+      <p className="hint">
+        世代は、重みと確信度の組です。出荷時の重みが世代 0 で、あなたの確定データから追加学習した世代が 1 以降に並びます。「実績」は、その世代で認識して確定したページでの値です
+        (要確認率・直した割合・見逃しの観測=要確認でないのに直したセルの割合)。
+      </p>
       <table className="jobs" data-testid="generations">
         <thead>
           <tr>
             <th>世代</th>
             <th>状態</th>
-            <th>学習に使った確定ページ</th>
-            <th>この世代で認識したページ</th>
+            <th>作成</th>
+            <th>学習 / 評価ページ</th>
+            <th>認識したページ</th>
+            <th>実績: ページ</th>
+            <th>要確認率</th>
+            <th>直した割合</th>
+            <th>見逃し(観測)</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          {data.generations.map((g, i) => (
-            <tr key={g.id}>
-              <td>{i === 0 ? "世代 0(出荷時)" : `世代 ${i}`}</td>
-              <td>{g.status === "active" ? "使用中" : g.status}</td>
-              <td>{g.n_pages}</td>
+          {data.generations.map((g) => (
+            <tr key={g.id} data-testid={`generation-${g.number}`} className={g.status === "active" ? "active-row" : undefined}>
+              <td>{g.kind === "shipped" ? "世代 0(出荷時)" : `世代 ${g.number}`}</td>
+              <td>
+                {STATUS_LABEL[g.status]}
+                {g.reject_reason && <span className="hint"> ({g.reject_reason})</span>}
+              </td>
+              <td>{g.kind === "shipped" ? "—" : fmt(g.created_at)}</td>
+              <td>{g.kind === "shipped" ? "—" : `${g.n_train_pages ?? "—"} / ${g.n_eval_pages ?? "—"}`}</td>
               <td>{g.n_recognized}</td>
+              <td>{g.observed?.n_pages ?? 0}</td>
+              <td>{pct(g.observed?.review_rate)}</td>
+              <td>{pct(g.observed?.correction_rate)}</td>
+              <td>{pct(g.observed?.miss_rate)}</td>
+              <td>
+                {g.status !== "active" && g.restorable && (
+                  <button data-testid={`rollback-${g.number}`} onClick={() => void doRollback(g)}>
+                    この世代に戻す
+                  </button>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p>
-        <button disabled={!data.can_rollback} title="世代が増えると選べるようになります">
-          この世代に戻す
-        </button>{" "}
-        <span className="hint">追加学習した世代ができるまでは、戻す対象がありません。</span>
-      </p>
-      <h2>学習データの削除(リセット)</h2>
       <p className="hint">
-        確定したセルの切り出し画像(学習データ)を削除し、学習(摘要の辞書・科目の語彙・金額の履歴)を最初からやり直します。確定した値・出力の履歴・設定は残ります。
-        削除後は、確定済みのページでも切り出し画像は表示されません。
+        「この世代に戻す」は、重みが残っている世代(過去の世代・出荷時)にだけ出ます。何度でも切り替えられます。
+      </p>
+      <h2>出荷時の重みに戻す(リセット)</h2>
+      <p className="hint">
+        追加学習した世代をすべて捨てて、出荷時の重み(世代 0)に戻します。確定した値・出力の履歴・設定は残ります。確定データ(切り出し画像・辞書・金額の履歴)を残すかを選べます。
         摘要ごとの税区分の記憶(摘要の文字列を保存しています)は、ここでは消えません。設定画面の「摘要ごとの税区分の記憶」から削除してください。
       </p>
+      <fieldset className="reset-choice">
+        <legend>確定データ</legend>
+        <label>
+          <input type="radio" name="reset-data" data-testid="reset-keep-data" checked={!deleteData} onChange={() => setDeleteData(false)} />
+          残す(次の追加学習の元になります)
+        </label>
+        <br />
+        <label>
+          <input type="radio" name="reset-data" data-testid="reset-delete-data" checked={deleteData} onChange={() => setDeleteData(true)} />
+          切り出し画像と学習状態も削除する(辞書・語彙・金額の履歴を最初から。確定済みのページでも切り出し画像は表示されません)
+        </label>
+      </fieldset>
       {!confirmReset ? (
         <button data-testid="reset-learning" disabled={!data.can_reset} onClick={() => setConfirmReset(true)}>
-          学習データを削除する(リセット)
+          出荷時の重みに戻す(リセット)
         </button>
       ) : (
         <span role="alert">
           <button data-testid="reset-learning-confirm" className="danger" onClick={() => void doReset()}>
-            本当に削除する
+            本当に戻す{deleteData ? "(確定データも削除)" : ""}
           </button>{" "}
           <button onClick={() => setConfirmReset(false)}>やめる</button>
         </span>
