@@ -31,7 +31,7 @@ def page_metrics(con: sqlite3.Connection, profile_id: int) -> list[dict]:
             " SUM(kind != 'blank' AND review = 1) AS n_review,"
             " SUM(kind != 'blank' AND edit_kind IN ('corrected','candidate','expanded_edit')) AS n_corrected,"
             " SUM(kind != 'blank' AND review = 0 AND edit_kind IN ('corrected','candidate','expanded_edit')) AS n_unflagged_corrected,"
-            " SUM(kind != 'blank' AND review = 1 AND edit_kind IN ('unchanged')) AS n_review_unchanged"
+            " SUM(kind != 'blank' AND review = 1 AND edit_kind IN ('unchanged','chosen')) AS n_review_unchanged"
             " FROM cells WHERE page_id = ?",
             (pg["id"],),
         ).fetchone()
@@ -107,7 +107,7 @@ def suggest_effect(con: sqlite3.Connection, profile_id: int) -> dict:
             "SELECT COUNT(DISTINCT p.id) AS n_pages,"
             " COALESCE(SUM(c.kind != 'blank'), 0) AS n_text,"
             " COALESCE(SUM(c.kind != 'blank' AND c.review = 1), 0) AS n_review,"
-            " COALESCE(SUM(c.kind != 'blank' AND c.review = 1 AND c.edit_kind = 'unchanged'), 0) AS n_review_unchanged,"
+            " COALESCE(SUM(c.kind != 'blank' AND c.review = 1 AND c.edit_kind IN ('unchanged', 'chosen')), 0) AS n_review_unchanged,"
             f" COALESCE(SUM(c.kind != 'blank' AND c.edit_kind IN ({q})), 0) AS n_corrected"
             " FROM cells c JOIN pages p ON p.id = c.page_id JOIN jobs j ON j.id = p.job_id"
             " WHERE p.status = 'confirmed' AND j.profile_id = ?"
@@ -313,6 +313,7 @@ def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: floa
             "tax_scheme": cfg.tax_scheme,
             "tax_method": cfg.tax_method,
             "auto_train": cfg.auto_train,
+            "suggest_mode": cfg.suggest_mode,
             "train_threshold_cells": cfg.train_threshold_cells,
         },
         "exports": {"n_exports": int(n_exp[0]), "n_rows": int(n_exp[1])},

@@ -159,7 +159,12 @@ export default function LearningScreen() {
         </b>
         。確定したページの摘要・科目・金額は、次のページの認識(辞書・語彙・金額の履歴)にすでに反映されています。
       </p>
-      {data.generations.some((g) => g.suggest_in_effect) && (
+      {data.generations.some((g) => g.suggest_in_effect) && !data.suggest_mode && (
+        <p className="suggest-banner" role="status" data-testid="suggest-off">
+          提案モードの世代がありますが、設定(追加学習の「提案モードを使う」)でオフになっているので、いまは使っていません。
+        </p>
+      )}
+      {data.generations.some((g) => g.suggest_in_effect) && data.suggest_mode && (
         <p className="suggest-banner" role="status" data-testid="suggest-banner">
           <b>提案モードで使用中:</b>確認の手間を減らしますが、要確認の判定は変えません。
           {(() => {

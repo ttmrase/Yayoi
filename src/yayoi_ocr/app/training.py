@@ -129,6 +129,7 @@ class TrainManager:
             return {
                 "available": self.trainer is not None,
                 "auto_train": cfg.auto_train,
+                "suggest_mode": cfg.suggest_mode,
                 "threshold": cfg.train_threshold_cells,
                 "profile_id": profile_id,
                 "active_generation": {"id": act["id"], "number": act["number"]},

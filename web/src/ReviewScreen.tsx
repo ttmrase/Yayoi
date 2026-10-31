@@ -22,7 +22,7 @@ import {
   type CellAction,
 } from "./pageApi";
 import { normalizeInput } from "./text";
-import { COLUMN_LABEL, REASON_LABEL, TAX_SOURCE_HINT, TAX_SOURCE_LABEL, type Cell, type Column, type Page, type Summary } from "./types";
+import { COLUMN_LABEL, REASON_LABEL, TAX_SOURCE_HINT, TAX_SOURCE_LABEL, isExplicitKind, needsChoice, type Cell, type Column, type Page, type Summary } from "./types";
 
 const PASS_MS = 250; // 要確認セルを「通過した」と数える最小の滞在時間(連打で飛ばせない)
 const DRAFT_MS = 300; // 入力中の自動保存のデバウンス
@@ -214,7 +214,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
     (cellId: number) => {
       looked.current.add(cellId);
       const c = pageRef.current?.cells.find((x) => x.id === cellId);
-      if (c && (c.review || c.reasons.includes("dash_digit_ambiguity")) && !c.passed) void patch(cellId, "pass");
+      if (c && (c.review || needsChoice(c)) && !c.passed) void patch(cellId, "pass");
     },
     [patch],
   );
@@ -280,16 +280,19 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
         setNotice(null);
         const value = shown(cell);
         // 末尾「-」の両仮説で 10 倍違う金額は、候補の選択か入力で明示するまで進まない(サーバも同じ検査をする)
-        const explicit =
-          cell.edit_kind === "candidate" || cell.edit_kind === "corrected" || value !== cell.resolved_value;
-        if (cell.reasons.includes("dash_digit_ambiguity") && !explicit) {
-          setNotice("末尾が「-」か数字かを、Alt+1 / Alt+2 で選んでください");
+        const explicit = isExplicitKind(cell.edit_kind) || value !== cell.resolved_value;
+        if (needsChoice(cell) && !explicit) {
+          setNotice(
+            cell.reasons.includes("suggest_amount_disagreement")
+              ? "金額が使用中の世代と提案モードで違います。Alt+1(提案の値)/ Alt+2(使用中の世代の値)で選ぶか、入力してください"
+              : "末尾が「-」か数字かを、Alt+1 / Alt+2 で選んでください",
+          );
           break;
         }
         // 要確認のセルは、画像を一定時間見てからでないと Enter で通さない(連打・キーリピートで飛ばさない)。
         // 値を直した・候補を選んだ場合は、見て判断した証拠なので待たない(サーバも同じ下限を持つ)
-        const needsLook = (cell.review || cell.reasons.includes("dash_digit_ambiguity")) && !cell.passed;
-        const decided = drafts[cell.id] !== undefined || value !== cell.resolved_value || cell.edit_kind === "candidate";
+        const needsLook = (cell.review || needsChoice(cell)) && !cell.passed;
+        const decided = drafts[cell.id] !== undefined || value !== cell.resolved_value || isExplicitKind(cell.edit_kind);
         if (needsLook && !decided && !looked.current.has(cell.id)) break;
         const nxt = nextId(p.cells, cell.id, modeRef.current);
         const timer = timers.current.get(cell.id);
@@ -548,7 +551,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
           確定できません:
           {block.unpassed.length > 0 && <> 未通過の要確認 {block.unpassed.length} 件。</>}
           {block.errors.length > 0 && <> 検証エラー {block.errors.length} 件({[...new Set(block.errors.map((x) => x.label))].join("、")})。</>}
-          {block.ambiguous.length > 0 && <> 金額の末尾が未選択 {block.ambiguous.length} 件。</>}
+          {block.ambiguous.length > 0 && <> 選択が必要な金額(末尾の「-」・提案モードとの違い)が {block.ambiguous.length} 件。</>}
         </div>
       )}
 

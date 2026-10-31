@@ -1,4 +1,4 @@
-import type { Cell } from "./types";
+import { needsChoice, type Cell } from "./types";
 
 /** 行モード = 紙の並び(行ごとに 4 列)、列モード = 1 列ずつ(上から下、列が終わったら次の列) */
 export type Mode = "row" | "column";
@@ -46,7 +46,7 @@ export function initialFocus(cells: Cell[], saved: number | null, mode: Mode = "
   return sorted.find((c) => isNavigable(c) && c.review && !c.passed)?.id ?? navigableIds(cells, mode)[0] ?? null;
 }
 
-const needsPass = (c: Cell) => isNavigable(c) && (c.review || c.reasons.includes("dash_digit_ambiguity")) && !c.passed;
+const needsPass = (c: Cell) => isNavigable(c) && (c.review || needsChoice(c)) && !c.passed;
 
 /** 今のセルより後(dir=1)/前(dir=-1)で、まだ通過していない要確認のセル。端まで行ったら反対側から探す(1 周)。 */
 export function nextUnpassedId(cells: Cell[], current: number | null, dir: -1 | 1, mode: Mode = "row"): number | null {

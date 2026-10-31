@@ -218,6 +218,11 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE pages ADD COLUMN suggest_generation INTEGER;                     -- 提案モードで使った世代の ID(使っていなければ NULL)
     """,
+    # --- v12: 提案モードのセルに、親の世代の判定を残す(親の見逃しの監視用。提案モードでないページは NULL)
+    """
+    ALTER TABLE cells ADD COLUMN parent_review INTEGER;                          -- 親の世代が要確認にしたか(0/1)。提案モードのページだけ
+    ALTER TABLE cells ADD COLUMN parent_value TEXT;                              -- 親の世代の値(提案モードの値と違うセルだけ。同じなら NULL)
+    """,
 ]
 
 

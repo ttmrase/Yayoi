@@ -218,6 +218,7 @@ def create_app(
                 "active_id": next((g["id"] for g in glist if g["status"] == "active"), None),
                 "notices": gens.notices(con, profile_id),
                 "suggest_effect": metrics.suggest_effect(con, profile_id),
+                "suggest_mode": app_settings.load(con).suggest_mode,
                 "pages": rows,
                 "summary": metrics.summary(rows),
                 # 戻せるのは、重みが残っている使用中でない世代(世代 0 を含む)

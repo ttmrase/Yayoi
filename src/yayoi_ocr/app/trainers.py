@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .gate import Calib, EvalCounts, EvalSide
+from .suggest import MIN_DIFFER
 
 Progress = Callable[[str, float], None]
 
@@ -133,7 +134,7 @@ class MockTrainer:
         paired = {
             "improve": (round(0.06 * n_text), 0),
             "worsen": (0, round(0.04 * n_text)),
-            "suggest": (round(0.10 * n_text), max(1, round(0.01 * n_text))),
+            "suggest": (max(round(0.10 * n_text), MIN_DIFFER + 5), max(1, round(0.01 * n_text))),
             "promote_prev": (round(0.02 * n_text), round(0.02 * n_text)),  # 有意でない
         }.get(self.mode, (0, 0))
         extra = {}

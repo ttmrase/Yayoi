@@ -512,6 +512,118 @@ def test_pages_recognized_in_suggestion_mode_record_it_and_add_extra_review_cell
     assert next(g for g in rep["generations"] if g["number"] == 1)["suggest"]["better"] > 0
 
 
+def recognize_one(env) -> int:
+    from test_app_hardening import png_bytes, upload
+
+    up = upload(env, "a.png", png_bytes()).json()
+    job = env.post("/api/jobs", json={"upload_ids": [up["id"]]}).json()
+    env.app_.state.runner.run_job(job["job_id"])
+    return job["page_ids"][0]
+
+
+def test_a_suggestion_page_needs_an_explicit_choice_for_amounts_that_differ_from_the_parent(env):
+    confirm_pages(env, 7)
+    run_training(env, "suggest")
+    pid = recognize_one(env)
+    page = env.get(f"/api/pages/{pid}").json()
+    amount_choice = [c for c in page["cells"] if "suggest_amount_disagreement" in c["reasons"]]
+    assert amount_choice and all(c["column"] == "amount" and c["review"] for c in amount_choice)
+    # 候補の先頭は入力済みの提案の値、次が親の値
+    assert amount_choice[0]["candidates"][0]["value"] == amount_choice[0]["value"]
+    assert set(page["summary"]["ambiguous"]) >= {c["id"] for c in amount_choice}
+    assert not page["summary"]["can_confirm"]
+    c = amount_choice[0]
+    # 見ただけの Enter では確定できない(サーバも同じ検査をする)
+    env.patch(f"/api/pages/{pid}/cells/{c['id']}", json={"action": "pass"})
+    r = env.patch(f"/api/pages/{pid}/cells/{c['id']}", json={"action": "confirm"})
+    assert r.status_code == 409 and r.json()["error"] == "ambiguity_unresolved"
+    # 入力済みの値と同じ候補(提案の値)を明示的に選ぶ → 値は変わらないので「直した」ではなく chosen
+    r = env.patch(
+        f"/api/pages/{pid}/cells/{c['id']}", json={"action": "candidate", "candidate_index": 0}
+    )
+    picked = next(x for x in r.json()["cells"] if x["id"] == c["id"])
+    assert picked["edit_kind"] == "chosen" and picked["value"] == c["value"]
+    # 親の値を選べば candidate(直した)として数える
+    c2 = amount_choice[1]
+    r = env.patch(
+        f"/api/pages/{pid}/cells/{c2['id']}", json={"action": "candidate", "candidate_index": 1}
+    )
+    other = next(x for x in r.json()["cells"] if x["id"] == c2["id"])
+    assert other["edit_kind"] == "candidate" and other["value"] != c2["value"]
+    # 元に戻す(Esc)と、選び直しが必要になる
+    env.patch(f"/api/pages/{pid}/cells/{c['id']}", json={"action": "revert"})
+    again = env.get(f"/api/pages/{pid}").json()
+    assert c["id"] in again["summary"]["ambiguous"]
+
+
+def test_choosing_the_suggested_amount_does_not_count_as_a_correction(env):
+    confirm_pages(env, 7)
+    run_training(env, "suggest")
+    pid = recognize_one(env)
+    confirm_with(env, pid, {})
+    rep = env.get("/api/learning/report").json()
+    kinds = rep["edit_kinds"]
+    assert kinds.get("chosen", 0) > 0  # 選んだ(値は変わらない)
+    eff = rep["suggest_effect"]["suggest"]
+    # 選んだ金額は「直さずにそのまま確定した」要確認のセルに数える
+    assert eff["n_review_unchanged"] >= kinds["chosen"]
+
+
+def test_the_monitor_counts_misses_of_the_parent_on_suggestion_pages(env):
+    from yayoi_ocr.app import monitor
+
+    confirm_pages(env, 7)
+    run_training(env, "suggest")
+    con = env.app_.state.db
+    parent = gens.weights_for(con, env.dir_ / "models").generation_id
+    before = monitor.observed(con, parent)
+    pid = recognize_one(env)
+    cells = env.get(f"/api/pages/{pid}").json()["cells"]
+    confirm_with(env, pid, {})
+    rows = con.execute(
+        "SELECT parent_review, parent_value, resolved_value FROM cells WHERE page_id = ?", (pid,)
+    ).fetchall()
+    assert all(
+        r["parent_review"] is not None for r in rows
+    )  # 提案モードのページは、親の判定をセルに残す
+    unflagged_by_parent_but_different = [
+        r for r in rows if r["parent_review"] == 0 and r["parent_value"] is not None
+    ]
+    assert unflagged_by_parent_but_different  # 親が要確認にしなかったのに、提案モードの値と違うセル
+    # 提案モードで要確認になったので利用者は気づき、確定値は提案の値 = 親の値と違う → 親の見逃し
+    after = monitor.observed(con, parent)
+    assert after["k_total"] - before["k_total"] >= len(unflagged_by_parent_but_different)
+    assert any(c["review"] for c in cells)
+
+
+def test_the_suggest_mode_setting_turns_the_two_generation_recognition_off(env):
+    confirm_pages(env, 7)
+    run_training(env, "suggest")
+    assert env.get("/api/training").json()["suggest_mode"] is True
+    assert env.get("/api/learning").json()["suggest_mode"] is True
+    cur = env.get("/api/settings").json()["settings"]
+    assert env.put("/api/settings", json={**cur, "suggest_mode": False}).status_code == 200
+    assert env.get("/api/training").json()["suggest_mode"] is False
+    assert env.get("/api/learning").json()["suggest_mode"] is False
+    pid = recognize_one(env)
+    con = env.app_.state.db
+    assert (
+        con.execute("SELECT suggest_generation FROM pages WHERE id = ?", (pid,)).fetchone()[0]
+        is None
+    )
+    cells = env.get(f"/api/pages/{pid}").json()["cells"]
+    assert not any("suggest_disagreement" in c["reasons"] for c in cells)
+    # 世代そのものは残る(スイッチを戻せば、また使われる)
+    assert any(g["status"] == "suggest" for g in env.get("/api/generations").json()["generations"])
+    assert env.put("/api/settings", json={**cur, "suggest_mode": True}).status_code == 200
+    pid2 = recognize_one(env)
+    assert (
+        con.execute("SELECT suggest_generation FROM pages WHERE id = ?", (pid2,)).fetchone()[0]
+        is not None
+    )
+    assert cur["suggest_mode"] is True  # 既定はオン
+
+
 def test_a_later_run_promotes_the_suggestion_when_it_meets_every_criterion(env):
     confirm_pages(env, 7)
     sug = run_training(env, "suggest")["generation_id"]

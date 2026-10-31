@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .store import CellSpec, PageSpec
+from .suggest import R_AMOUNT_CHOICE
 
 MAX_CANDIDATES = 5
 
@@ -161,17 +162,21 @@ class FakeBackend:
             Path(payload.pagedata_path).parent.mkdir(parents=True, exist_ok=True)
             Path(payload.pagedata_path).write_bytes(b"fake")
         suggested = False
-        if (
-            payload.suggest_weights_dir
-        ):  # 提案モードの模擬: 親と値が違うセルを要確認にする(5 セルに 1 つ)
+        if payload.suggest_weights_dir:
+            # 提案モードの模擬: 親と値が違うセルを要確認にする(5 セルに 1 つ。金額は明示の選択が要る)。親の判定は 10 セルに 1 つだけ「要確認でない」
             from .suggest import R_DISAGREE
 
             suggested = True
             for i, c in enumerate(spec.cells):
+                c.parent_review = c.review
                 if i % 5 == 0 and c.kind != "blank":
+                    c.parent_review = i % 10 != 0
+                    c.parent_value = c.resolved_value + "9"  # 親の値(提案の値と違う)
                     c.review = True
-                    if R_DISAGREE not in c.reasons:
-                        c.reasons.append(R_DISAGREE)
+                    c.reasons.append(R_DISAGREE)
+                    if c.column == "amount":
+                        c.reasons.append(R_AMOUNT_CHOICE)
+                        c.candidates = [(c.resolved_value, 0.9), (c.parent_value, 0.8)]
         return PageOutcome(spec, last_year=8, seconds=time.time() - t, suggested=suggested)
 
     def close(self) -> None:
@@ -262,18 +267,34 @@ def _expansion(r, prev_row_with_date: int | None):
     return None
 
 
-def to_page_spec(result, layout) -> PageSpec:
-    """`PageResult`(認識)+ `LayoutResult`(切り出し画像)→ 保存用の `PageSpec`。"""
+def _shown(r) -> str:
+    """確認画面に入力済みで出す値(語彙が無い・語彙外の科目は、自由認識の文字列を初期値にする。要確認が付く)。"""
+    if r.column == "account" and r.kind == "text" and not r.value:
+        return r.text
+    return r.value
+
+
+def to_page_spec(result, layout, parent=None) -> PageSpec:
+    """`PageResult`(認識)+ `LayoutResult`(切り出し画像)→ 保存用の `PageSpec`。
+    `parent`: 提案モードのとき、親の世代の同じ順のセル(親の要確認の判定と、値が違うときの親の値を残す。親の見逃しの監視用)。"""
     cells: list[CellSpec] = []
     prev_date_row: int | None = None
-    for r in result.cells:
+    for i, r in enumerate(result.cells):
         crop = layout.crops[(r.row, r.col)]
-        value = r.value
-        if r.column == "account" and r.kind == "text" and not value:
-            value = (
-                r.text
-            )  # 語彙が無い(または語彙外)のとき: 自由認識の文字列を初期値にする(要確認が付く)
-        cands = [(v, float(p)) for v, p in r.candidates if v != value][:MAX_CANDIDATES]
+        value = _shown(r)
+        keep_shown = (
+            R_AMOUNT_CHOICE in r.reasons
+        )  # 金額の明示選択: 入力済みの値も候補に残す(選んで確定できるように)
+        cands = [(v, float(p)) for v, p in r.candidates if keep_shown or v != value][
+            :MAX_CANDIDATES
+        ]
+        parent_review: bool | None = None
+        parent_value: str | None = None
+        if parent is not None:
+            pc = parent[i]
+            parent_review = bool(pc.review)
+            if pc.kind != r.kind or _shown(pc) != value:
+                parent_value = _shown(pc)
         cells.append(
             CellSpec(
                 row=r.row,
@@ -287,6 +308,8 @@ def to_page_spec(result, layout) -> PageSpec:
                 candidates=cands,
                 review=bool(r.review),
                 crop=_png(crop.color),
+                parent_review=parent_review,
+                parent_value=parent_value,
             )
         )
         if r.column == "date" and r.kind != "blank" and r.value:
@@ -334,6 +357,8 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
         save_page_input(payload.pagedata_path, page_input, payload.prev_year)
     result = rec.recognize_page(page_input, make_ctx())
     suggested = False
+    parent_cells = None
+    last_year = result.last_year
     if payload.suggest_weights_dir:
         # 提案モード: 提案モードの世代でも推論し、入力済みの値はそちらにする。要確認 = 親 OR 提案 OR 値が違う(見逃しは親の部分集合)
         from . import suggest
@@ -345,17 +370,17 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
             False,
         )
         result_s = rec_s.recognize_page(page_input, make_ctx())
-        suggest.merge(result.cells, result_s.cells)
-        result, suggested = result_s, True
-    spec = to_page_spec(result, layout)
+        # 年の継承の元(last_year)は親の結果を使う(次のページの日付が、親だけで認識した場合と変わらないように)。
+        # 親のセルの判定と値は、親の見逃しの監視のためにセルに残す
+        result, last_year, parent_cells = suggest.combine(result, result_s)
+        suggested = True
+    spec = to_page_spec(result, layout, parent=parent_cells)
     spec.view_jpeg, spec.view_scale = view_jpeg(layout)
     spec.layout_info = overlay_info(layout)
     spec.approved = payload.corners is not None
     if result.title is not None and result.title.value:
         spec.title_recognized = result.title.value
-    return PageOutcome(
-        spec, last_year=result.last_year, seconds=time.time() - t, suggested=suggested
-    )
+    return PageOutcome(spec, last_year=last_year, seconds=time.time() - t, suggested=suggested)
 
 
 class RealBackend:

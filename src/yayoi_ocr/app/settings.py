@@ -66,6 +66,8 @@ class Settings(BaseModel):
     # 追加学習(Phase 4): 確定した新しい非空欄セルがこの件数たまったら、バックグラウンドで始める(止めることもできる。手動の「今すぐ学習する」は常に使える)
     auto_train: bool = True
     train_threshold_cells: int = Field(default=200, ge=50, le=5000)
+    # 提案モード(Phase 4): 提案モードの世代があるとき、認識で親と提案モードの世代の両方を使う(認識の時間が約 1.4 倍)。処理の遅い PC ではオフにできる
+    suggest_mode: bool = True
 
 
 def _encodable(s: str) -> bool:

@@ -10,8 +10,17 @@ import pytest
 from yayoi_ocr.app import suggest
 
 
-def cell(value="100", review=False, kind="text", reasons=None, candidates=None, conf=0.9):
+def cell(
+    value="100",
+    review=False,
+    kind="text",
+    reasons=None,
+    candidates=None,
+    conf=0.9,
+    column="description",
+):
     return SimpleNamespace(
+        column=column,
         kind=kind,
         value=value,
         review=review,
@@ -86,3 +95,43 @@ def test_only_safety_side_rejections_with_a_significantly_better_accuracy_become
         assert not suggest.eligible(reason, 2, 20)
     for reason in ("no_gain", "accuracy_dropped", "review_rate_increased", "eval_too_small"):
         assert not suggest.eligible(reason, 50, 0)  # 安全側以外の理由は対象外
+
+
+def test_a_minimum_number_of_differing_cells_is_required_even_if_the_p_value_is_small():
+    # 5 対 0 は p = 0.031 < 0.05 だが、標本が少なすぎる(偶然で提案モードの世代が出る)
+    assert suggest.sign_test_p(5, 0) < suggest.ALPHA
+    assert not suggest.eligible("miss_rate_worse", 5, 0)
+    assert not suggest.eligible("miss_rate_worse", suggest.MIN_DIFFER - 1, 0)
+    assert suggest.eligible("miss_rate_worse", suggest.MIN_DIFFER, 0)
+    assert suggest.eligible("amount_miss", 15, 5)  # 20 件ちょうど、p = 0.0207
+
+
+def test_amount_cells_that_differ_need_an_explicit_choice_with_both_values_as_candidates():
+    parent = [
+        cell("1000", column="amount"),
+        cell("2000", column="amount"),
+        cell("abc", column="description"),
+        cell("", kind="blank", column="amount"),
+    ]
+    sugg = [
+        cell("1500", column="amount", candidates=[("1700", 0.1)]),  # 違う
+        cell("2000", column="amount"),  # 同じ
+        cell("abd", column="description"),  # 金額以外は通常の不一致(明示の選択は要らない)
+        cell("300", column="amount", conf=0.7),  # 親は空欄
+    ]
+    suggest.merge(parent, sugg)
+    assert suggest.R_AMOUNT_CHOICE in sugg[0].reasons and suggest.R_DISAGREE in sugg[0].reasons
+    assert [v for v, _ in sugg[0].candidates] == ["1500", "1000", "1700"]  # [提案, 親, 他]
+    assert suggest.R_AMOUNT_CHOICE not in sugg[1].reasons and not sugg[1].review
+    assert suggest.R_AMOUNT_CHOICE not in sugg[2].reasons and sugg[2].review
+    assert [v for v, _ in sugg[2].candidates] == ["abc"]
+    assert suggest.R_AMOUNT_CHOICE in sugg[3].reasons  # 親が空欄で提案が値(種別も違う)
+    assert [v for v, _ in sugg[3].candidates] == ["300"]
+
+
+def test_combine_takes_the_screen_result_from_the_suggestion_but_last_year_from_the_parent():
+    parent = SimpleNamespace(cells=[cell("1")], last_year=7)
+    sugg = SimpleNamespace(cells=[cell("2")], last_year=8)
+    result, last_year, parent_cells = suggest.combine(parent, sugg)
+    assert result is sugg and last_year == 7 and parent_cells is parent.cells
+    assert sugg.cells[0].review and suggest.R_DISAGREE in sugg.cells[0].reasons

@@ -1,6 +1,13 @@
 export type Column = "date" | "account" | "description" | "amount";
 export type Kind = "blank" | "text" | "ditto" | "arrow" | "wave";
-export type EditKind = "none" | "unchanged" | "corrected" | "candidate" | "expanded_edit";
+/** chosen = 候補から、入力済みの値と同じものを明示的に選んだ(値は変わらない) */
+export type EditKind = "none" | "unchanged" | "corrected" | "candidate" | "chosen" | "expanded_edit";
+
+/** 候補の選択か入力で明示するまで確定できない理由(Enter だけでは通せない) */
+export const CHOICE_REASONS = ["dash_digit_ambiguity", "suggest_amount_disagreement"];
+export const needsChoice = (c: { reasons: string[] }): boolean => c.reasons.some((r) => CHOICE_REASONS.includes(r));
+/** 明示の選択が済んでいる編集の種類 */
+export const isExplicitKind = (k: EditKind): boolean => k === "candidate" || k === "corrected" || k === "chosen";
 
 export interface Expansion {
   kind: "ditto" | "year" | "arrow" | "wave";
@@ -135,6 +142,7 @@ export const REASON_LABEL: Record<string, string> = {
   row_inconsistent: "行の整合",
   ditto_source_uncertain: "〃の参照元が要確認",
   suggest_disagreement: "提案モード: 親の世代と値が違う",
+  suggest_amount_disagreement: "金額が親の世代と違う(選んでください)",
   ditto_source_changed: "参照元が変わった",
   year_unknown: "年が不明",
   month_decreased: "月が戻った",
@@ -210,6 +218,8 @@ export interface AppSettings {
   original_retention: "keep" | "delete_after_export";
   /** 追加学習: 確定した新しい非空欄セルがしきい値たまったら、バックグラウンドで自動で始める */
   auto_train: boolean;
+  /** 提案モードを使う(提案モードの世代があるとき、親と両方で認識する。認識の時間が約 1.4 倍) */
+  suggest_mode: boolean;
   train_threshold_cells: number;
 }
 export interface SettingsResponse {
@@ -370,6 +380,8 @@ export interface LearningData {
   active_id: number | null;
   notices: Notice[];
   suggest_effect: SuggestEffect;
+  /** 設定の「提案モードを使う」 */
+  suggest_mode: boolean;
   pages: PageMetric[];
   summary: {
     n_pages: number;
@@ -404,6 +416,7 @@ export interface TrainingRun {
 export interface TrainingData {
   available: boolean;
   auto_train: boolean;
+  suggest_mode: boolean;
   threshold: number;
   active_generation: { id: number; number: number };
   eligible_pages: number;

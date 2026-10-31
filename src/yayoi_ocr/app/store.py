@@ -16,14 +16,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .db import transaction
+from .suggest import R_AMOUNT_CHOICE
 from .validate import ERROR_LABELS, validate_value
 
 log = logging.getLogger(
     "yayoi_ocr.app"
 )  # ログには ID と例外の型名だけを出す(実データの値・ファイル名は出さない)
 
-EDIT_KINDS = ("none", "unchanged", "corrected", "candidate", "expanded_edit")
+# chosen = 候補から、入力済みの値と同じものを明示的に選んだ(値は変わらない。明示の選択が要るセルで使う)
+EDIT_KINDS = ("none", "unchanged", "corrected", "candidate", "chosen", "expanded_edit")
 R_AMBIGUITY = "dash_digit_ambiguity"
+# 候補の選択か入力で明示するまで確定できない理由(Enter だけでは通せない)
+CHOICE_REASONS = frozenset({R_AMBIGUITY, R_AMOUNT_CHOICE})
+EXPLICIT_KINDS = ("candidate", "corrected", "chosen")  # 明示の選択が済んでいる編集の種類
 # 要確認のセルを、値を直さずに Enter だけで通すときの最小の間隔(秒)。連打・キーリピートで要確認を飛ばせないようにする
 # (画面側も同じ時間セルを見ていないと Enter を無視する。これはクライアントが壊れていても守るための下限)
 MIN_LOOK_S = 0.25
@@ -54,6 +59,10 @@ class CellSpec:
     candidates: list[tuple[str, float]] = field(default_factory=list)
     review: bool = False
     crop: bytes | None = None
+    parent_review: bool | None = (
+        None  # 提案モード: 親の世代が要確認にしたか(提案モードでなければ None)
+    )
+    parent_value: str | None = None  # 提案モード: 親の世代の値(提案モードの値と違うときだけ)
 
 
 LAYOUT_REASON_CODES = (
@@ -91,11 +100,13 @@ def _insert_cells(
     for c in cells:
         cur = con.execute(
             "INSERT INTO cells (page_id, row, col, column_kind, kind, recognized_text, resolved_value,"
-            " expansion, reasons, candidates, review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " expansion, reasons, candidates, review, parent_review, parent_value)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 page_id, c.row, c.col, c.column, c.kind, c.recognized_text, c.resolved_value,
                 _j(c.expansion) if c.expansion else None, _j(c.reasons),
                 _j([[v, p] for v, p in c.candidates]), int(c.review),
+                None if c.parent_review is None else int(c.parent_review), c.parent_value,
             ),
         )  # fmt: skip
         if c.crop is not None:
@@ -419,13 +430,13 @@ def cell_image_path(con: sqlite3.Connection, images_dir: Path, page_id: int, cel
 def summarize(cells: list[dict]) -> dict:
     """確定できるか(通過していない要確認・検証エラー・未選択の 10 倍違い)。値の内容は含めない。"""
     nonblank_rows = {c["row"] for c in cells if c["value"].strip()}
-    review = [c for c in cells if c["review"] or R_AMBIGUITY in c["reasons"]]
+    review = [c for c in cells if c["review"] or CHOICE_REASONS & set(c["reasons"])]
     errors, ambiguous = [], []
     for c in cells:
         for code in validate_value(c["column"], c["value"], c["row"] in nonblank_rows):
             errors.append({"cell_id": c["id"], "row": c["row"], "col": c["col"], "code": code,
                            "label": ERROR_LABELS[code]})  # fmt: skip
-        if R_AMBIGUITY in c["reasons"] and c["edit_kind"] not in ("candidate", "corrected"):
+        if CHOICE_REASONS & set(c["reasons"]) and c["edit_kind"] not in EXPLICIT_KINDS:
             ambiguous.append(c["id"])
     unpassed = [c["id"] for c in review if not c["passed"]]
     return {
@@ -545,11 +556,11 @@ def patch_cell(
             _set_value(con, page_id, cell, value, "unchanged" if same else "corrected")
             _bump(con, page_id)
         elif action == "confirm":
-            # 末尾「-」の両仮説で 10 倍違う金額は、利用者が明示的に選ぶ(候補)か、値を入力するまで確認済みにしない
-            explicit = cell["edit_kind"] in ("candidate", "corrected") or (
+            # 末尾「-」の両仮説で 10 倍違う金額と、提案モードで親の世代と違う金額は、利用者が明示的に選ぶ(候補)か、値を入力するまで確認済みにしない
+            explicit = cell["edit_kind"] in EXPLICIT_KINDS or (
                 value is not None and value != cell["resolved_value"]
             )
-            if R_AMBIGUITY in json.loads(cell["reasons"]) and not explicit:
+            if CHOICE_REASONS & set(json.loads(cell["reasons"])) and not explicit:
                 raise StoreError(409, "ambiguity_unresolved")
             if value is None:
                 value = (
@@ -562,7 +573,7 @@ def patch_cell(
             _set_value(con, page_id, cell, value, kind)
             needs_look = (
                 bool(
-                    (cell["review"] or R_AMBIGUITY in json.loads(cell["reasons"]))
+                    (cell["review"] or CHOICE_REASONS & set(json.loads(cell["reasons"])))
                     and not cell["passed"]
                 )
                 and kind == "unchanged"
@@ -580,7 +591,15 @@ def patch_cell(
             cands = json.loads(cell["candidates"])
             if candidate_index is None or not 0 <= candidate_index < len(cands):
                 raise StoreError(422, "bad_candidate")
-            _set_value(con, page_id, cell, cands[candidate_index][0], "candidate")
+            picked = cands[candidate_index][0]
+            # 入力済みの値と同じ候補を選んだ(提案モードの金額など): 値は変わらないので「直した」には数えない
+            _set_value(
+                con,
+                page_id,
+                cell,
+                picked,
+                "chosen" if picked == cell["resolved_value"] else "candidate",
+            )
             con.execute("UPDATE cells SET passed = 1 WHERE id = ?", (cell_id,))
             _bump(con, page_id)
         elif action == "revert":

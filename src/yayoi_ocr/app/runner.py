@@ -116,7 +116,8 @@ class JobRunner:
                         "SELECT profile_id FROM jobs WHERE id = ?", (job_id,)
                     ).fetchone()[0]
                 )
-                ctx = learned.build_state(self.con, profile, settings.load(self.con))
+                cfg = settings.load(self.con)
+                ctx = learned.build_state(self.con, profile, cfg)
                 w = (
                     gens.weights_for(self.con, self.models_root, profile)
                     if self.models_root is not None
@@ -128,6 +129,9 @@ class JobRunner:
                     and w.dir is not None
                     and gens.recognized_count(self.con, w.generation_id) < WARM_PAGES
                 )
+                use_suggest = (
+                    cfg.suggest_mode and w is not None and w.suggest is not None
+                )  # 設定で提案モードをオフにすると、親の世代だけで認識する
             page_id = int(row["id"])
             try:
                 payload = PagePayload(
@@ -148,13 +152,11 @@ class JobRunner:
                     confidence=None if w is None or w.confidence is None else str(w.confidence),
                     confidence_warm=warm,
                     suggest_weights_dir=(
-                        None
-                        if w is None or w.suggest is None or w.suggest.dir is None
-                        else str(w.suggest.dir)
+                        None if not use_suggest or w.suggest.dir is None else str(w.suggest.dir)
                     ),
                     suggest_confidence=(
                         None
-                        if w is None or w.suggest is None or w.suggest.confidence is None
+                        if not use_suggest or w.suggest.confidence is None
                         else str(w.suggest.confidence)
                     ),
                     pagedata_path=(

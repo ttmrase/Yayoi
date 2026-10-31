@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from yayoi_ocr.app.store import CHOICE_REASONS
+
+
+def needs_choice(cell: dict) -> bool:
+    return bool(CHOICE_REASONS & set(cell["reasons"]))
+
 
 def look_and_confirm(client, page_id: int, cell_id: int, **extra):
     """画面と同じ順: 250 ms 以上見て「通過」(pass)→ Enter(confirm)。連打だと通過に数えない(store.MIN_LOOK_S)。"""
@@ -23,10 +29,10 @@ def confirm_with(client, page_id, values: dict[tuple[int, int], str]):
                 == 200
             )
     for c in client.get(f"/api/pages/{page_id}").json()["cells"]:
-        if c["review"] and "dash_digit_ambiguity" not in c["reasons"]:
+        if c["review"] and not needs_choice(c):
             look_and_confirm(client, page_id, c["id"])
     for c in client.get(f"/api/pages/{page_id}").json()["cells"]:
-        if "dash_digit_ambiguity" in c["reasons"]:
+        if needs_choice(c):
             client.patch(
                 f"/api/pages/{page_id}/cells/{c['id']}",
                 json={"action": "candidate", "candidate_index": 0},

@@ -225,7 +225,7 @@ def test_accuracy_report_has_statistics_only_and_never_cell_values(client):
         assert word not in text  # 値・設定の名前・タイトルは含まない
     assert rep["settings"] == {
         "n_payments": 1, "n_titles": 1, "taxpayer": "taxable", "tax_scheme": "general", "tax_method": "inclusive",
-        "auto_train": True, "train_threshold_cells": 200,
+        "auto_train": True, "suggest_mode": True, "train_threshold_cells": 200,
     }  # fmt: skip
 
     def strings(x):

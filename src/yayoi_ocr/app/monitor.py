@@ -27,13 +27,19 @@ R_RATE = "halted_miss_rate"
 
 
 def observed(con: sqlite3.Connection, gen_id: int) -> dict:
-    """この世代で認識して確定したページの、観測した見逃し(要確認でなかったのに直したセル)の列ごとの件数と、全セル数・ページ数。値は含まない。"""
+    """この世代で認識して確定したページの、観測した見逃し(要確認でなかったのに直したセル)の列ごとの件数と、全セル数・ページ数。値は含まない。
+    提案モードで認識したページは、親(この世代)の判定と値で数える(提案モードの値が違うセルは要確認になっているが、親の見逃しとして数える)。"""
     q = ",".join("?" * len(CORRECTED))
     cols: dict[str, int] = {}
     n_cells = 0
     for r in con.execute(
         "SELECT c.column_kind AS col, COUNT(*) AS n,"
-        f" SUM(c.kind != 'blank' AND c.review = 0 AND c.edit_kind IN ({q})) AS k"
+        " SUM(CASE WHEN c.parent_review IS NULL"
+        f"  THEN (c.kind != 'blank' AND c.review = 0 AND c.edit_kind IN ({q}))"
+        # 提案モードで認識したページ: 親の世代が要確認にしなかったのに、確定値が親の値と違うセルを、親の見逃しとして数える
+        # (利用者が実際に受ける見逃しは親の部分集合だが、親の世代の質の監視は、親の判定と値で行う)
+        "  ELSE (c.parent_review = 0 AND (c.kind != 'blank' OR COALESCE(c.parent_value, '') != '')"
+        "        AND COALESCE(c.confirmed_value, c.resolved_value) != COALESCE(c.parent_value, c.resolved_value)) END) AS k"
         " FROM cells c JOIN pages p ON p.id = c.page_id"
         " WHERE p.generation = ? AND p.status = 'confirmed' GROUP BY c.column_kind",
         (*CORRECTED, gen_id),

@@ -10,7 +10,7 @@ pytest.importorskip("cv2")
 
 from fastapi.testclient import TestClient
 
-from _app_helpers import look_and_confirm
+from _app_helpers import look_and_confirm, needs_choice
 from yayoi_ocr.app.security import allowed_hosts_for, new_token
 from yayoi_ocr.app.server import create_app
 from yayoi_ocr.app.validate import validate_value
@@ -43,7 +43,7 @@ def cells_of(client, page_id):
 
 def pass_all_review(client, page_id):
     for c in cells_of(client, page_id):
-        if c["review"] and "dash_digit_ambiguity" not in c["reasons"]:
+        if c["review"] and not needs_choice(c):
             r = look_and_confirm(client, page_id, c["id"])
             assert r.status_code == 200, r.text
 

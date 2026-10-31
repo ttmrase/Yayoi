@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cellImage } from "./pageApi";
-import { EXPANSION_LABEL, REASON_LABEL, type Cell } from "./types";
+import { EXPANSION_LABEL, REASON_LABEL, isExplicitKind, needsChoice, type Cell } from "./types";
 
 interface Props {
   pageId: number;
@@ -49,8 +49,8 @@ export function CellField(props: Props) {
   const { cell, value, focused, locked, passMs } = props;
   const url = useCellImage(props.pageId, cell);
   const [loaded, setLoaded] = useState(false);
-  const ambiguity = cell.reasons.includes("dash_digit_ambiguity");
-  const unresolved = ambiguity && cell.edit_kind !== "candidate" && cell.edit_kind !== "corrected";
+  const amountChoice = cell.reasons.includes("suggest_amount_disagreement");
+  const unresolved = needsChoice(cell) && !isExplicitKind(cell.edit_kind);
   const onPass = useRef(props.onPass);
   onPass.current = props.onPass;
 
@@ -108,7 +108,7 @@ export function CellField(props: Props) {
       </div>
       {unresolved && (
         <div className="warn" role="alert" data-testid="ambiguity">
-          値が 10 倍違うかもしれません。
+          {amountChoice ? "金額が、使用中の世代と提案モードで違います。どちらかを選ぶか、入力してください。" : "値が 10 倍違うかもしれません。"}
           {cell.candidates.map((c, i) => (
             <button key={c.value} type="button" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => props.onPickCandidate(i)}>
               Alt+{i + 1} {c.value}

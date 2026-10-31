@@ -40,7 +40,7 @@ async function putTrainSettings(request: APIRequestContext, autoTrain: boolean, 
   const cur = (await (await request.get("/api/settings", { headers: AUTH })).json()) as { settings: Record<string, unknown> };
   const res = await request.put("/api/settings", {
     headers: AUTH,
-    data: { ...cur.settings, wizard_done: true, auto_train: autoTrain, train_threshold_cells: threshold },
+    data: { ...cur.settings, wizard_done: true, auto_train: autoTrain, suggest_mode: true, train_threshold_cells: threshold },
   });
   expect(res.ok()).toBeTruthy();
 }
@@ -184,6 +184,16 @@ test("㉝ 提案モード: 安全基準には届かないが正解率が有意�
   await expect(detail).toContainText("符号検定");
   await expect(detail).toContainText("金額に「要確認でないのに誤り」");
   await expect(page.getByRole("button", { name: "この世代に戻す" })).toHaveCount(0); // 提案モードの世代は通常の世代としては戻せない
+  // 設定の「提案モードを使う」(既定オン)をオフにすると、いまは使っていない表示になり、オンに戻すとバナーが戻る
+  const sw = page.getByTestId("suggest-mode");
+  await expect(sw).toBeChecked();
+  await sw.click();
+  await expect(sw).not.toBeChecked();
+  await expect(page.getByTestId("suggest-off")).toContainText("オフ");
+  await expect(page.getByTestId("suggest-banner")).toHaveCount(0);
+  await sw.click();
+  await expect(sw).toBeChecked();
+  await expect(page.getByTestId("suggest-banner")).toBeVisible();
   // 新しい世代が採用されると、提案モードの世代は置き換わる(バナーが消える)
   await confirmPages(request, 1, 5100);
   await setTrainer(request, "improve");
@@ -195,4 +205,46 @@ test("㉝ 提案モード: 安全基準には届かないが正解率が有意�
   await tab(page, "学習").click();
   await expect(page.getByTestId("suggest-banner")).toHaveCount(0);
   await expect(page.getByTestId("generations")).toContainText("新しい世代に置き換えられました");
+});
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
+  "base64",
+);
+const cellInput = (page: Page, row: number, col: number) => page.getByTestId(`cell-${row}-${col}`).locator("input");
+
+test("㉞ 提案モードで認識したページでは、金額が親の世代と違うセルは、候補を選ぶか入力するまで Enter で通せない", async ({ page, request }) => {
+  await confirmPages(request, 7, 5200);
+  await setTrainer(request, "suggest");
+  await post(request, "/api/training/start");
+  await expect
+    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
+    .toBe("suggested");
+  await openApp(page);
+  const stamp = `提案${Date.now() % 100000}`;
+  await page.getByLabel("ジョブ名").fill(stamp);
+  await page.getByTestId("file-input").setInputFiles([{ name: "p.png", mimeType: "image/png", buffer: PNG }]);
+  const row = page.locator("tr", { hasText: stamp });
+  await expect(row.getByTestId(/job-status-/)).toContainText("確認待ち", { timeout: 20_000 });
+  const jobs = (await (await request.get("/api/jobs", { headers: AUTH })).json()) as { id: number; name: string }[];
+  const job = jobs.find((j) => j.name === stamp)!;
+  const detail = (await (await request.get(`/api/jobs/${job.id}`, { headers: AUTH })).json()) as { pages: { id: number }[] };
+  const cells = ((await (await request.get(`/api/pages/${detail.pages[0].id}`, { headers: AUTH })).json()) as {
+    cells: { row: number; col: number; reasons: string[]; value: string; candidates: { value: string }[] }[];
+  }).cells;
+  const amt = cells.find((c) => c.reasons.includes("suggest_amount_disagreement"))!;
+  expect(amt.candidates.length).toBeGreaterThanOrEqual(2);
+  await row.getByRole("button").click();
+  await expect(page.getByTestId("review")).toBeVisible();
+  await cellInput(page, amt.row, amt.col).click();
+  const warn = page.getByTestId(`cell-${amt.row}-${amt.col}`).getByTestId("ambiguity");
+  await expect(warn).toContainText("使用中の世代と提案モードで違います");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("notice")).toContainText("Alt+1(提案の値)");
+  await expect(cellInput(page, amt.row, amt.col)).toBeFocused(); // 進まない
+  await page.keyboard.press("Alt+Digit1"); // 提案の値(入力済みと同じ)を明示的に選ぶ
+  await expect(cellInput(page, amt.row, amt.col)).toHaveValue(amt.value);
+  await expect(warn).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(cellInput(page, amt.row, amt.col)).not.toBeFocused();
 });

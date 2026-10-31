@@ -48,7 +48,7 @@ export default function TrainingPanel({ onFinished }: { onFinished: () => void }
     await cancelTraining().catch(() => undefined);
     load();
   };
-  const changeSettings = async (patch: { auto_train?: boolean; train_threshold_cells?: number }) => {
+  const changeSettings = async (patch: { auto_train?: boolean; suggest_mode?: boolean; train_threshold_cells?: number }) => {
     setError(null);
     try {
       const cur = (await fetchSettings()).settings;
@@ -57,6 +57,7 @@ export default function TrainingPanel({ onFinished }: { onFinished: () => void }
       setError("設定を保存できませんでした");
     }
     load();
+    onFinished(); // 学習画面の表示(提案モードのバナーなど)も読み直す
   };
 
   if (!t) return error ? <p role="alert">{error}</p> : <p>読み込み中…</p>;
@@ -130,6 +131,21 @@ export default function TrainingPanel({ onFinished }: { onFinished: () => void }
           }}
         />{" "}
         件たまったら自動で学習を始める(50〜5000。認識の最中は始めません)
+      </p>
+      <p>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="suggest-mode"
+            checked={t.suggest_mode}
+            onChange={(e) => void changeSettings({ suggest_mode: e.target.checked })}
+          />{" "}
+          提案モードを使う
+        </label>
+        <span className="hint">
+          {" "}
+          (既定: オン。提案モードの世代があるとき、認識で使用中の世代と両方を使い、確認の手間を減らします。認識の時間が約 1.4 倍になるので、処理の遅い PC ではオフにできます。オフでも要確認の判定は変わりません)
+        </span>
       </p>
       {error && (
         <p role="alert" data-testid="training-error">
