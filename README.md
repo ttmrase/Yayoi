@@ -90,6 +90,27 @@ python scripts/sim_learning.py --data SEQ_DIR --classifier ... --dictionary --me
 
 出典・ライセンス・SHA256 は `docs/dependencies.md`、処理の流れと評価指標は `docs/recognition.md`。
 
+## 確認 UI(Phase 3)
+
+手書き帳票のファイル(PDF・画像)を取り込み、認識 → 利用者が確認 → 確定したページを CSV に出力する、ローカルのアプリです(完全オフライン。サーバは 127.0.0.1 だけで待ち受け)。
+設計は `docs/phase3_design.md`、計測は `docs/phase3_measurements.md`、Windows 実機で確かめる項目は `docs/windows_checklist.md`。
+
+```sh
+pip install -e ".[app,desktop]"                 # FastAPI + pywebview(Windows は WebView2)。認識を使うには [ml] と重み(上の fetch_models.py)も要る
+yayoi-ocr app                                   # ウィンドウが開く(データは %LOCALAPPDATA%\yayoi-ocr、開発では $YAYOI_PRIVATE_DATA/app)
+yayoi-ocr app --no-window --backend fake        # ブラウザで開く開発用(合成の認識結果。torch・重みが要らない)
+# フロントエンド(React + TypeScript + Vite)。ビルド成果物は src/yayoi_ocr/app/static に出力され、アプリに同梱される
+cd web && npm ci && npm run build && npm test   # 型検査・Vitest・ビルド
+PW_CHROMIUM=/path/to/chrome npm run e2e         # Playwright(Chromium)の E2E。サーバは自動で起動する(--dev --backend fake)
+```
+
+- 画面: ジョブ(取り込み・進捗)/ 確認(行モード・列モード・罫線の確認と補正)/ 設定 / 出力 / 学習。キー操作: Enter で次のセル(要確認のセルは 250 ms 見るまで進まない)、
+  Alt+1〜9 で候補、Ctrl+Z / Ctrl+Y、Ctrl+L(行 ↔ 列)、Ctrl+↓/↑(未通過の要確認へ)、Ctrl+Enter(ページの確定)。日本語入力の変換中の Enter では進まない。
+- 要確認のセルを飛ばしたまま、あるいは 10 倍違いの金額(末尾が「-」か数字か)を選ばないまま確定することはできない(画面・サーバの両方で検証)。
+- セキュリティ: 127.0.0.1 のランダムなポート + 起動ごとのトークン(URL のフラグメント)、Host/Origin の検証、CORS なし、CSP、外部リソースなし、
+  ファイルはアップロードで受け取る(サーバが任意のパスを読まない)。ログに実データの値を出さない。
+- 出力の形式は**暫定**(弥生のインポート形式は Phase 5 で確定)。
+
 ## テスト
 
 ```sh
@@ -106,13 +127,12 @@ src/yayoi_ocr/
   preprocess.py   前処理(照明補正・コントラスト正規化・ノイズ除去)
   layout/         表の位置合わせ・セル切り出し(見出し帯 → 外枠 → 罫線 1 本ずつ)
   recognize/      認識(セル種別・PARSeq・列ごとの解決・ページ単位の解決・確信度)
-  review.py       確認フェーズ(Phase 3)
-  learn.py        インクリメンタル学習(Phase 3)
-  export.py       CSV 出力(Phase 2)
-  storage.py      データ保存(Phase 3)
+  app/            確認 UI のサーバ(FastAPI: セキュリティ・DB・取り込み・認識の実行・出力・設定・学習状態)。static/ にフロントのビルド成果物
+  review.py / learn.py / export.py / storage.py   (旧スタブ。実装は app/ と recognize/learning.py にある)
   models.py       Document → Page → Row → Cell
   template.py     様式テンプレート(templates/form_v1.json)
   synth/          合成帳票の生成器(テスト・学習用)
 docs/             設計メモ・依存ライブラリの記録・正解データのスキーマ
-scripts/          check_no_private_data.py と git フック
+web/              確認 UI のフロントエンド(React + TypeScript + Vite、Vitest、Playwright)
+scripts/          check_no_private_data.py・評価・学習・方法検証のスクリプトと git フック
 ```
