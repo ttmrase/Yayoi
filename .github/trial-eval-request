@@ -3,6 +3,6 @@
 # 合格の基準(全体の見逃し率 <= 0.5%、金額 <= 0.1%、列ごとの値の正解率がコンテナの値から 3 ポイント以内)で判定する。
 #   mode: full  = 配布物の評価(build_run_id は、mode: full の trial-build の run)
 #   mode: mini  = 通し試験(mini の束。重みは使い物にならないので、合格にならない。記録だけ)
-mode: mini
-build_run_id: 41220750716
-request: 1
+mode: full
+build_run_id: 41221885298
+request: 2
