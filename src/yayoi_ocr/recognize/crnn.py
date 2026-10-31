@@ -47,7 +47,11 @@ def encode(text: str) -> list[int]:
 
 
 def _block(cin: int, cout: int, pool: tuple[int, int] | None) -> list[nn.Module]:
-    layers: list[nn.Module] = [nn.Conv2d(cin, cout, 3, padding=1, bias=False), nn.BatchNorm2d(cout), nn.ReLU(inplace=True)]
+    layers: list[nn.Module] = [
+        nn.Conv2d(cin, cout, 3, padding=1, bias=False),
+        nn.BatchNorm2d(cout),
+        nn.ReLU(inplace=True),
+    ]
     if pool is not None:
         layers.append(nn.MaxPool2d(pool))
     return layers
@@ -65,7 +69,14 @@ class CRNN(nn.Module):
             h //= p[0]
         self.cnn = nn.Sequential(*layers)
         self.feat_h = max(h, 1)
-        self.rnn = nn.LSTM(192 * self.feat_h, hidden, num_layers=2, bidirectional=True, batch_first=True, dropout=0.1)
+        self.rnn = nn.LSTM(
+            192 * self.feat_h,
+            hidden,
+            num_layers=2,
+            bidirectional=True,
+            batch_first=True,
+            dropout=0.1,
+        )
         self.fc = nn.Linear(2 * hidden, N_CLASSES)
 
     @staticmethod
@@ -81,7 +92,9 @@ class CRNN(nn.Module):
         return self.fc(y).log_softmax(-1).permute(1, 0, 2)
 
 
-def greedy_decode(logp: torch.Tensor, lengths: torch.Tensor, allowed: str | None = None) -> list[tuple[str, float]]:
+def greedy_decode(
+    logp: torch.Tensor, lengths: torch.Tensor, allowed: str | None = None
+) -> list[tuple[str, float]]:
     """貪欲な CTC 復号。`allowed` の文字だけを許す(それ以外の確率は無かったことにする)。返り値: (文字列, 経路の確率の目安)。"""
     lp = logp.clone()
     if allowed is not None:
