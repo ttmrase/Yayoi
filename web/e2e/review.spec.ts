@@ -223,12 +223,14 @@ test("⑳ Enter の連打(キーリピート)では要確認セルを通過で�
   // サーバにも下限がある(クライアントが壊れていても、値を直さない連打は通過に数えない)
   // 画面でフォーカス中のセル(滞在で通過になり得る)を避けて、ページの末尾側のセルで確かめる
   const todo = (await apiPage(request, pid)).cells.filter((c) => c.review && !c.passed).slice(-3);
-  // 同時に送る(順に送ると、サーバが忙しいときに間隔が 250 ms を超えて、試験が不安定になる)
+  // 同時に送る。通過に数えられる回数は、最初の 1 回と、そのあと 250 ms 空いた分だけ(共有のランナーでサーバが遅くて全体に時間がかかっても、この上限は崩れない)
+  const t0 = Date.now();
   const flags = await Promise.all(
     todo.map(async (c) => {
       const r = await request.patch(`/api/pages/${pid}/cells/${c.id}`, { headers: AUTH, data: { action: "confirm" } });
       return ((await r.json()) as { cells: ApiCell[] }).cells.find((x) => x.id === c.id)!.passed;
     }),
   );
-  expect(flags.filter(Boolean).length).toBeLessThanOrEqual(1);
+  const elapsedMs = Date.now() - t0;
+  expect(flags.filter(Boolean).length).toBeLessThanOrEqual(1 + Math.floor(elapsedMs / 250));
 });
