@@ -53,6 +53,11 @@ class AppPaths:
         return self.root / "pagedata"
 
     @property
+    def logs(self) -> Path:
+        """アプリのログ(logs/app.log。回転と保存期間は `logs.py`)。値は出さない。"""
+        return self.root / "logs"
+
+    @property
     def training(self) -> Path:
         """追加学習の作業ディレクトリ(training/<実行 ID>)。"""
         return self.root / "training"

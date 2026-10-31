@@ -34,7 +34,7 @@ yayoi-ocr = "yayoi_ocr.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-yayoi_ocr = ["templates/*.json", "app/static/**/*"]
+yayoi_ocr = ["templates/*.json", "app/static/**/*", "app/data/*.json", "app/data/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

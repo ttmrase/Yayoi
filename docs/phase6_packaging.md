@@ -33,3 +33,18 @@ Windows 10 の一部には無い。オフラインインストーラ(Evergreen �
 
 アプリは実行時にネットワークを使わない(127.0.0.1 のサーバだけ)。ファイアウォールの許可ダイアログが出ないこと、オフラインで動くことをチェックリスト A1・A2 で確かめる。
 開発専用の `--token` / `--port` / `--no-window` / `--backend fake` は `--dev` が無いと受け付けない(プロセス一覧からトークンが見えるため)。
+
+## ログ・ライセンス・手引き・アンインストール・バックアップ(試用版に入れたもの)
+
+- **ログ**(`app/logs.py`): `%LOCALAPPDATA%\yayoi-ocr\logs\app.log`。1 MiB で回転し、世代は 5 つまで(最大 約 6 MiB)、更新から 30 日を過ぎたものは起動時に消す。
+  **値(摘要・金額・ファイル名・設定の名前・パス)は出さない**: 呼び出し側は ID・件数・コード・例外の型名だけを出し、さらに `ValueFreeFormatter` が**例外のメッセージとトレースバックを書かない**(型名だけ)。
+  保証は `tests/test_logs.py`(一通りの操作の後で、入力した値・ファイル名・パスがログに無い)。標準エラー(最小化したコンソール)にも WARNING 以上を出す。
+- **ライセンス表示**(`app/licenses.py`・`scripts/gen_licenses.py`・画面の「ライセンス」): 主な利用物の出典・ライセンス・変更点(NDLOCR-Lite の CC BY 4.0、PARSeq の Apache-2.0、Python の PSF など)は固定で持ち、
+  依存ライブラリの一覧は**配布物の作成時に lock と wheel の METADATA から生成**する(バージョンは lock が正)。ライセンス本文(各 wheel の LICENSE・NOTICE、npm の LICENSE)は配布物の `licenses\` に入れる。
+- **利用者向けの手引き**(`docs/user_manual.md` → 配布物の `manual.html`・`user_manual.md`): 初期設定・取り込み・確認(キー操作)・出力と弥生への取り込み・学習画面の見方(提案モード・自動停止)・バックアップ・困ったとき・アンインストール。
+- **アンインストール**(`scripts/windows/uninstall.ps1`): 既定ではプログラムだけ削除してデータは残す。`-DeleteData` で、データも(「DELETE」の入力で確認して)削除する。削除はインストール先(名前が `yayoi-ocr`)の中の既知の名前だけ。
+  通常の削除はディスクの内容を完全には消さないので、BitLocker か `cipher /w` を案内する。
+- **バックアップ・復元**(`docs/backup_restore.md`)。**WebView2 のダウンロード**は pywebview の `ALLOW_DOWNLOADS` を True にしないと取り消されるため、`launcher.configure_webview` で有効にしている。
+- **Windows の CI**(`.github/workflows/ci.yml` の `trial-windows`): 束を作り、`setup.ps1` を Windows PowerShell 5.1 で実行し、開発用でないモードで起動して HTTP で通す(`scripts/trial_smoke.py`)。
+  この CI は、`setup.ps1` の重みのコピーの不具合(置き場が無いまま `Copy-Item src\*` するとファイルとして書かれる)を見つけた。
+- **GPU**: `docs/phase6_gpu_design.md`(試用は CPU 版。判断材料の整理だけ)。

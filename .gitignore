@@ -67,3 +67,5 @@ web/node_modules/
 web/test-results/
 web/playwright-report/
 src/yayoi_ocr/app/static/
+# 配布物の作成時に生成する依存ライブラリのライセンス一覧(scripts/gen_licenses.py)
+src/yayoi_ocr/app/data/licenses.json

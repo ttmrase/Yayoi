@@ -14,7 +14,7 @@ from pathlib import Path
 
 import uvicorn
 
-from . import backup
+from . import backup, logs
 from .paths import AppPaths, app_data_dir
 from .security import allowed_hosts_for, new_token
 from .server import close_app, create_app
@@ -45,6 +45,7 @@ class RunningServer:
                 paths.root
             )  # バックアップからの復元の準備ができていれば、DB を開く前に入れ替える
         self.paths = paths.ensure()
+        logs.setup(self.paths.logs)  # logs/app.log(回転・30 日で削除。値は出さない)
         self.sock = _bind_localhost(port)
         self.port = self.sock.getsockname()[1]
         self.token = token or new_token()
@@ -85,6 +86,7 @@ class RunningServer:
         self.thread.join(timeout=10)
         close_app(self.app)
         self.sock.close()
+        logs.teardown()
 
 
 def configure_webview(webview) -> None:

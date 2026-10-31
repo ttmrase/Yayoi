@@ -125,15 +125,21 @@ if ($LASTEXITCODE -ne 0) { Fail "依存の整合性の確認に失敗しまし�
 Step "4/6 認識の重みをコピー"
 $models = Join-Path $InstallDir "models"
 if (-not (Test-Path (Join-Path $here "models"))) { Fail "models\ がありません" }
-Copy-Item -Recurse -Force (Join-Path $here "models\*") $models -ErrorAction SilentlyContinue
-if (-not (Test-Path $models)) { New-Item -ItemType Directory -Force -Path $models | Out-Null; Copy-Item -Recurse -Force (Join-Path $here "models\*") $models }
-Write-Host "重み: $models"
+# 先に置き場(ディレクトリ)を作ってからコピーする。置き場が無いまま `Copy-Item src\*` すると、最初のファイルが「models」という名前の**ファイル**になり、
+# 残りは(エラーが出ないまま)コピーされない(CI の実地検証で見つかった)
+New-Item -ItemType Directory -Force -Path $models | Out-Null
+Copy-Item -Recurse -Force (Join-Path $here "models\*") $models
+if (-not $?) { Fail "認識の重みをコピーできませんでした" }
+$pt = @(Get-ChildItem -Path $models -Filter "*.pt" -File -ErrorAction SilentlyContinue)
+if ($pt.Count -lt 2 -or -not (Test-Path (Join-Path $models "NDLmoji.yaml") -PathType Leaf)) { Fail "認識の重みが揃っていません($models)" }
+Write-Host "重み: $models($($pt.Count) 個の .pt)"
 
 Step "5/6 起動用ファイルとショートカット"
 Copy-Item -Force (Join-Path $here "start-yayoi-ocr.cmd") (Join-Path $InstallDir "start-yayoi-ocr.cmd")
-foreach ($f in @("README.txt", "NOTICE.txt", "windows_setup.md", "windows_checklist.md", "yayoi_export.md")) {
+foreach ($f in @("README.txt", "NOTICE.txt", "windows_setup.md", "windows_checklist.md", "yayoi_export.md", "user_manual.md", "manual.html", "uninstall.ps1")) {
     if (Test-Path (Join-Path $here $f)) { Copy-Item -Force (Join-Path $here $f) $InstallDir }
 }
+if (Test-Path (Join-Path $here "licenses")) { Copy-Item -Recurse -Force (Join-Path $here "licenses") $InstallDir }  # ライセンス本文
 try {
     $desktop = [Environment]::GetFolderPath("Desktop")
     $sh = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "yayoi-ocr.lnk"))
@@ -150,7 +156,8 @@ $env:YAYOI_MODELS_DIR = $models
 if ($LASTEXITCODE -ne 0) { Fail "インポートの確認に失敗しました" }
 & $vpy -m yayoi_ocr.app --help | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "アプリの起動確認に失敗しました" }
-& $vpy -c "from yayoi_ocr.recognize import variants; print('使える重み:', variants.available_variants())"
+& $vpy -c "from yayoi_ocr.recognize import variants; v = variants.available_variants(); print('使える重み:', v); raise SystemExit(0 if v else 1)"
+if ($LASTEXITCODE -ne 0) { Fail "認識の重みを読めません($models)" }
 
 Write-Host ""
 Write-Host "完了しました。デスクトップの yayoi-ocr、または $InstallDir\start-yayoi-ocr.cmd から起動します。" -ForegroundColor Green

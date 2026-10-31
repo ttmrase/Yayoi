@@ -142,6 +142,27 @@ def fetch_python() -> Path:
     return mod.ensure()
 
 
+def build_licenses(stage: Path) -> None:
+    """依存ライブラリのライセンス一覧(`licenses.json`。アプリの画面が読む)と、ライセンス本文(`licenses/`)を、lock と wheel の METADATA から作る。"""
+    spec = importlib.util.spec_from_file_location("gen_licenses", ROOT / "scripts/gen_licenses.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    modules = ROOT / "web/node_modules"
+    data = mod.generate(
+        stage / "wheels",
+        ROOT / "src/yayoi_ocr/app/data/licenses.json",
+        texts=stage / "licenses",
+        npm_modules=modules if modules.is_dir() else None,
+    )
+    unknown = [c["name"] for c in data["components"] if c["license"] == mod.UNKNOWN]
+    print(f"ライセンス一覧: {len(data['components'])} 件(不明 {len(unknown)} 件)")
+    (stage / "licenses").mkdir(exist_ok=True)
+    shutil.copy2(
+        ROOT / "docs/LICENSE-parseq-Apache-2.0.txt",
+        stage / "licenses/LICENSE-parseq-Apache-2.0.txt",
+    )
+
+
 def read_member(archive: Path, name: str) -> bytes:
     with tarfile.open(archive, "r:gz") as t:
         f = t.extractfile(name)
@@ -232,8 +253,11 @@ def main() -> int:
         shutil.rmtree(stage)
     (stage / "wheels").mkdir(parents=True)
 
-    build_wheel(stage / "wheels")
     download_wheels(stage / "wheels")
+    build_licenses(
+        stage
+    )  # 依存の一覧とライセンス本文(アプリの wheel に入れる JSON は、wheel をビルドする前に作る)
+    build_wheel(stage / "wheels")
     if not args.no_python:
         archive = args.python_archive or fetch_python()
         shutil.copy2(archive, stage / "python-standalone.tar.gz")
@@ -257,6 +281,7 @@ def main() -> int:
         (ROOT / "scripts/windows/setup.ps1", "setup.ps1"),
         (ROOT / "scripts/windows/start-yayoi-ocr.cmd", "start-yayoi-ocr.cmd"),
         (ROOT / "scripts/windows/README.txt", "README.txt"),
+        (ROOT / "scripts/windows/uninstall.ps1", "uninstall.ps1"),
     ):
         write_crlf(src, stage / name)
     for src, name in (
@@ -264,8 +289,15 @@ def main() -> int:
         (ROOT / "docs/windows_checklist.md", "windows_checklist.md"),
         (ROOT / "docs/yayoi_export.md", "yayoi_export.md"),
         (ROOT / "docs/model_provenance.md", "model_provenance.md"),
+        (ROOT / "docs/user_manual.md", "user_manual.md"),
     ):
         shutil.copy2(src, stage / name)
+    spec = importlib.util.spec_from_file_location("build_manual", ROOT / "scripts/build_manual.py")
+    manual = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(manual)
+    (stage / "manual.html").write_text(
+        manual.convert((ROOT / "docs/user_manual.md").read_text(encoding="utf-8")), encoding="utf-8"
+    )  # 利用者向けの手引き(1 ファイルの HTML。ブラウザで開く)
     (stage / "NOTICE.txt").write_bytes(NOTICE.replace("\n", "\r\n").encode("utf-8-sig"))
 
     files = sorted(p for p in stage.rglob("*") if p.is_file())

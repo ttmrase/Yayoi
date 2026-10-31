@@ -3,6 +3,7 @@ import { ApiError, api, hasToken } from "./api";
 import ExportScreen from "./ExportScreen";
 import JobsScreen from "./JobsScreen";
 import LearningScreen from "./LearningScreen";
+import LicensesScreen from "./LicensesScreen";
 import NoticeBanner from "./NoticeBanner";
 import ReviewScreen from "./ReviewScreen";
 import { fetchSettings } from "./pageApi";
@@ -13,7 +14,7 @@ import type { AppSettings, TaxOptions } from "./types";
 type Health = { ok: boolean; version: string; schema: number; dev: boolean };
 type Profile = { id: number; name: string };
 
-const TABS = ["ジョブ", "確認", "設定", "出力", "学習"] as const;
+const TABS = ["ジョブ", "確認", "設定", "出力", "学習", "ライセンス"] as const;
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -113,6 +114,7 @@ export default function App() {
           />
         )}
         {wizard === null && tab === "学習" && <LearningScreen />}
+        {wizard === null && tab === "ライセンス" && <LicensesScreen />}
       </main>
     </div>
   );

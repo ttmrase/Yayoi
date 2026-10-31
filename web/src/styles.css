@@ -536,3 +536,7 @@ ul.plain {
   padding: 6px 12px;
   max-width: 70em;
 }
+
+.lic-main li { margin-bottom: 0.8rem; }
+.lic-table { border-collapse: collapse; width: 100%; max-width: 60rem; }
+.lic-table th, .lic-table td { text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #ccc; }

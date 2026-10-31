@@ -22,6 +22,7 @@ from . import (
     db,
     exports,
     gens,
+    licenses,
     metrics,
     monitor,
     retention,
@@ -344,6 +345,10 @@ def create_app(
         if path is None:
             return JSONResponse({"error": "download_expired"}, status_code=404)
         return FileResponse(path, media_type="application/zip", filename=path.name)
+
+    @app.get("/api/licenses")
+    def licenses_list() -> dict:
+        return licenses.load()
 
     @app.get("/api/notices")
     def notices_list(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
