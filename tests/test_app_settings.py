@@ -217,7 +217,7 @@ def test_accuracy_report_has_statistics_only_and_never_cell_values(client):
     r = client.get("/api/learning/report")
     assert r.status_code == 200 and "accuracy_report.json" in r.headers["content-disposition"]
     rep = r.json()
-    assert rep["schema"] == 1 and rep["summary"]["n_pages"] == 1 and rep["pages"][0]["order"] == 1
+    assert rep["schema"] == 2 and rep["summary"]["n_pages"] == 1 and rep["pages"][0]["order"] == 1
     assert set(rep["per_column"]) == {"date", "account", "description", "amount"}
     assert sum(rep["edit_kinds"].values()) == 24
     text = r.text
@@ -225,6 +225,7 @@ def test_accuracy_report_has_statistics_only_and_never_cell_values(client):
         assert word not in text  # 値・設定の名前・タイトルは含まない
     assert rep["settings"] == {
         "n_payments": 1, "n_titles": 1, "taxpayer": "taxable", "tax_scheme": "general", "tax_method": "inclusive",
+        "auto_train": True, "train_threshold_cells": 200,
     }  # fmt: skip
 
     def strings(x):
@@ -240,7 +241,12 @@ def test_accuracy_report_has_statistics_only_and_never_cell_values(client):
 
     from yayoi_ocr import __version__
 
-    allowed_values = {__version__, "taxable", "general", "inclusive"}
+    allowed_values = {__version__, "taxable", "general", "inclusive"} | {
+        # 世代・追加学習の状態コード(値ではない)
+        *("shipped", "trained", "active", "retired", "rejected", "discarded"),
+        *("auto", "manual", "running", "adopted", "deferred", "failed", "interrupted"),
+        *("keep", "tighten", "loosen", "unreachable", "cpu", "cuda", "mock"),
+    }
     reason_codes = set(rep["review_reasons"]) | set(rep["edit_kinds"])
     keys = set()
 

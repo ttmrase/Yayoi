@@ -15,8 +15,11 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, Protocol
+
+from ..recognize.grammar import norm_text
 
 MIN_EVAL_CELLS = 150  # 評価に使う非空欄セルの最小数
 MAX_REVIEW_INCREASE = 0.02  # 要確認率(非空欄セル中)の増加の上限
@@ -118,3 +121,73 @@ def split_pages(
         return None
     n_eval = max(min_eval, min(max_eval, math.ceil(n * fraction)))
     return ordered_page_ids[: n - n_eval], ordered_page_ids[n - n_eval :]
+
+
+class _Recognized(Protocol):
+    column: str
+    value: str
+    review: bool
+
+
+class _Confirmed(Protocol):
+    column: str
+    kind: str
+    resolved: str
+
+
+TEXT_COLUMNS = ("account", "description")  # 比較のとき NFKC・空白除去で正規化する列
+
+
+def same_value(column: str, recognized: str, confirmed: str) -> bool:
+    """認識した値が確定値と一致するか(科目・摘要は NFKC・空白を除いて比べる。日付・金額は文字列のまま)。"""
+    if column in TEXT_COLUMNS:
+        return norm_text(recognized) == norm_text(confirmed)
+    return recognized == confirmed
+
+
+def count_cells(
+    recognized: Sequence[_Recognized], confirmed: Sequence[_Confirmed]
+) -> dict[str, EvalCounts]:
+    """1 ページ(行優先の全セル)の認識結果を確定値と突き合わせた件数。列ごと + 全体("all")。"""
+    acc: dict[str, list[int]] = {}
+    for r, t in zip(recognized, confirmed, strict=True):
+        ok = same_value(t.column, r.value, t.resolved)
+        nonblank = t.kind != "blank"
+        row = [
+            1,
+            int(nonblank),
+            int(nonblank and ok),
+            int(nonblank and r.review),
+            int(not ok and not r.review),
+        ]
+        for key in (t.column, "all"):
+            a = acc.setdefault(key, [0] * 5)
+            for i, v in enumerate(row):
+                a[i] += v
+    return {k: EvalCounts(*v) for k, v in acc.items()}
+
+
+def add_counts(a: dict[str, EvalCounts], b: dict[str, EvalCounts]) -> dict[str, EvalCounts]:
+    """ページごとの件数を足し合わせる。"""
+    out = dict(a)
+    for k, c in b.items():
+        o = out.get(k)
+        out[k] = (
+            c
+            if o is None
+            else EvalCounts(
+                o.n_cells + c.n_cells,
+                o.n_text + c.n_text,
+                o.n_correct + c.n_correct,
+                o.n_review + c.n_review,
+                o.n_miss + c.n_miss,
+            )
+        )
+    return out
+
+
+def total_counts(pages: Iterable[dict[str, EvalCounts]]) -> dict[str, EvalCounts]:
+    out: dict[str, EvalCounts] = {}
+    for p in pages:
+        out = add_counts(out, p)
+    return out

@@ -10,7 +10,7 @@
   実サンプルの画像・切り出し・文字起こし・統計・しきい値は、これらの**学習・較正・しきい値の決定のどこにも入っていない**(コードの経路と検査は §4)。
 - ただし **重みとは別に**、レイアウト解析(罫線の検出などの古典的な画像処理)の定数と様式テンプレートの寸法は、実サンプルを見て決めた。重みファイルには含まれないが、
   「実サンプルを使った処理」として §5 に全部開示する。**また、開発の最初の約 11 分間だけ、実サンプルの文字起こしを private に作って削除した**(§5-c)。
-- 同梱するのは §2 の 8 ファイルだけ(許可リスト。`scripts/make_trial_bundle.py` が強制する)。評価用の画像・正解・学習データ・実験用の重みは入らない。
+- 同梱するのは §2 の 9 ファイルだけ(許可リスト。`scripts/make_trial_bundle.py` が強制する)。評価用の画像・正解・学習データ・実験用の重みは入らない。
 
 ## 2. 同梱するファイル
 
@@ -23,6 +23,7 @@
 | `models/confidence.json` | **較正**(基本の重み用の確信度モデル) | 合成 `calib500`・`calib_gen` を基本の重みで認識したダンプから `scripts/fit_confidence.py` で当てはめ | 合成 `calib500`(500 ページ)+ `calib_gen`(200 ページ) | `5204f5d5f8d379017cee41a5397129ae3090240128151b587b425804811e6fcb` |
 | `models/adapted/parseq-ndl-24x256-30-tiny.pt` | 基本の重み(上)を **合成データで追加学習**(L2-SP) | `scripts/train_adapt.py --train datasets/train datasets/train_gen --out-dir models/adapted --l2sp 0.1 --epochs 3 --threads 3` | 合成 `train`(500)+ `train_gen`(300) | `1f3f5b4861c54d01b71e24742cdbe8c4fee02ce2872b33ae45c303a862445d8a` |
 | `models/adapted/parseq-ndl-24x384-50-tiny.pt` | 同上(幅 384) | 同上 | 同上 | `ab6d17ac0f0970451d5d6c05a9f39e39ad88f88f90c23dcea181bfc41a0507a9` |
+| `models/rehearsal.npz` | **合成セルの束**(追加学習のリハーサル用。利用者のセルだけで学習すると他の書き手・一般語彙を忘れるので、学習のたびに利用者のセル数の 50% を混ぜる) | `scripts/build_rehearsal.py --data datasets/train datasets/train_gen --out models/rehearsal.npz`(seed 0。再実行でビット単位で同じものができる) | 合成 `train`(500)+ `train_gen`(300)から幅 256 の 1,200 件(日付・科目・金額)と幅 384 の 1,200 件(摘要)を無作為抽出。**学習の対象ではなく、配布する合成データ**(手書き風 OFL フォントで描いた架空の内容) | `1a5f5bd1191627b8e2045b8e32a4ce24607eea3f6d1353a456bb04f9db0d1e27` |
 | `models/adapted/confidence.json` | **較正**(適応済みの重み用) | `calib500`・`calib_gen` を適応済みの重みで認識したダンプから `fit_confidence.py` | 合成 `calib500` + `calib_gen` | `9741f7166825713e08105cb3b0605eb7cd39fd55bac185e36ea6be17716a6c4a` |
 
 - 基本の重みの再現: `fetch_models.py` で ONNX から作り直した `.pt` の SHA256 は上の値と**ビット単位で一致する**(`model_provenance.py --reconvert`)。
@@ -94,7 +95,7 @@ python3 -I scripts/fit_confidence.py --dump $E/calib500_adapted.jsonl $E/calib_g
 | C1 コードの経路 | 実サンプルの置き場(`samples_dir()` = `YAYOI_PRIVATE_DATA/samples`)を参照するのは、`src/yayoi_ocr/config.py` の定義と `tests/test_samples.py`(レイアウトの構造チェック。行数・列数と空欄の数だけで、内容は読まない)**だけ**。`scripts/` の学習・較正・評価の全スクリプトは参照しない。`tests/test_provenance_paths.py` が CI で、この状態が崩れたら失敗する | なし(許可リストのみ) |
 | C2 合成の署名 | 学習・較正に使った 1,600 ページの**全部**が、生成器のメタデータ(整数の `seed`・`writer_id`、OFL フォント名)を持つ | 署名のないページ 0 |
 | C3 分離 | 5 つのデータセットで seed・書き手 ID が重ならない | 重なりなし |
-| C4 バイト列の走査 | 同梱 8 ファイルのバイト列を、拒否リスト(実データの語 35 項目)で走査(UTF-8・UTF-16LE・cp932。テンソルの生データは 6 バイト以上の語のみ=短い語は偶然一致するため。NDL 配布の重みから変換しただけのファイルにも短い語は一致することを確認済み)。json・yaml は数値も検査 | 検出 0 |
+| C4 バイト列の走査 | 同梱 9 ファイルのバイト列を(`.npz` は展開して。画像は生データ扱い、`meta` の文字列は全部の語で)、拒否リスト(実データの語 35 項目)で走査(UTF-8・UTF-16LE・cp932。テンソルの生データは 6 バイト以上の語のみ=短い語は偶然一致するため。NDL 配布の重みから変換しただけのファイルにも短い語は一致することを確認済み)。json・yaml は数値も検査 | 検出 0 |
 | C5 変換の再現 | ONNX から基本の重みを作り直すと、同梱のものと SHA256 が一致する | 一致(2/2) |
 | C6 学習データの文字列 | 学習・較正データの正解の文字列(タイトル・raw・resolved)に拒否リストの語が含まれない。数値は金額が乱数なので偶然の一致があり得る → 新しい seed(学習に使っていない)で作った内容との**一致率を比較**した | 語 0 件。数値の一致率は学習・較正データ 0.0788/ページ、新しい seed の内容 0.0800/ページ(同程度 = 偶然) |
 
@@ -132,5 +133,5 @@ python scripts/model_provenance.py --reconvert    # C1〜C6 と SHA256 の一覧
 pytest tests/test_provenance_paths.py             # C1 だけ(CI でも走る)
 ```
 
-配布物(zip)を作るときは `scripts/make_trial_bundle.py` が許可リストの 8 ファイルだけを入れ、`MANIFEST.sha256` と zip の SHA256 を表示・記録する(`docs/windows_setup.md`)。
+配布物(zip)を作るときは `scripts/make_trial_bundle.py` が許可リストの 9 ファイルだけを入れ、`MANIFEST.sha256` と zip の SHA256 を表示・記録する(`docs/windows_setup.md`)。
 同梱前に、この文書の SHA256 の表と実ファイルが一致することを確認する(`model_provenance.py` の先頭の表)。

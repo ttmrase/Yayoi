@@ -178,7 +178,7 @@ test("㉔ 学習画面から精度レポート(統計のみ)を保存できる",
   const fs = await import("node:fs");
   const text = fs.readFileSync(path, "utf-8");
   const rep = JSON.parse(text) as Record<string, unknown>;
-  expect(rep.schema).toBe(1);
+  expect(rep.schema).toBe(2);
   // 帳票の内容(科目名・タイトル)は含まれない
   for (const w of [...ACCOUNTS, "旅費交通費"]) expect(text).not.toContain(w);
 });

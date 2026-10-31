@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 import threading
@@ -238,7 +239,9 @@ class TrainManager:
                     k: {str(a): n for a, n in h.items()} for k, h in state.amount_history.items()
                 },
             },
-            "device": "auto",
+            "device": os.environ.get(
+                "YAYOI_TRAIN_DEVICE", "auto"
+            ),  # auto / cpu / cuda(GPU が動かないときの退避)
             "threads": worker_threads(),
         }
 
@@ -350,7 +353,11 @@ class TrainManager:
             "n_train_pages": len(train_ids),
             "n_eval_pages": len(eval_ids),
             "train": result.get("train", {}),
-            "eval": {"parent": parent.to_dict(), "candidate": cand.to_dict()},
+            "eval": {
+                "parent": parent.to_dict(),
+                "candidate": cand.to_dict(),
+                "by_column": result["eval"].get("by_column", {}),
+            },
             "recalibration": result.get("recalibration", {}),
             "decision": {"outcome": decision.outcome, "reason": decision.reason},
             "created_at": time.time(),

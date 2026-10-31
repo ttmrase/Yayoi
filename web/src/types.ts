@@ -304,6 +304,8 @@ export interface GenerationEvalSide {
   review_rate: number;
   miss_rate: number;
   n_cells: number;
+  n_text: number;
+  n_miss: number;
 }
 export interface Generation {
   id: number;

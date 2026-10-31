@@ -97,6 +97,96 @@ def by_generation(rows: list[dict]) -> dict[int, dict]:
     return out
 
 
+_COUNT_KEYS = (
+    "n_cells",
+    "n_text",
+    "n_correct",
+    "n_review",
+    "n_miss",
+    "accuracy",
+    "review_rate",
+    "miss_rate",
+)
+
+
+def _counts(d: dict | None) -> dict | None:
+    return None if not d else {k: d[k] for k in _COUNT_KEYS if k in d}
+
+
+def generation_report(con: sqlite3.Connection, profile_id: int, rows: list[dict]) -> list[dict]:
+    """世代ごとの要約(件数・割合・コードだけ。ページ ID・値は含めない)。評価の値は採否のときの親と新世代の比較、実績はその世代で認識して確定したページでの値。"""
+    obs = by_generation(rows)
+    out = []
+    for g in con.execute(
+        "SELECT id, number, kind, status, reject_reason, meta FROM generations WHERE profile_id = ?"
+        " ORDER BY number, id",
+        (profile_id,),
+    ):
+        meta = json.loads(g["meta"]) if g["meta"] else {}
+        ev = meta.get("eval") or {}
+        recal = (meta.get("recalibration") or {}).get("columns", {})
+        train = meta.get("train") or {}
+        out.append(
+            {
+                "number": g["number"],
+                "kind": g["kind"],
+                "status": g["status"],
+                "reject_reason": g["reject_reason"],
+                "trigger": meta.get("trigger"),
+                "n_train_pages": meta.get("n_train_pages"),
+                "n_eval_pages": meta.get("n_eval_pages"),
+                "train": {
+                    k: train.get(k)
+                    for k in (
+                        "samples",
+                        "rehearsal",
+                        "epochs",
+                        "seconds_total",
+                        "device",
+                        "threads",
+                    )
+                },
+                "eval": {
+                    "parent": _counts(ev.get("parent")),
+                    "candidate": _counts(ev.get("candidate")),
+                    "by_column": {
+                        col: {side: _counts(v.get(side)) for side in ("parent", "candidate")}
+                        for col, v in (ev.get("by_column") or {}).items()
+                    },
+                },
+                "recalibration": {
+                    col: {
+                        k: c.get(k)
+                        for k in ("tau_before", "tau_after", "k_before", "k_after", "action")
+                    }
+                    for col, c in recal.items()
+                },
+                "observed": obs.get(g["id"]),
+            }
+        )
+    return out
+
+
+def training_report(con: sqlite3.Connection, profile_id: int, limit: int = 20) -> list[dict]:
+    return [
+        {
+            "trigger": r["trigger"],
+            "status": r["status"],
+            "reason": r["reason"],
+            "n_new_cells": r["n_new_cells"],
+            "n_train_pages": r["n_train_pages"],
+            "n_eval_pages": r["n_eval_pages"],
+            "seconds": None
+            if r["finished_at"] is None
+            else round(r["finished_at"] - r["started_at"], 1),
+        }
+        for r in con.execute(
+            "SELECT * FROM training_runs WHERE profile_id = ? ORDER BY id DESC LIMIT ?",
+            (profile_id, limit),
+        )
+    ]
+
+
 def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: float) -> dict:
     """試用版の精度レポート(**統計だけ**。セルの値・タイトル・科目・ファイル名・画像は一切含まない)。開発者に送って精度を見るためのもの。
     含めるのは、件数・割合・時間・理由コード(要確認の理由の種類ごとの件数)・設定の種類(件数と選択肢のコード)だけ。"""
@@ -133,19 +223,27 @@ def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: floa
         )
     }
     cfg = load_settings(con)
+    gen_number = {
+        g["id"]: g["number"]
+        for g in con.execute(
+            "SELECT id, number FROM generations WHERE profile_id = ?", (profile_id,)
+        )
+    }
     n_exp = con.execute("SELECT COUNT(*), COALESCE(SUM(n_rows), 0) FROM exports").fetchone()
     return {
-        "schema": 1,
+        "schema": 2,
         "app_version": app_version,
         "generated_at": now,
         "summary": summary(rows),
         "per_column": per_col,
         "review_reasons": dict(sorted(reasons.items())),
         "edit_kinds": edit_kinds,
+        "generations": generation_report(con, profile_id, rows),
+        "training_runs": training_report(con, profile_id),
         "pages": [
             {
                 "order": i + 1,
-                "generation": r["generation"],
+                "generation": gen_number.get(r["generation"]),
                 "n_text": r["n_text"],
                 "n_review": r["n_review"],
                 "n_corrected": r["n_corrected"],
@@ -160,6 +258,8 @@ def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: floa
             "taxpayer": cfg.taxpayer,
             "tax_scheme": cfg.tax_scheme,
             "tax_method": cfg.tax_method,
+            "auto_train": cfg.auto_train,
+            "train_threshold_cells": cfg.train_threshold_cells,
         },
         "exports": {"n_exports": int(n_exp[0]), "n_rows": int(n_exp[1])},
     }

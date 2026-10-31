@@ -29,13 +29,9 @@ from yayoi_ocr.config import assert_safe_output_dir
 from yayoi_ocr.recognize.celltype import CellTypeClassifier
 from yayoi_ocr.recognize.confidence import ConfidenceModel
 from yayoi_ocr.recognize.evaluate import dump_row, judge
-from yayoi_ocr.recognize.grammar import (
-    amount_surface_priors,
-    date_surfaces,
-    norm_text,
-    parse_date,
-)
+from yayoi_ocr.recognize.grammar import norm_text
 from yayoi_ocr.recognize.inputs import from_page_data
+from yayoi_ocr.recognize.labels import label_candidates
 from yayoi_ocr.recognize.page import JobContext, PageRecognizer
 from yayoi_ocr.recognize.parseq.engine import MODEL_FILES, ParseqEngine
 from yayoi_ocr.recognize.parseq.finetune import FinetuneConfig, finetune
@@ -44,18 +40,6 @@ from yayoi_ocr.synth.content import ACCOUNTS, TITLES
 from yayoi_ocr.synth.dataset import list_pages, load_page
 
 WIDTH_COLUMNS = {256: ("date", "account", "amount"), 384: ("description",)}
-
-
-def label_candidates(column: str, resolved: str) -> list[str]:
-    """確定値(CSV に出す値)と整合する、紙への書き方の集合。確認画面は書かれた通りの文字列を聞かないので、学習側で書き方を推定する。"""
-    if column == "date":
-        v = parse_date(resolved)
-        if v is None:
-            return [resolved]
-        return date_surfaces(v) + date_surfaces(v.with_year(None))  # 年が書かれていない場合も含む
-    if column == "amount" and resolved.isdigit():
-        return list(amount_surface_priors(int(resolved)))
-    return [norm_text(resolved)]
 
 
 def samples_from_pages(

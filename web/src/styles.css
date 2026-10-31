@@ -512,3 +512,13 @@ ul.plain {
   display: block;
   margin: 4px 0;
 }
+.trend .switch-line {
+  stroke: #8a94a6;
+  stroke-dasharray: 3 3;
+}
+.trend .series.miss {
+  stroke: #b3261e;
+}
+.legend .swatch.miss {
+  background: #b3261e;
+}

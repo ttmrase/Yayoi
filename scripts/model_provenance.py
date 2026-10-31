@@ -43,6 +43,7 @@ BASE_FILES = [
     "confidence.json",
     "parseq-ndl-24x256-30-tiny.pt",
     "parseq-ndl-24x384-50-tiny.pt",
+    "rehearsal.npz",  # 追加学習のリハーサル用の合成セルの束(合成データだけから作る)
 ]
 ADAPTED_FILES = [
     "confidence.json",
@@ -155,6 +156,18 @@ def _members(path: Path) -> list[tuple[str, bytes, bool]]:
             for n in z.namelist():
                 out.append((n, z.read(n), "/data/" in n))
         return out
+    if (
+        path.suffix == ".npz"
+    ):  # 圧縮されているので、中身を取り出してから走査する(画像は生データ扱い、meta は文字列)
+        out = []
+        with np.load(path, allow_pickle=False) as z:
+            for n in z.files:
+                a = z[n]
+                if n == "meta":
+                    out.append(("meta", str(a).encode("utf-8"), False))
+                else:
+                    out.append((n, a.tobytes(), True))
+        return out
     return [(path.name, path.read_bytes(), False)]
 
 
@@ -188,7 +201,7 @@ def scan_denylist(files: list[Path]) -> dict[str, list[str]]:
                         continue
                     if v in data or v in low:
                         hits.add(f"語 #{no}")
-            if f.suffix in {".json", ".yaml", ".yml"}:
+            if f.suffix in {".json", ".yaml", ".yml"} or (f.suffix == ".npz" and _name == "meta"):
                 hits.update(mod.check_denylist(data.decode("utf-8", errors="replace"), deny))
         key = f.name if f.parent.name != "adapted" else f"adapted/{f.name}"
         out[key] = sorted(hits)

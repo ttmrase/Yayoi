@@ -73,6 +73,12 @@ test("㉙ 今すぐ学習 → 採用 → 世代 1 が使用中 → 世代 0 に�
   const n = active.replace("世代 ", "");
   await expect(page.getByTestId(`generation-${n}`)).toContainText("使用中");
   await expect(page.getByTestId(`generation-${n}`)).toContainText("/"); // 学習 / 評価ページ
+  await expect(page.getByTestId(`generation-${n}-eval`)).toContainText("正解率"); // 採否の評価(親 → この世代)
+  // 新しい世代で認識して確定したページができると、推移のグラフに世代の切り替わりの印が出る
+  await confirmPages(request, 1, 1100);
+  await tab(page, "ジョブ").click();
+  await tab(page, "学習").click();
+  await expect(page.getByTestId("trend-switch").first()).toBeVisible();
   // ロールバック: 世代 0 に戻す → 世代 n に戻す
   await page.getByTestId("rollback-0").click();
   await expect(page.getByTestId("active-generation")).toHaveText("世代 0(出荷時)");
@@ -97,7 +103,8 @@ test("㉚ 悪化した世代は不採用(理由を表示)、使用中の世代�
   await expect(page.getByTestId("training-last")).toContainText("見逃し");
   await expect(page.getByTestId("active-generation")).toHaveText("世代 0(出荷時)");
   await expect(page.getByTestId("generations")).toContainText("不採用");
-  await expect(page.getByTestId("generations")).toContainText("miss_rate_worse");
+  await expect(page.getByTestId("generations")).toContainText("見逃し(誤りなのに要確認がつかないセル)が増えるため"); // 理由の文言
+  await expect(page.getByTestId("generations")).toContainText("正解率"); // 評価の値(親 → この世代)も残る
   // 失敗した学習は理由つきで表示する
   await setTrainer(request, "fail");
   await page.getByTestId("training-start").click();

@@ -343,3 +343,37 @@ def test_the_mock_run_record_and_meta_contain_no_cell_values(env):
     assert secret not in dump
     meta = (env.dir_ / "models" / "1" / "gen_0001" / "meta.json").read_text(encoding="utf-8")
     assert secret not in meta
+
+
+def test_accuracy_report_has_generation_and_training_statistics_only(env):
+    set_mock(env, "improve")
+    secret = "秘密の摘要テキスト"
+    pid = env.post(
+        "/api/dev/jobs",
+        json={
+            "pages": 1,
+            "seed": 11,
+            "fill_rows": 29,
+            "error_rate": 0,
+            "review_rate": 0,
+            "ambiguous_rows": [],
+        },
+    ).json()["pages"][0]["id"]
+    confirm_with(env, pid, {(0, 2): secret})
+    confirm_pages(env, 6, seed=60)
+    env.post("/api/training/start")
+    wait(env)
+    r = env.get("/api/learning/report")
+    rep = r.json()
+    assert rep["schema"] == 2
+    gens_ = {g["number"]: g for g in rep["generations"]}
+    assert set(gens_) == {0, 1} and gens_[1]["status"] == "active" and gens_[0]["kind"] == "shipped"
+    assert gens_[1]["eval"]["candidate"]["n_text"] > 0 and gens_[1]["n_train_pages"] == 5
+    assert "train_page_ids" not in json.dumps(rep)  # ページの ID は含めない
+    assert (
+        rep["training_runs"][0]["status"] == "adopted"
+        and rep["training_runs"][0]["trigger"] == "manual"
+    )
+    assert rep["settings"]["auto_train"] is False and rep["settings"]["train_threshold_cells"] == 50
+    assert all(p["generation"] in (0, 1) for p in rep["pages"])  # 世代の ID ではなく番号
+    assert secret not in r.text

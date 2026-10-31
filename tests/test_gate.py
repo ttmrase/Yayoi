@@ -86,3 +86,48 @@ def test_split_takes_the_newest_quarter_clamped_to_2_to_10_pages(n, n_eval):
 def test_split_needs_at_least_six_pages():
     assert split_pages(list(range(5))) is None
     assert split_pages([]) is None
+
+
+# ---- セルの突き合わせ(ページごとの件数)
+
+
+class R:
+    def __init__(self, column, value, review):
+        self.column, self.value, self.review = column, value, review
+
+
+class T:
+    def __init__(self, column, kind, resolved):
+        self.column, self.kind, self.resolved = column, kind, resolved
+
+
+def test_count_cells_by_column_and_total():
+    rec = [
+        R("date", "R7.11.19", False),  # 正解
+        R("account", "現 金", False),  # 正解(空白・全角半角を無視して比べる)
+        R("description", "旅費", True),  # 誤りだが要確認 → 見逃しではない
+        R("amount", "1200", False),  # 誤りで要確認なし → 見逃し
+        R("date", "", False),  # 空欄どうし → 正解だが非空欄ではない
+        R("amount", "5", False),  # 確定は空欄なのに値がある → 誤り・要確認なし = 見逃し
+    ]
+    conf = [
+        T("date", "text", "R7.11.19"),
+        T("account", "text", "現金"),
+        T("description", "text", "交通費"),
+        T("amount", "text", "1000"),
+        T("date", "blank", ""),
+        T("amount", "blank", ""),
+    ]
+    c = gate.count_cells(rec, conf)
+    a = c["all"]
+    assert (a.n_cells, a.n_text, a.n_correct, a.n_review, a.n_miss) == (6, 4, 2, 1, 2)
+    assert c["amount"].n_miss == 2 and c["description"].n_miss == 0
+    assert c["description"].n_review == 1 and c["account"].accuracy == 1.0
+    merged = gate.total_counts([c, c])
+    assert merged["all"].n_cells == 12 and merged["amount"].n_miss == 4
+
+
+def test_same_value_normalizes_only_text_columns():
+    assert gate.same_value("description", "ＡＢＣ　旅費", "ABC旅費")
+    assert not gate.same_value("amount", "1,000", "1000")
+    assert not gate.same_value("date", "R7.1.1", "R07.1.1")

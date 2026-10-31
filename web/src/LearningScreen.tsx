@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import TrainingPanel from "./TrainingPanel";
+import { reasonText } from "./trainingText";
 import { activateGeneration, fetchLearning, learningReport, resetGenerations } from "./pageApi";
 import type { Generation, LearningData, PageMetric } from "./types";
 
@@ -13,20 +14,32 @@ const STATUS_LABEL: Record<Generation["status"], string> = {
   discarded: "リセットで破棄",
 };
 
-/** 確定したページ順の折れ線(要確認率・直した割合)。外部ライブラリを使わない小さな SVG。 */
-function Trend({ pages }: { pages: PageMetric[] }) {
+/** 確定したページ順の折れ線(要確認率・直した割合・見逃しの観測)と、世代が切り替わった位置。外部ライブラリを使わない小さな SVG。 */
+function Trend({ pages, genNumber }: { pages: PageMetric[]; genNumber: Record<number, number> }) {
   const W = 560;
   const H = 160;
   const pad = 28;
   const x = (i: number) => pad + (pages.length <= 1 ? 0.5 : i / (pages.length - 1)) * (W - 2 * pad);
   const y = (v: number) => H - pad - v * (H - 2 * pad);
-  const line = (key: "review_rate" | "correction_rate") =>
+  const rate = (p: PageMetric, key: "review_rate" | "correction_rate" | "miss") =>
+    key === "miss" ? (p.n_text ? p.n_unflagged_corrected / p.n_text : null) : p[key];
+  const line = (key: "review_rate" | "correction_rate" | "miss") =>
     pages
-      .map((p, i) => (p[key] === null ? null : `${x(i).toFixed(1)},${y(p[key]!).toFixed(1)}`))
+      .map((p, i) => {
+        const v = rate(p, key);
+        return v === null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      })
       .filter((s): s is string => s !== null)
       .join(" ");
+  const switches = pages.flatMap((p, i) => (i > 0 && p.generation !== pages[i - 1].generation ? [{ i, gen: p.generation }] : []));
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="確定したページ順の、要確認率と直した割合の推移" className="trend" data-testid="trend">
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      role="img"
+      aria-label="確定したページ順の、要確認率・直した割合・見逃しの観測の推移。世代が切り替わった位置に印があります"
+      className="trend"
+      data-testid="trend"
+    >
       {[0, 0.5, 1].map((g) => (
         <g key={g}>
           <line x1={pad} x2={W - pad} y1={y(g)} y2={y(g)} className="grid-line" />
@@ -35,8 +48,20 @@ function Trend({ pages }: { pages: PageMetric[] }) {
           </text>
         </g>
       ))}
+      {switches.map(({ i, gen }) => {
+        const xs = (x(i) + x(i - 1)) / 2;
+        return (
+          <g key={`g${i}`} data-testid="trend-switch">
+            <line x1={xs} x2={xs} y1={pad - 8} y2={H - pad} className="switch-line" />
+            <text x={xs + 3} y={pad - 1} fontSize="10">
+              世代 {genNumber[gen] ?? "?"}
+            </text>
+          </g>
+        );
+      })}
       <polyline points={line("review_rate")} className="series review" fill="none" />
       <polyline points={line("correction_rate")} className="series corrected" fill="none" />
+      <polyline points={line("miss")} className="series miss" fill="none" />
       {pages.map((p, i) => (
         <text key={p.page_id} x={x(i)} y={H - 8} textAnchor="middle" fontSize="10">
           {i + 1}
@@ -131,9 +156,10 @@ export default function LearningScreen() {
         <p>確定したページがまだありません。</p>
       ) : (
         <>
-          <Trend pages={data.pages} />
+          <Trend pages={data.pages} genNumber={Object.fromEntries(data.generations.map((g) => [g.id, g.number]))} />
           <p className="legend">
-            <span className="swatch review" /> 要確認率 <span className="swatch corrected" /> 直した割合
+            <span className="swatch review" /> 要確認率 <span className="swatch corrected" /> 直した割合 <span className="swatch miss" /> 見逃しの観測
+            (要確認でないのに直したセル。実際の見逃しはこれ以上あり得ます)
           </p>
         </>
       )}
@@ -156,6 +182,7 @@ export default function LearningScreen() {
             <th>状態</th>
             <th>作成</th>
             <th>学習 / 評価ページ</th>
+            <th>採否の評価(評価用ページで 親 → この世代)</th>
             <th>認識したページ</th>
             <th>実績: ページ</th>
             <th>要確認率</th>
@@ -170,10 +197,23 @@ export default function LearningScreen() {
               <td>{g.kind === "shipped" ? "世代 0(出荷時)" : `世代 ${g.number}`}</td>
               <td>
                 {STATUS_LABEL[g.status]}
-                {g.reject_reason && <span className="hint"> ({g.reject_reason})</span>}
+                {g.reject_reason && <div className="hint">{reasonText(g.reject_reason)}</div>}
               </td>
               <td>{g.kind === "shipped" ? "—" : fmt(g.created_at)}</td>
               <td>{g.kind === "shipped" ? "—" : `${g.n_train_pages ?? "—"} / ${g.n_eval_pages ?? "—"}`}</td>
+              <td data-testid={`generation-${g.number}-eval`}>
+                {g.eval ? (
+                  <>
+                    正解率 {pct(g.eval.parent.accuracy)} → {pct(g.eval.candidate.accuracy)}
+                    <br />
+                    要確認 {pct(g.eval.parent.review_rate)} → {pct(g.eval.candidate.review_rate)}
+                    <br />
+                    見逃し {g.eval.parent.n_miss} → {g.eval.candidate.n_miss} 件 / {g.eval.candidate.n_cells} セル
+                  </>
+                ) : (
+                  "—"
+                )}
+              </td>
               <td>{g.n_recognized}</td>
               <td>{g.observed?.n_pages ?? 0}</td>
               <td>{pct(g.observed?.review_rate)}</td>

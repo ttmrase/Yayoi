@@ -44,6 +44,7 @@ MODEL_NAMES = [
     "NDLmoji.yaml",
     "celltype.pt",
     "confidence.json",
+    "rehearsal.npz",  # 追加学習のリハーサル用の合成セルの束(合成データだけ。出所は model_provenance.md)
     *MODEL_FILES.values(),
 ]
 ADAPTED_NAMES = ["confidence.json", *MODEL_FILES.values()]

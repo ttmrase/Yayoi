@@ -35,6 +35,7 @@ class FinetuneConfig:
     l2sp: float = 0.1  # 元の重みからのずれ(二乗和)への係数。0 で無効
     refine_mask: str = "onnx"
     seed: int = 0
+    device: str = "cpu"  # "cuda" なら GPU で学習する(終わったら重みは CPU に戻す)。GPU の経路は試用版では未検証
 
 
 def finetune(
@@ -55,6 +56,8 @@ def finetune(
         raise ValueError("学習できるサンプルがありません")
     rng = np.random.default_rng(cfg.seed)
     torch.manual_seed(cfg.seed)
+    dev = torch.device(cfg.device)
+    model.to(dev)
     model.refine_mask = cfg.refine_mask
     params = model.freeze_for_finetune(cfg.frozen_blocks)
     anchor = [p.detach().clone() for p in params]  # θ0(L2-SP の基準)
@@ -81,7 +84,7 @@ def finetune(
                 ]
             )
             ids = [[tok[ch] for ch in text] for _, text in items]
-            ar, ref, tgt = model.training_logits(torch.from_numpy(x), ids)
+            ar, ref, tgt = model.training_logits(torch.from_numpy(x).to(dev), ids)
             v = ar.shape[-1]
             l_ar = F.cross_entropy(ar.reshape(-1, v), tgt.reshape(-1), ignore_index=model.pad_id)
             l_ref = F.cross_entropy(ref.reshape(-1, v), tgt.reshape(-1), ignore_index=model.pad_id)
@@ -101,5 +104,5 @@ def finetune(
             f"[幅 {cfg.width}] epoch {ep + 1}/{cfg.epochs} ar {hist['ar']:.4f} refine {hist['refine']:.4f} "
             f"元の重みからのずれ(二乗和) {hist['drift_sq']:.3f} ({time.time() - t0:.0f}s)"
         )
-    model.eval()
+    model.to("cpu").eval()
     return hist

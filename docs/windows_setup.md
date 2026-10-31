@@ -60,7 +60,7 @@ python scripts/make_trial_bundle.py                    # Python(python-build-sta
 - **lock**(`requirements/trial-win-cp311.txt`): `uv pip compile --python-platform windows --python-version 3.11 --generate-hashes` の結果を、`pip download --require-hashes` で取り直して検証したもの。
   torch は PyPI の Windows 向け(**CPU 版**。wheel に CUDA の DLL がなく、`nvidia-*`/`cuda-*` の依存もないことを `make_trial_lock.py` が確認する)。wheel が無い純 Python の依存(proxy-tools)だけ、
   sdist のハッシュ(`…-sdist.txt`)を検証してから wheel にして同梱する。入力は `requirements/trial-win-cp311.in`。
-- **重み**: `YAYOI_PRIVATE_DATA/models`(または `--models`)から、**許可リストの 8 ファイルだけ**を入れる(評価用の画像・正解・学習データが紛れ込まない)。出所は `docs/model_provenance.md`。基本の重みが足りないと失敗する。
+- **重み**: `YAYOI_PRIVATE_DATA/models`(または `--models`)から、**許可リストの 9 ファイルだけ**を入れる(評価用の画像・正解・学習データが紛れ込まない)。出所は `docs/model_provenance.md`。基本の重みが足りないと失敗する。
 - **Python**: `requirements/python-standalone.txt` に固定した python-build-standalone(astral-sh)の Windows x86_64 / CPython 3.11(`install_only_stripped`)を、`scripts/fetch_python_standalone.py` が
   取得し、**リポジトリに固定した SHA256 と、同じリリースの公式 `SHA256SUMS` の両方**で検証して zip に入れる(`--no-python` で同梱しない)。`setup.ps1` は展開前にも固定値と照合する。
   ライセンス: CPython は PSF License(`licenses\python-LICENSE.txt`、`NOTICE.txt`)。静的に組み込まれた第三者ライブラリのライセンスは `docs/dependencies.md`。
