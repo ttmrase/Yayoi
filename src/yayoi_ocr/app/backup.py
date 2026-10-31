@@ -660,6 +660,22 @@ def cancel_pending(root: Path) -> None:
     shutil.rmtree(root / PENDING_DIR, ignore_errors=True)
 
 
+REPLACE_ATTEMPTS = 12  # ウイルス対策ソフトの走査・エクスプローラーなどが一時的にファイルを掴んでいると、Windows では名前の付け替えが PermissionError になる
+REPLACE_DELAY_S = 0.5
+
+
+def _replace(src: Path, dst: Path) -> None:
+    """名前の付け替え。Windows で一時的に掴まれている場合に備えて、数秒、間をおいて再試行する(それでも駄目なら例外)。"""
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_DELAY_S)
+
+
 def _movable(root: Path) -> list[str]:
     return [n for n in (*DB_FILES, *DATA_DIRS) if (root / n).exists()]
 
@@ -680,15 +696,19 @@ def apply_pending(root: Path) -> dict | None:
         undo.mkdir(parents=True)
         moved: list[str] = []
         placed: list[str] = []
+        current = ""  # 失敗したとき、どの名前の付け替えだったか(固定の名前だけ。値・パスは含まない)
         try:
             for n in _movable(root):
-                os.replace(root / n, undo / n)
+                current = n
+                _replace(root / n, undo / n)
                 moved.append(n)
-            os.replace(staging / DB_ENTRY, root / "app.sqlite3")
+            current = "app.sqlite3"
+            _replace(staging / DB_ENTRY, root / "app.sqlite3")
             placed.append("app.sqlite3")
             for t in DATA_DIRS:
                 if (staging / t).exists():
-                    os.replace(staging / t, root / t)
+                    current = t
+                    _replace(staging / t, root / t)
                     placed.append(t)
             result = {"ok": True, "summary": pend["summary"], "undo_bytes": dir_bytes(undo)}
         except BaseException as exc:
@@ -701,9 +721,9 @@ def apply_pending(root: Path) -> dict | None:
                         p.unlink()
             for n in moved:
                 with contextlib.suppress(OSError):
-                    os.replace(undo / n, root / n)
+                    _replace(undo / n, root / n)
             shutil.rmtree(undo, ignore_errors=True)
-            result = {"ok": False, "code": f"error_{type(exc).__name__}"}
+            result = {"ok": False, "code": f"error_{type(exc).__name__}", "entry": current}
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
     result["at"] = time.time()

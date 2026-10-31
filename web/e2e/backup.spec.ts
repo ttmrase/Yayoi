@@ -88,8 +88,11 @@ test("㊱ zip でないファイル・書き換えられた zip は、理由つ�
   const saved = testInfo.outputPath("good.zip");
   await download.saveAs(saved);
   const buf = readFileSync(saved);
-  // 中ほどの 1 バイトを反転(zip の CRC / ハッシュのどちらかで検出される)
-  buf[Math.floor(buf.length / 2)] ^= 0xff;
+  // 先頭のファイル(DB)の圧縮データの中の 1 バイトを反転する(zip の CRC / ハッシュで必ず検出される場所。
+  // ファイルの中ほどだと、日時などの無関係なバイトに当たることがある)
+  const nameLen = buf.readUInt16LE(26);
+  const extraLen = buf.readUInt16LE(28);
+  buf[30 + nameLen + extraLen + 8] ^= 0xff;
   const bad = testInfo.outputPath("tampered.zip");
   fs.writeFileSync(bad, buf);
   await page.getByTestId("backup-discard").click();

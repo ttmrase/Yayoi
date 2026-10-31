@@ -23,6 +23,7 @@ import contextlib
 import csv
 import io
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -172,6 +173,20 @@ def check_network(port: int) -> None:
     raise SmokeError(f"{host_ip}:{port} に繋がってしまいました(0.0.0.0 で待ち受けている)")
 
 
+def stop_tree(proc: subprocess.Popen) -> None:
+    """アプリを止める。Windows では venv の python.exe が実体を子プロセスとして起動するので、`terminate()` だけでは子が残る。木ごと止める。"""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
+        )
+    else:
+        proc.terminate()
+    try:
+        proc.wait(15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 def run(args: argparse.Namespace) -> None:
     work = Path(tempfile.mkdtemp(prefix="yayoi-smoke-"))
     data_dir = args.data_dir or work / "data"
@@ -309,11 +324,7 @@ def run(args: argparse.Namespace) -> None:
         c.json("POST", "/api/backup/cancel", {})
         log(f"OK バックアップ(作成 → 保存 → 検査。zip {len(blob)} バイト)")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        stop_tree(proc)
     # ---- 5. 出力に値が出ていない
     for p in (out_path, err_path):
         text = p.read_text(encoding="utf-8", errors="replace")

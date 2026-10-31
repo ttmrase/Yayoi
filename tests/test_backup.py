@@ -479,6 +479,50 @@ def test_a_failure_in_the_middle_of_the_swap_restores_the_old_data(tmp_path, mon
     assert not (root / backup.UNDO_DIR).exists()
 
 
+def test_a_transient_permission_error_is_retried_and_the_swap_succeeds(tmp_path, monkeypatch):
+    """Windows では、ウイルス対策ソフトなどが一時的にファイルを掴むと PermissionError になる。数回の再試行で通れば入れ替わる。"""
+    root = make_root(tmp_path, "old")
+    stage(root, "new")
+    monkeypatch.setattr(backup, "REPLACE_DELAY_S", 0.0)
+    real = os.replace
+    fails = {"left": 3}
+
+    def flaky(src, dst):
+        if fails["left"] > 0:
+            fails["left"] -= 1
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    res = backup.apply_pending(root)
+    monkeypatch.setattr(os, "replace", real)
+    assert res and res["ok"] is True and fails["left"] == 0
+    assert (root / "app.sqlite3").read_bytes() == b"db-new"
+
+
+def test_a_persistent_permission_error_rolls_back_and_names_the_entry(tmp_path, monkeypatch):
+    root = make_root(tmp_path, "old")
+    stage(root, "new")
+    monkeypatch.setattr(backup, "REPLACE_DELAY_S", 0.0)
+    monkeypatch.setattr(backup, "REPLACE_ATTEMPTS", 3)
+    real = os.replace
+
+    def locked(src, dst):
+        if str(src).endswith("pagedata"):  # pagedata だけがずっと掴まれている
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", locked)
+    res = backup.apply_pending(root)
+    monkeypatch.setattr(os, "replace", real)
+    assert res and res["ok"] is False and res["code"] == "error_PermissionError"
+    assert res["entry"] == "pagedata"  # 固定の名前だけ(値・パスは含まない)
+    assert (root / "app.sqlite3").read_bytes() == b"db-old"  # 元のまま
+    assert (root / "images" / "1" / "1.png").read_bytes() == b"old"
+    assert (root / "pagedata" / "1.npz").read_bytes() == b"old"
+    assert not (root / backup.UNDO_DIR).exists()
+
+
 def test_a_pending_mark_without_staged_data_is_ignored_and_cleared(tmp_path):
     root = make_root(tmp_path, "old")
     (root / backup.PENDING_DIR).mkdir()
