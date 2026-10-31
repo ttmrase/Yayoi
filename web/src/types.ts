@@ -48,6 +48,22 @@ export interface Summary {
   can_confirm: boolean;
 }
 
+/** 行ごとの借方税区分。source: default = 科目ごとの既定 / suggested = 摘要の記憶からの提案 / user = 利用者が選んだ */
+export interface RowTax {
+  row: number;
+  category: string;
+  source: "default" | "suggested" | "user";
+  default: string;
+}
+
+export interface PageTax {
+  /** 免税事業者は false(税区分は全て「対象外」なので行ごとの指定はない) */
+  enabled: boolean;
+  /** 選べる税区分(許可リスト) */
+  options: string[];
+  rows: RowTax[];
+}
+
 export interface Page {
   id: number;
   job_id: number;
@@ -68,6 +84,7 @@ export interface Page {
   revision: number;
   cells: Cell[];
   summary: Summary;
+  tax: PageTax;
   can_undo: boolean;
   can_redo: boolean;
 }
@@ -318,3 +335,26 @@ export const MISSING_LABEL: Record<string, string> = {
   debit_account_without_tax_category: "借方科目に既定の税区分が設定されていません(借方税区分は必須です。免税事業者なら不要)",
   tax_category_not_allowed: "既定の税区分に、今の課税方式・経理方式で選べないものがあります(設定画面で選び直してください)",
 };
+
+export const TAX_SOURCE_LABEL: Record<RowTax["source"], string> = { default: "既定", suggested: "提案", user: "指定" };
+export const TAX_SOURCE_HINT: Record<RowTax["source"], string> = {
+  default: "科目ごとの既定の税区分",
+  suggested: "同じ摘要で前に選んだ税区分を、記憶から提案しています(確定するとこの値で出力します。変えるには F2)",
+  user: "この行について、選んだ税区分",
+};
+
+// ---- 摘要ごとの税区分の記憶(設定画面で編集)
+export interface TaxMemoryEntry {
+  id: number;
+  description: string;
+  tax_category: string;
+  n_used: number;
+  updated_at: number;
+  /** 今の課税方式・経理方式で選べる税区分か(選べない記憶は提案されない) */
+  allowed: boolean;
+}
+export interface TaxMemory {
+  entries: TaxMemoryEntry[];
+  options: string[];
+  exempt: boolean;
+}

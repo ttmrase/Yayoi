@@ -21,6 +21,11 @@ describe("key bindings", () => {
     expect(classifyKey({ key: "Enter", shiftKey: true })).toEqual({ type: "prev" });
     expect(classifyKey({ key: "Enter", ctrlKey: true })).toEqual({ type: "confirmPage" });
   });
+  it("maps F2 to the row tax picker, but not with modifiers or during IME composition", () => {
+    expect(classifyKey({ key: "F2" })).toEqual({ type: "taxPicker" });
+    expect(classifyKey({ key: "F2", ctrlKey: true })).toEqual({ type: "none" });
+    expect(classifyKey({ key: "F2", isComposing: true })).toEqual({ type: "none" });
+  });
   it("maps Alt+digit to candidates by physical key", () => {
     expect(classifyKey({ key: "¡", code: "Digit1", altKey: true })).toEqual({ type: "candidate", index: 0 });
     expect(classifyKey({ key: "2", code: "Numpad2", altKey: true })).toEqual({ type: "candidate", index: 1 });

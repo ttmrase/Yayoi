@@ -11,6 +11,7 @@ import type {
   Page,
   Pt,
   SettingsResponse,
+  TaxMemory,
   Upload,
 } from "./types";
 
@@ -33,12 +34,21 @@ export const retryPage = (pageId: number) => api<{ ok: boolean }>(`/api/pages/${
 export const fetchSettings = () => api<SettingsResponse>("/api/settings");
 export const saveSettings = (s: AppSettings) => api<SettingsResponse>("/api/settings", json("PUT", s));
 export const putTitle = (pageId: number, title: string) => api<Page>(`/api/pages/${pageId}/title`, json("PUT", { title }));
+export const putRowTax = (pageId: number, row: number, category: string | null) =>
+  api<Page>(`/api/pages/${pageId}/rows/${row}/tax`, json("PUT", { tax_category: category }));
+export const fetchTaxMemory = () => api<TaxMemory>("/api/tax-memory");
+export const putTaxMemory = (id: number, category: string) =>
+  api<TaxMemory>(`/api/tax-memory/${id}`, json("PUT", { tax_category: category }));
+export const deleteTaxMemory = (id: number) => api<TaxMemory>(`/api/tax-memory/${id}`, { method: "DELETE" });
+export const clearTaxMemory = () => api<TaxMemory>("/api/tax-memory/clear", json("POST", {}));
 export const fetchExports = () => api<ExportList>("/api/exports");
 export const validateExport = (pageIds: number[], format: string) =>
   api<ExportValidation>("/api/exports/validate", json("POST", { page_ids: pageIds, format }));
 export const runExport = (pageIds: number[], format: string, acceptDuplicates: boolean) =>
   api<ExportRecord>("/api/exports", json("POST", { page_ids: pageIds, format, accept_duplicates: acceptDuplicates }));
 export const exportFile = (id: number, idx = 0) => apiBlobUrl(`/api/exports/${id}/files/${idx}`);
+export const exportSample = (format: string, date: string) =>
+  apiBlobUrl(`/api/exports/sample?format=${encodeURIComponent(format)}&date=${encodeURIComponent(date)}`);
 export const fetchLearning = () => api<LearningData>("/api/learning");
 export const learningReport = () => apiBlobUrl("/api/learning/report");
 export const resetLearning = () =>

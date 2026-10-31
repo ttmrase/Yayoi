@@ -331,6 +331,8 @@ def _cell_dict(r: sqlite3.Row) -> dict:
 
 
 def get_page(con: sqlite3.Connection, page_id: int) -> dict:
+    from . import rowtax  # 循環 import を避けるため関数の中で(rowtax は store を使う)
+
     p = con.execute("SELECT * FROM pages WHERE id = ?", (page_id,)).fetchone()
     if p is None:
         raise StoreError(404, "page_not_found")
@@ -352,6 +354,7 @@ def get_page(con: sqlite3.Connection, page_id: int) -> dict:
         "title_suggestion": _title_suggestion(con, p),
         "layout_reasons": json.loads(p["layout_reasons"]), "layout_approved": bool(p["layout_approved"]),
         "revision": p["revision"], "cells": cells, "summary": summarize(cells),
+        "tax": rowtax.page_rows(con, p),
         "can_undo": _has_edit(con, page_id, undone=False), "can_redo": _has_edit(con, page_id, undone=True),
     }  # fmt: skip
 
@@ -611,6 +614,8 @@ def redo(con: sqlite3.Connection, page_id: int) -> tuple[dict, int | None]:
 
 def confirm_page(con: sqlite3.Connection, page_id: int, review_seconds: float = 0.0) -> dict:
     """確定の条件をサーバでも検証する(UI の無効化に頼らない)。満たさなければ 409 とその理由。"""
+    from . import rowtax
+
     with transaction(con):
         p = _require_open(con, page_id)
         cells = [
@@ -626,6 +631,7 @@ def confirm_page(con: sqlite3.Connection, page_id: int, review_seconds: float = 
             "UPDATE cells SET confirmed_value = resolved_value, edit_kind = 'unchanged' WHERE page_id = ? AND confirmed_value IS NULL",
             (page_id,),
         )  # 要確認でない(確認済みでもない)セルは、そのまま確定する
+        rowtax.on_confirm(con, p)  # 行の税区分: 提案を固定し、選んだ行は摘要との対応を記憶する
         con.execute(
             "UPDATE pages SET status = 'confirmed', confirmed_at = ?, review_seconds = review_seconds + ?,"
             " revision = revision + 1 WHERE id = ?",
@@ -642,10 +648,13 @@ def confirm_page(con: sqlite3.Connection, page_id: int, review_seconds: float = 
 
 
 def reopen_page(con: sqlite3.Connection, page_id: int) -> dict:
+    from . import rowtax
+
     with transaction(con):
         p = con.execute("SELECT * FROM pages WHERE id = ?", (page_id,)).fetchone()
         if p is None:
             raise StoreError(404, "page_not_found")
+        rowtax.on_reopen(con, page_id)
         con.execute(
             "UPDATE pages SET status = 'reviewing', confirmed_at = NULL WHERE id = ?", (page_id,)
         )

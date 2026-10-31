@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "./api";
-import { exportFile, fetchExports, runExport, validateExport } from "./pageApi";
+import { exportFile, exportSample, fetchExports, runExport, validateExport } from "./pageApi";
 import { MISSING_LABEL, type ExportIssue, type ExportList, type ExportRecord, type ExportValidation } from "./types";
 
 interface Props {
@@ -32,6 +32,8 @@ export default function ExportScreen({ onOpenCell }: Props) {
   const [acceptDup, setAcceptDup] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sampleDate, setSampleDate] = useState(() => new Date().toLocaleDateString("sv-SE")); // yyyy-mm-dd
+  const [sampleMessage, setSampleMessage] = useState<string | null>(null);
 
   const load = useCallback(() => {
     void fetchExports().then((d) => {
@@ -94,6 +96,24 @@ export default function ExportScreen({ onOpenCell }: Props) {
     window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   };
 
+  const downloadSample = async () => {
+    setSampleMessage(null);
+    try {
+      const url = await exportSample(format, sampleDate.replace(/-/g, "/"));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sample_${format}.csv`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      setSampleMessage(
+        e instanceof ApiError && e.code === "settings_incomplete"
+          ? `設定が足りません: ${((e.body.missing_settings ?? []) as string[]).map((m) => MISSING_LABEL[m] ?? m).join("、")}`
+          : "サンプルを作れませんでした",
+      );
+    }
+  };
+
   const blocked = !result || result.errors.length > 0 || result.missing_settings.length > 0 || result.n_rows === 0;
   const needsConsent = (result?.duplicates.length ?? 0) > 0 && !acceptDup;
 
@@ -127,6 +147,26 @@ export default function ExportScreen({ onOpenCell }: Props) {
           </ul>
         </div>
       )}
+      <details className="sample" data-testid="sample-box">
+        <summary>弥生の取り込み試験用のサンプル(架空の 2 行)</summary>
+        <p className="hint">
+          設定の科目・補助科目・税区分のとおりに作った、架空の 2 行の CSV です(実帳票の値は使いません。出力の履歴には残りません)。
+          弥生の「テスト用の事業所データ」(または、弥生でバックアップを取ったあとのデータ)に取り込んで、マッチングリストが出ないことを確かめてください。
+          日付は、取り込み先の会計期間内にしてください。
+        </p>
+        <label>
+          日付{" "}
+          <input type="date" data-testid="sample-date" value={sampleDate} onChange={(e) => setSampleDate(e.target.value)} />
+        </label>{" "}
+        <button data-testid="download-sample" onClick={() => void downloadSample()}>
+          サンプルをダウンロード
+        </button>
+        {sampleMessage && (
+          <p className="ng" role="alert" data-testid="sample-message">
+            {sampleMessage}
+          </p>
+        )}
+      </details>
       <h2>出力するページ(確定済み)</h2>
       {data.candidates.length === 0 ? (
         <p>確定したページがありません。確認画面でページを確定してください。</p>

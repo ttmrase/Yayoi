@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..recognize.grammar import parse_amount, parse_date
+from . import rowtax
 from . import tax as taxmod
 from .db import transaction
 from .settings import Settings, readiness
@@ -45,6 +46,7 @@ ISSUE_LABELS = {
     "account_unmapped": "科目(支払手段)が設定にありません",
     "credit_account_missing": "支払手段に対する貸方科目が未設定です",
     "tax_category_missing": "借方科目の既定の税区分が未設定です(借方税区分は必須です)",
+    "tax_category_not_allowed": "行の税区分が、今の課税方式・経理方式で選べないものです(確認画面で選び直してください)",
     "no_rows": "出力できる行がありません",
     "description_too_long": "摘要が長すぎます(弥生で切り捨てられます)",
     "formula_like": "摘要の先頭が = + - @ TAB のため、Excel で開くと数式として扱われる可能性があります(弥生への取り込みには影響しません。CSV は Excel で開かず、弥生で直接取り込んでください)",
@@ -310,6 +312,7 @@ def collect(
     payments = {p.name: p for p in s.payments}
     titles = {t.name: t for t in s.titles}
     tax = {a.account: a.tax_category for a in s.default_tax}
+    allowed_tax = set(taxmod.categories(s.taxpayer, s.tax_scheme, s.tax_method))
     rows: list[Row] = []
     issues: list[dict] = []
 
@@ -347,6 +350,9 @@ def collect(
             (r["row"], r["col"]): r
             for r in con.execute("SELECT * FROM cells WHERE page_id = ?", (pid,))
         }
+        row_overrides = rowtax.overrides_for_export(
+            con, pid
+        )  # 行ごとの税区分(利用者が選んだもの・確定で固定した提案)
         n_before = len(issues)
         n_rows_before = len(rows)
         for r in sorted({k[0] for k in cells}):
@@ -387,9 +393,14 @@ def collect(
             desc = _value(vals["description"])
             if desc.startswith(FORMULA_PREFIX):  # 注意だけ(値は書き換えない)
                 issues.append(_issue("formula_like", pid, vals["description"]["id"], r))
-            row_tax = debit_tax
+            row_tax = row_overrides.get(r, debit_tax)
             if s.taxpayer == "exempt":
                 row_tax = taxmod.EXEMPT
+            elif (
+                row_tax not in allowed_tax
+            ):  # 課税方式・経理方式を変えたあとに、古い税区分が残っている
+                issues.append(_issue("tax_category_not_allowed", pid, vals["amount"]["id"], r))
+                continue
             tax_amt = (
                 taxmod.tax_amount(amt, row_tax, s.tax_rounding)
                 if s.taxpayer == "taxable" and s.tax_method == "exclusive"
@@ -416,6 +427,63 @@ def collect(
         if len(rows) == n_rows_before and len(issues) == n_before:
             issues.append(_issue("no_rows", pid))
     return rows, issues
+
+
+# ------------------------------------------------------------------ 取り込み試験用のサンプル(架空の 2 行)
+
+
+def sample_rows(s: Settings, date: str) -> list[Row]:
+    """弥生の取り込み試験用の架空の 2 行。設定(支払手段・タイトル・税区分)をそのまま使うので、弥生の登録名と一致しているかを確かめられる。
+    実帳票の値は使わない。履歴には記録しない(本番の出力ではない)。"""
+    missing = readiness(s)
+    if missing:
+        raise StoreError(409, "settings_incomplete", {"missing_settings": missing})
+    if not re.fullmatch(r"\d{4}/\d{2}/\d{2}", date):
+        raise StoreError(422, "bad_date")
+    title = s.titles[0]
+    debit_tax = (
+        taxmod.EXEMPT
+        if s.taxpayer == "exempt"
+        else next(a.tax_category for a in s.default_tax if a.account == title.debit_account)
+    )
+    pays = [s.payments[0], s.payments[min(1, len(s.payments) - 1)]]
+    rows = []
+    for i, pay in enumerate(pays):
+        amount = 1000 * (i + 1)
+        tax_amt = (
+            taxmod.tax_amount(amount, debit_tax, s.tax_rounding)
+            if s.taxpayer == "taxable" and s.tax_method == "exclusive"
+            else None
+        )
+        rows.append(
+            Row(
+                page_id=0,
+                row=i,
+                date=date,
+                debit=title.debit_account,
+                debit_sub=title.debit_sub,
+                debit_tax=debit_tax,
+                credit=pay.credit_account,
+                credit_sub=pay.credit_sub,
+                payment=pay.name,
+                description=f"取込試験(架空){i + 1}",
+                amount=amount,
+                tax_amount=tax_amt,
+            )
+        )
+    return rows
+
+
+def sample_file(con: sqlite3.Connection, fmt_id: str, date: str) -> OutFile:
+    """取り込み試験用の CSV(1 ファイル)。スマート取引取込は 1 つの支払手段にそろえる。"""
+    f = get_format(fmt_id)
+    s = load_settings(con)
+    rows = sample_rows(s, date)
+    if fmt_id == "smart_torihiki":
+        rows = [r for r in rows if r.payment == rows[0].payment] or rows[:1]
+    files = f.build(rows, s)
+    out = files[0]
+    return OutFile(f"sample_{fmt_id}.csv", out.data, out.n_rows, out.payment)
 
 
 # ------------------------------------------------------------------ 重複(行単位)

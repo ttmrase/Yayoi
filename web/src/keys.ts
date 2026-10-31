@@ -24,7 +24,8 @@ export type KeyAction =
   | { type: "confirmPage" } // Ctrl+Enter
   | { type: "toggleMode" } // Ctrl+L(行モード ↔ 列モード)
   | { type: "nextReview" } // Ctrl+↓(次の未通過の要確認セルへ)
-  | { type: "prevReview" }; // Ctrl+↑
+  | { type: "prevReview" } // Ctrl+↑
+  | { type: "taxPicker" }; // F2(この行の税区分を選ぶ)
 
 export interface KeyLike {
   key: string;
@@ -56,6 +57,7 @@ export function classifyKey(e: KeyLike): KeyAction {
   if (mod && !e.altKey && (e.key === "l" || e.key === "L")) return { type: "toggleMode" };
   if (mod && e.key === "ArrowDown") return { type: "nextReview" };
   if (mod && e.key === "ArrowUp") return { type: "prevReview" };
+  if (e.key === "F2" && !mod && !e.altKey && !e.shiftKey) return { type: "taxPicker" };
   if (e.key === "Escape") return { type: "revert" };
   if (e.key === "ArrowUp" && !mod) return { type: "up" };
   if (e.key === "ArrowDown" && !mod) return { type: "down" };

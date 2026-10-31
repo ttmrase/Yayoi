@@ -161,6 +161,26 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (export_id, idx)
     );
     """,
+    # --- v8: 行ごとの税区分(確認画面での上書き)と、摘要ごとの税区分の記憶
+    """
+    CREATE TABLE row_tax (            -- 行の借方税区分。行が無ければ科目ごとの既定(または記憶からの提案)
+        page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+        row INTEGER NOT NULL,
+        tax_category TEXT NOT NULL,
+        source TEXT NOT NULL,         -- 'user' = 利用者が選んだ / 'suggested' = 確定のときに記憶からの提案を固定した
+        PRIMARY KEY (page_id, row)
+    );
+    CREATE TABLE tax_memory (         -- 摘要(正規化したもの)→ 税区分。プロファイルごと。設定画面で編集・削除できる
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL REFERENCES profiles(id),
+        description_key TEXT NOT NULL,
+        display TEXT NOT NULL,        -- 画面に出す摘要(最後に使った表記)
+        tax_category TEXT NOT NULL,
+        n_used INTEGER NOT NULL DEFAULT 1,
+        updated_at REAL NOT NULL,
+        UNIQUE (profile_id, description_key)
+    );
+    """,
 ]
 
 

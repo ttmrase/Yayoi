@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, exports, metrics, retention, store, tax, uploads
+from . import db, exports, metrics, retention, rowtax, store, tax, uploads
 from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
@@ -65,6 +65,14 @@ class ExportBody(BaseModel):
 
 class TitleBody(BaseModel):
     title: str = Field(max_length=200)
+
+
+class RowTaxBody(BaseModel):
+    tax_category: str | None = Field(default=None, max_length=40)  # None = 行の指定を外す
+
+
+class MemoryBody(BaseModel):
+    tax_category: str = Field(max_length=40)
 
 
 class RecutBody(BaseModel):
@@ -208,6 +216,17 @@ def create_app(
             retention.delete_originals(con, lock, uploads_root, images, body.page_ids)
         return rec
 
+    @app.get("/api/exports/sample")
+    def exports_sample(format: str = exports.DEFAULT_FORMAT, date: str = "") -> Response:
+        """弥生の取り込み試験用の架空の 2 行(設定のとおりの科目・補助科目・税区分)。履歴には残さない。"""
+        with lock:
+            of = exports.sample_file(con, format, date or time.strftime("%Y/%m/%d"))
+        return Response(
+            of.data,
+            media_type="text/csv; charset=Shift_JIS",
+            headers={"Content-Disposition": f'attachment; filename="{of.name}"'},
+        )
+
     @app.get("/api/exports/{export_id}/file")
     def exports_file(export_id: int) -> FileResponse:
         return exports_file_n(export_id, 0)
@@ -274,6 +293,35 @@ def create_app(
     def page_title(page_id: int, body: TitleBody) -> dict:
         with lock:
             return store.set_title(con, page_id, body.title)
+
+    @app.put("/api/pages/{page_id}/rows/{row}/tax")
+    def row_tax(page_id: int, row: int, body: RowTaxBody) -> dict:
+        with lock:
+            rowtax.set_row_tax(con, page_id, row, body.tax_category)
+            return store.get_page(con, page_id)
+
+    @app.get("/api/tax-memory")
+    def tax_memory(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
+        with lock:
+            return rowtax.memory_list(con, profile_id)
+
+    @app.put("/api/tax-memory/{mem_id}")
+    def tax_memory_put(mem_id: int, body: MemoryBody) -> dict:
+        with lock:
+            rowtax.memory_update(con, mem_id, body.tax_category)
+            return rowtax.memory_list(con)
+
+    @app.delete("/api/tax-memory/{mem_id}")
+    def tax_memory_delete(mem_id: int) -> dict:
+        with lock:
+            rowtax.memory_delete(con, mem_id)
+            return rowtax.memory_list(con)
+
+    @app.post("/api/tax-memory/clear")
+    def tax_memory_clear() -> dict:
+        with lock:
+            rowtax.memory_clear(con)
+            return rowtax.memory_list(con)
 
     @app.post("/api/pages/{page_id}/retry")
     def page_retry(page_id: int) -> dict:

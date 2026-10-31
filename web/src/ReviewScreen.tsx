@@ -3,6 +3,7 @@ import { ApiError } from "./api";
 import { CellField } from "./CellField";
 import { classifyKey, isImeComposing } from "./keys";
 import LayoutPanel from "./LayoutPanel";
+import TaxPicker from "./TaxPicker";
 import { activeColumn, initialFocus, isNavigable, nextId, nextUnpassedId, prevId, verticalId, type Mode } from "./nav";
 import {
   approveLayout,
@@ -10,6 +11,7 @@ import {
   fetchJob,
   fetchPage,
   fetchSettings,
+  putRowTax,
   patchCell,
   putPosition,
   putTitle,
@@ -20,7 +22,7 @@ import {
   type CellAction,
 } from "./pageApi";
 import { normalizeInput } from "./text";
-import { COLUMN_LABEL, REASON_LABEL, type Cell, type Column, type Page, type Summary } from "./types";
+import { COLUMN_LABEL, REASON_LABEL, TAX_SOURCE_HINT, TAX_SOURCE_LABEL, type Cell, type Column, type Page, type Summary } from "./types";
 
 const PASS_MS = 250; // 要確認セルを「通過した」と数える最小の滞在時間(連打で飛ばせない)
 const DRAFT_MS = 300; // 入力中の自動保存のデバウンス
@@ -43,6 +45,8 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
   const [block, setBlock] = useState<Summary | null>(null); // 確定を拒否された理由
   const [reloadKey, setReloadKey] = useState(0); // 認識が終わった・再試行したときに読み直す
   const [titles, setTitles] = useState<string[]>([]); // 設定のタイトル(入力の候補)
+  const [taxRow, setTaxRow] = useState<number | null>(null); // 税区分の候補リストを開いている行
+  const taxReturn = useRef<number | null>(null); // 候補リストを閉じたあとに戻すセル
   const [noVocabulary, setNoVocabulary] = useState(false); // 支払手段が未登録 = 科目の語彙がない
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("row"); // 行モード(紙の並び)/ 列モード(1 列ずつ)
@@ -252,6 +256,19 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
     }
   }, [onExit, onOpenPage]);
 
+  const closeTaxPicker = () => {
+    setTaxRow(null);
+    const back = taxReturn.current;
+    taxReturn.current = null;
+    if (back !== null) window.setTimeout(() => inputs.current.get(back)?.focus(), 0);
+  };
+  const openTaxPicker = (row: number) => {
+    const p = pageRef.current;
+    if (!p || p.status === "confirmed") return;
+    taxReturn.current = focusId;
+    setTaxRow(row);
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, cell: Cell) => {
     const p = pageRef.current;
     if (!p) return;
@@ -333,6 +350,14 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
       case "confirmPage":
         void flushDraft(cell.id).then(() => tryConfirmPage());
         break;
+      case "taxPicker": {
+        if (!p.tax.enabled || p.status === "confirmed") break;
+        if (!p.tax.rows.some((r) => r.row === cell.row)) break; // 金額のない行には税区分がない
+        void flushDraft(cell.id);
+        taxReturn.current = cell.id;
+        setTaxRow(cell.row);
+        break;
+      }
       case "toggleMode":
         void flushDraft(cell.id);
         setMode((m) => (m === "row" ? "column" : "row")); // フォーカス中のセルはそのまま
@@ -536,7 +561,26 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
           })}
         </div>
       )}
-      <div className={`grid${mode === "column" ? " colmode" : ""}`} role="group" aria-label="確認するセル">
+      {taxRow !== null && page.tax.rows.find((r) => r.row === taxRow) && (
+        <TaxPicker
+          row={taxRow}
+          current={page.tax.rows.find((r) => r.row === taxRow)!}
+          options={page.tax.options}
+          onClose={closeTaxPicker}
+          onPick={(cat) => {
+            const row = taxRow;
+            closeTaxPicker();
+            void putRowTax(page.id, row, cat)
+              .then((pg) => setPage(pg))
+              .catch(() => setNotice("税区分を保存できませんでした"));
+          }}
+        />
+      )}
+      <div
+        className={`grid${mode === "column" ? " colmode" : ""}${page.tax.enabled && mode === "row" ? " with-tax" : ""}`}
+        role="group"
+        aria-label="確認するセル"
+      >
         {mode === "row" && (
           <div className="row head">
             <span className="rowno" />
@@ -545,6 +589,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
                 {COLUMN_LABEL[c]}
               </span>
             ))}
+            {page.tax.enabled && <span className="colhead tax">税区分(F2 で変更)</span>}
           </div>
         )}
         {(mode === "row" ? rows : columnCells.map((c) => [c.row, [c]] as const)).map(([r, cs]) => (
@@ -571,9 +616,30 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
                 passMs={PASS_MS}
               />
             ))}
+            {mode === "row" && page.tax.enabled && <TaxBadge rt={page.tax.rows.find((x) => x.row === r)} locked={confirmed} onOpen={() => openTaxPicker(r)} />}
           </div>
         ))}
       </div>
     </div>
+  );
+}
+
+/** 行の借方税区分の表示(科目ごとの既定 / 記憶からの提案 / 利用者の指定)。クリックでも F2 と同じ候補リストを開く。 */
+function TaxBadge({ rt, locked, onOpen }: { rt: Page["tax"]["rows"][number] | undefined; locked: boolean; onOpen: () => void }) {
+  if (!rt) return <span className="taxcell none" />;
+  return (
+    <span className={`taxcell ${rt.source}`} data-testid={`taxcell-${rt.row}`} data-source={rt.source}>
+      <button
+        type="button"
+        className="taxbtn"
+        disabled={locked}
+        title={TAX_SOURCE_HINT[rt.source]}
+        aria-label={`${rt.row + 1} 行目の税区分: ${rt.category || "未設定"}(${TAX_SOURCE_LABEL[rt.source]})。選ぶ`}
+        onClick={onOpen}
+      >
+        {rt.category || "未設定"}
+      </button>
+      <span className="taxsrc">{TAX_SOURCE_LABEL[rt.source]}</span>
+    </span>
   );
 }

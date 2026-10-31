@@ -361,3 +361,50 @@ def test_export_file_download_is_confined_to_the_exports_directory(client):
     con = client.app.state.db
     con.execute("UPDATE export_files SET name = '../../a.sqlite3' WHERE export_id = ?", (e["id"],))
     assert client.get(f"/api/exports/{e['id']}/file").status_code == 404
+
+
+def test_sample_csv_for_the_yayoi_import_trial_uses_the_settings_and_leaves_no_history(client):
+    """弥生の取り込み試験用の架空の 2 行。設定のとおりの科目・補助科目・税区分で、実帳票の値は使わない。履歴には残さない。"""
+    assert client.put("/api/settings", json=SETTINGS).status_code == 200
+    r = client.get("/api/exports/sample", params={"date": "2026/04/01"})
+    assert r.status_code == 200 and "sample_yayoi_import.csv" in r.headers["content-disposition"]
+    lines = [x for x in r.content.decode("cp932").split("\r\n") if x]
+    assert len(lines) == 2
+    first, second = (x.split(",") for x in lines)
+    assert len(first) == 25 and first[3] == "2026/04/01" and first[4] == "旅費交通費"
+    assert first[7] == "課対仕入込10%" and first[8] == "1000" and second[8] == "2000"
+    assert first[10] == ACCOUNTS[0] and second[10] == ACCOUNTS[1]  # 設定の支払手段の貸方科目
+    assert first[16].startswith("取込試験(架空)")
+    assert client.get("/api/exports").json()["exports"] == []  # 本番の出力ではない
+
+
+def test_sample_csv_for_smart_torihiki_is_one_payment(client):
+    assert client.put("/api/settings", json=SETTINGS).status_code == 200
+    r = client.get("/api/exports/sample", params={"format": "smart_torihiki", "date": "2026/04/01"})
+    lines = [x for x in r.content.decode("cp932").split("\r\n") if x]
+    assert (
+        r.status_code == 200
+        and len(lines) == 1
+        and lines[0].split(",")[:3]
+        == [
+            "2026/04/01",
+            "",
+            "1000",
+        ]
+    )
+
+
+def test_sample_csv_needs_complete_settings_and_a_valid_date(client):
+    r = client.get("/api/exports/sample")
+    assert r.status_code == 409 and "no_payments" in r.json()["missing_settings"]
+    assert client.put("/api/settings", json=SETTINGS).status_code == 200
+    assert client.get("/api/exports/sample", params={"date": "2026-04-01"}).status_code == 422
+    assert client.get("/api/exports/sample", params={"format": "x"}).status_code == 422
+
+
+def test_sample_csv_computes_the_inner_tax_for_exclusive_accounting(client):
+    s = {**EXCLUSIVE, "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入内10%"}]}
+    assert client.put("/api/settings", json=s).status_code == 200
+    r = client.get("/api/exports/sample", params={"date": "2026/04/01"})
+    first = r.content.decode("cp932").split("\r\n")[0].split(",")
+    assert first[7] == "課対仕入内10%" and first[9] == str(1000 * 10 // 110)

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "./api";
 import { fetchSettings, saveSettings } from "./pageApi";
+import TaxMemoryEditor from "./TaxMemoryEditor";
 import {
   MISSING_LABEL,
   ROUNDING_LABEL,
@@ -289,6 +290,7 @@ export default function SettingsScreen() {
         onChange={(rows) => edit({ default_tax: rows as unknown as AppSettings["default_tax"] })}
       />
       <TaxOptions options={taxOptions} />
+      <TaxMemoryEditor />
       <p>
         <button data-testid="settings-save" disabled={state === "clean" || state === "saved"} onClick={() => void save()}>
           保存
