@@ -137,7 +137,9 @@ test("㉓ 出力: 形式を選べ、注意(警告)は出力を止めない。ス
   await expect(page.getByTestId("export-message")).toContainText("出力しました");
   // 履歴に、支払手段ごとのファイルが並ぶ(ファイル名に支払手段)
   const history = page.getByTestId("export-history");
-  const downloads = history.getByRole("button", { name: "ダウンロード" });
+  // 履歴の再読み込みを待つ(先頭の行が今の出力 = スマート取引取込になってから、その行のボタンを押す)
+  await expect(history.locator("tbody tr").first()).toContainText("スマート取引取込");
+  const downloads = history.locator("tbody tr").first().getByRole("button", { name: "ダウンロード" });
   expect(await downloads.count()).toBeGreaterThanOrEqual(1);
   const [dl] = await Promise.all([page.waitForEvent("download"), downloads.first().click()]);
   // ファイル名(日本語の支払手段名を含む)はサーバの記録で確認する。Linux のヘッドレス Chromium は非 ASCII の保存名を落とすため、保存名自体は検査しない

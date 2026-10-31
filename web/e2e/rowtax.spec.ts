@@ -131,6 +131,8 @@ test("㉗ 行の税区分の候補リストと記憶の画面に、アクセシ�
 
 test("㉘ 出力画面から、弥生の取り込み試験用のサンプル(架空の 2 行)をダウンロードできる。設定が足りないと理由が出る", async ({ page, request }) => {
   await request.put("/api/settings", { headers: AUTH, data: { wizard_done: true } }); // 設定が空
+  const nExports = async () => ((await (await request.get("/api/exports", { headers: AUTH })).json()) as { exports: unknown[] }).exports.length;
+  const before = await nExports(); // 試験は同じサーバを共有するので、ほかの試験の出力履歴が残っている
   await openApp(page);
   await tab(page, "出力").click();
   await page.getByTestId("sample-box").locator("summary").click();
@@ -151,5 +153,5 @@ test("㉘ 出力画面から、弥生の取り込み試験用のサンプル(架
   expect(lines[0]).toContain("2026/04/01");
   expect(lines[0]).toContain(DEFAULT);
   // 本番の出力ではないので、履歴には残らない
-  await expect(page.getByText("まだ出力していません。")).toBeVisible();
+  expect(await nExports()).toBe(before);
 });
