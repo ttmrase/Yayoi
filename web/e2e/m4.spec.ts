@@ -38,7 +38,9 @@ async function openJobFromList(page: Page, jobId: number) {
   await expect(page.getByTestId("review")).toBeVisible();
 }
 
-test("⑮ 設定を画面で入力・保存でき、不正な入力は欄ごとに理由が出る", async ({ page }) => {
+test("⑮ 設定を画面で入力・保存でき、不正な入力は欄ごとに理由が出る", async ({ page, request }) => {
+  const reset = await request.put("/api/settings", { headers: AUTH, data: {} }); // 他の試験が入れた設定を空にする
+  expect(reset.ok()).toBeTruthy();
   await openApp(page);
   await tab(page, "設定").click();
   await expect(page.getByTestId("settings")).toBeVisible();

@@ -221,11 +221,12 @@ test("⑳ Enter の連打(キーリピート)では要確認セルを通過で�
   await expect(page.getByTestId("confirm-page")).toBeDisabled();
   // サーバにも下限がある(クライアントが壊れていても、値を直さない連打は通過に数えない)
   const todo = (await apiPage(request, pid)).cells.filter((c) => c.review && !c.passed).slice(0, 3);
-  const flags: boolean[] = [];
-  for (const c of todo) {
-    const r = await request.patch(`/api/pages/${pid}/cells/${c.id}`, { headers: AUTH, data: { action: "confirm" } });
-    const cell = ((await r.json()) as { cells: ApiCell[] }).cells.find((x) => x.id === c.id)!;
-    flags.push(cell.passed);
-  }
+  // 同時に送る(順に送ると、サーバが忙しいときに間隔が 250 ms を超えて、試験が不安定になる)
+  const flags = await Promise.all(
+    todo.map(async (c) => {
+      const r = await request.patch(`/api/pages/${pid}/cells/${c.id}`, { headers: AUTH, data: { action: "confirm" } });
+      return ((await r.json()) as { cells: ApiCell[] }).cells.find((x) => x.id === c.id)!.passed;
+    }),
+  );
   expect(flags.filter(Boolean).length).toBeLessThanOrEqual(1);
 });

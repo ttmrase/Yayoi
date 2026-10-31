@@ -527,7 +527,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
           })}
         </div>
       )}
-      <div className={`grid${mode === "column" ? " colmode" : ""}`} role="grid" aria-label="確認するセル">
+      <div className={`grid${mode === "column" ? " colmode" : ""}`} role="group" aria-label="確認するセル">
         {mode === "row" && (
           <div className="row head">
             <span className="rowno" />

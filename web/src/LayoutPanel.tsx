@@ -117,8 +117,8 @@ export default function LayoutPanel({ pageId, onClose, onApprove, onRecut }: Pro
         data-testid="layout-svg"
         viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
         className="layout-svg"
-        role="img"
-        aria-label="元画像に罫線を重ねた表示"
+        role="group"
+        aria-label="元画像に罫線を重ねた表示。表の 4 隅の丸を動かせます"
         onPointerMove={(e) => dragging !== null && move(dragging, toSvg(e))}
         onPointerUp={() => setDragging(null)}
         onPointerCancel={() => setDragging(null)}

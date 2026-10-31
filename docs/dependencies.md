@@ -112,7 +112,7 @@ SHA256 を検証して、`$YAYOI_PRIVATE_DATA/models/` に置く。ONNX から P
 
 アプリに入る(本番のバンドル): react 18.3.1(MIT)、react-dom 18.3.1(MIT)、scheduler 0.23.2(MIT)、loose-envify 1.4.0(MIT)、js-tokens 4.0.0(MIT)。
 ビルド・テストだけに使う(同梱しない): vite 5.4.11(MIT)、@vitejs/plugin-react 4.3.3(MIT)、typescript 5.6.3(Apache-2.0)、vitest 2.1.5(MIT)、
-jsdom 25.0.1(MIT)、@playwright/test 1.49.0(Apache-2.0)、@types/react・@types/react-dom(MIT)。ロックファイル `web/package-lock.json` で固定する(`npm ci`)。
+jsdom 25.0.1(MIT)、@playwright/test 1.49.0(Apache-2.0)、@axe-core/playwright 4.10.1 と axe-core 4.10.3(アクセシビリティ検査。MPL-2.0。テスト専用で同梱しない)、@types/react・@types/react-dom(MIT)。ロックファイル `web/package-lock.json` で固定する(`npm ci`)。
 
 - **外部リソースを読み込まない**: CDN・Web フォント・外部スクリプトは使わない。フォントは OS のシステムフォント(`Yu Gothic UI` など)を名前で指定するだけ。
   `tests/test_app_static.py` がビルド成果物に外部 URL が無いことを(名前空間の識別子と React のエラー文言を除いて)検査し、Playwright の E2E が実行時の通信先を検査する。
