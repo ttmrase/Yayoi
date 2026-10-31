@@ -17,10 +17,11 @@ docs/release/trial-v0.1.0.{json,md} をコミット   ─▶ (公開の内容が
                                                   pre-release を作成 → アセットをダウンロードし直して SHA256 を照合 → 一致しなければ Release とタグを削除して失敗
 ```
 
-> **重要: full のビルドを開始した時点で、実質的な公開が始まる。** public リポジトリの Actions の artifact は、**GitHub のアカウントがあれば誰でもダウンロードできる**
-> (「ログインした人だけ」ではなく、アカウントがあれば誰でも)。full の artifact(約 400 MB。適応済みの重みを含む)は、ビルドが終わった時点で、
-> ユーザーの最終のクリック(trial-publish)より前に、取得できる状態になる。ユーザーが望めば、Actions の画面から artifact を削除できる。
-> そのため、**full のビルドは、director の指示があるまで実行しない**(mini は、重みが使い物にならず、実質の公開にならない)。
+> **注意: public リポジトリの Actions の artifact は、GitHub のアカウントがあれば誰でもダウンロードできる**(「ログインした人だけ」ではなく、アカウントがあれば誰でも)。
+> ビルドの途中の artifact(合成データ・途中の重み)は、その段階が終わった時点で、full の最終の artifact(約 400 MB。適応済みの重みを含む)は、ビルドが終わった時点で、
+> ユーザーの最終のクリック(trial-publish)より前に、取得できる状態になる。これは、ユーザーが公開を承認した配布物と同じ内容で、承認の範囲内。
+> **承認を要する公開の操作(タグ・Release・アセットの公開、利用者への案内)は、引き続きユーザーのクリックまで行わない。**
+> ユーザーが望めば、Actions の画面から artifact を削除できる。**full のビルドの実行・再実行は、director の指示があるときだけ**(mini は、重みが使い物にならない)。
 
 ## 1. trial-build.yml(公開しない)
 
@@ -41,7 +42,7 @@ docs/release/trial-v0.1.0.{json,md} をコミット   ─▶ (公開の内容が
 - **検査**: `verify_trial_bundle.py` の B1〜B7(B4 は、生成した出所の表と照合)→ **Windows のランナーで、この束そのもの**を、展開 → `setup.ps1`(同梱の Python・オフライン・ハッシュ検証)→
   開発用でないモードで起動 → HTTP の煙試験(取り込み〜認識〜確定〜cp932 の出力〜バックアップ〜復元)→ アンインストール(データと学習した世代の保持・削除・別フォルダの拒否)。
 - **成果物**(artifact `trial-bundle`。保持 90 日): `yayoi-ocr-trial-0.1.0.zip`・`.sha256`・`model_provenance.generated.md`・`build-info.json`(run・コミット・重みの SHA256・各段階の記録・検査の結果)・`verify-output.txt`・`smoke-windows.json`。
-  この artifact は、**GitHub のアカウントがあれば誰でもダウンロードできる**(public リポジトリの Actions の artifact。実質的な公開。上の注意)。
+  この artifact は、**GitHub のアカウントがあれば誰でもダウンロードできる**(public リポジトリの Actions の artifact。上の注意)。
 - **権限**: `contents: read` だけ。公開の操作(タグ・Release)は、このワークフローにはない。
 
 ## 2. trial-eval.yml(重みの質の評価。公開の前の必須の確認。公開しない)
@@ -77,10 +78,9 @@ docs/release/trial-v0.1.0.{json,md} をコミット   ─▶ (公開の内容が
 
 ### 公開までの手順(full のビルドの開始は、director の指示を待つ)
 
-1. (director の指示で)開発側(worker)が `trial-build` を full で動かし、成功を確認する。run_id・zip の SHA256・各検査と Windows の煙試験の結果が報告される。**この時点で、artifact は GitHub のアカウントがあれば誰でも取得できる**(上の注意)。
+1. (director の指示で)開発側(worker)が `trial-build` を full で動かし、成功を確認する。run_id・zip の SHA256・各検査と Windows の煙試験の結果が報告される。ビルドが終わると、artifact は GitHub のアカウントがあれば誰でも取得できる状態になる(上の注意)。
 2. 開発側が `trial-eval` を動かし、**合格**を確認する(不合格なら、公開は不可。重みを直して 1 からやり直す)。評価の結果(数値)が報告される。
-3. 拒否リストのある環境で、artifact の束を検査する(下の「4. 限界・注意」の拒否リストの項を参照): `verify_trial_bundle.py`(`--no-denylist` なし)と、重み 9 ファイルへの `model_provenance.py` の C4。**artifact の取得に認証が要る**ので、
-   開発側のコンテナ(認証なし)にはできないことがある。その場合は、取得できる人(ユーザー・director)が行うか、限界として受け入れる(director 判断)。
+3. (拒否リストの走査は、行わない。director の判断。下の「4. 限界・注意」の拒否リストの項を参照。ユーザーが案 1〔トークン付きのセッション〕を選んだ場合の走査の手順は、`docs/release/runbook_token_session.md` §3。)
 4. 開発側が `docs/release/trial-v0.1.0.json` と `.md` をコミットする(SHA256・run_id・eval_run_id が入る)。
 5. checker が 2 つのワークフロー(と、JSON・本文)を再確認する。
 6. **ユーザーは、Run workflow を押す前に、`docs/release/trial-v0.1.0.json` の `run_id`・`eval_run_id`・`commit`・`zip_sha256` が、開発側から報告された値と一致すること、
@@ -96,14 +96,21 @@ docs/release/trial-v0.1.0.{json,md} をコミット   ─▶ (公開の内容が
 ## 4. 限界・注意
 
 - **public リポジトリの Release のアセットは、誰でもダウンロードできる**(zip には、重みと、実サンプルを使った処理の開示つきの `model_provenance.md` が入る)。ユーザーはこの方式を承知のうえで選択している。
-  さらに、**Actions の artifact も、GitHub のアカウントがあれば誰でも取得できる**(上の注意)。
+  **Actions の artifact も、GitHub のアカウントがあれば誰でも取得できる**(上の注意。ユーザーが承認した配布物と同じ内容)。
 - ビルドは、GitHub のランナーの CPU・torch の版で重みを作る。**開発のコンテナの重みとは SHA256 が一致しない**(`docs/trial_rc.md` §7.3)。重みの質は、`trial-eval`(上の 2.)で確かめる。
-- **拒否リストの走査(C4・C6)について(限界)**: CI に拒否リスト(実データの語)を置けないので、CI でビルドした重みには C4・C6 を行っていない。代わりに次の 2 つで担保する。
+- **拒否リストの走査(C4・C6)について(限界。director の判断で、限界として受け入れる)**: CI に拒否リスト(実データの語)を置けない。また、開発のコンテナには GitHub の認証がなく、
+  artifact を取得できない(拒否リストは、実データの語を含むので、リポジトリにも artifact にもなく、開発のコンテナにしかない)。このため、**CI でビルドした重みには C4・C6 を行っていない**。
+  受け入れる理由は次のとおり。
   ① **CI の重みは、合成データだけから作られている**: 入力(合成帳票の生成器)が実サンプルに触れない(C1: 実サンプルの置き場を参照するコードは許可リストのみ)・学習と較正のデータの全ページが生成器の署名
   (seed・書き手 ID・OFL フォント名)を持つ(C2)・データセット間で seed・書き手 ID が重ならない(C3)ことを、CI の中で検査している(`model_provenance.md` の §0)。
-  ② **開発のコンテナで作った、同じ手順・同じコミットの重み**には、C4(拒否リストの走査)と C6 を実行し、**検出 0 件**だった(`docs/model_provenance.md` §4)。
+  ② **開発のコンテナで、同じ手順で作った重み**には、C4(拒否リストの走査)と C6 を実行し、**検出 0 件**だった(`docs/model_provenance.md` §4)。
+  ③ **CI の重みの質は、`trial-eval` で確かめる**(上の 2.)。
   束の混入検査 B7 は、画像・PDF・CSV・DB・zip の類(拡張子と、先頭のバイト列)と、アプリの wheel の中身だけで、重みのテンソルは見ない。
-  認証なしで artifact を取得できる経路(公開の URL など)があれば、拒否リストのある環境で走査する。**このコンテナには GitHub の認証がなく、artifact を取得できない**。
+  ユーザーが案 1(トークン付きのセッションで作り直して公開)を選んだ場合は、そのセッションで artifact を取得して走査する手順を、`docs/release/runbook_token_session.md` §3(2a)に置いた。
+  ただし、拒否リストは今の開発のコンテナにしかないので、**走査できるのは、今のコンテナが残っている場合だけ**。
+- **Linux のビルド・評価の依存は、版の固定(`requirements/trial-build-linux.txt` の constraints)であって、ハッシュの固定ではない**(Windows の束に入るパッケージだけが、ハッシュ付きの lock〔`requirements/trial-win-cp311.txt`〕)。
+  torch は、PyTorch の CPU 版の配布元から入れる。trial-eval は、ローカル版 `+cpu` を指定し、取れなければ失敗させる(PyPI の別の build に切り替えない)。
+  trial-build の Linux のジョブは、まだ「配布元で失敗したら PyPI から入れる」形のまま(ビルド済みの full の run がこの形で動いている)。
 - Windows の実機(IME・高 DPI・WebView2 の保存ダイアログ・実際の速度・弥生への実取り込み)の確認は、引き続き実機の項目(`docs/windows_checklist.md`)。
 - Actions の実行時間・成果物の容量は、GitHub の制限(public リポジトリの標準のランナーは無料枠)に従う。full の artifact は約 400 MB。
 

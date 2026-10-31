@@ -74,7 +74,8 @@ jobs:
           if [ "$MODE" = full ]; then echo "artifact=trial-bundle" >> "$GITHUB_OUTPUT"; else echo "artifact=trial-bundle-mini" >> "$GITHUB_OUTPUT"; fi
       - name: Install (PyTorch CPU build, pinned libraries)
         run: |
-          python -m pip install "torch==2.15.0" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple || python -m pip install "torch==2.15.0"
+          # PyTorch の CPU 版(ローカル版 +cpu)を、PyTorch の配布元から入れる。取れなければ失敗させる(PyPI の別の build に黙って切り替えない)。
+          python -m pip install "torch==2.15.0+cpu" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           python -m pip install -e ".[ml,ml-dev]" -c requirements/trial-build-linux.txt
       - name: Fetch handwriting fonts (pinned commit, SHA-256 verified; the evaluation pages use them)
         run: python scripts/fetch_fonts.py --ref "$(sed -n 's/^ref=//p' requirements/fonts-pin.txt)" --verify requirements/fonts.sha256
