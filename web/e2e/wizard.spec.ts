@@ -180,3 +180,42 @@ test("㉔ 学習画面から精度レポート(統計のみ)を保存できる",
   // 帳票の内容(科目名・タイトル)は含まれない
   for (const w of [...ACCOUNTS, "旅費交通費"]) expect(text).not.toContain(w);
 });
+
+test("㉕ 税区分の候補は課税方式・経理方式の許可リスト。税抜経理へ変えると古い税区分は選び直しになり、端数処理を選べる", async ({ page, request }) => {
+  const put = await request.put("/api/settings", {
+    headers: AUTH,
+    data: {
+      wizard_done: true,
+      payments: ACCOUNTS.map((a) => ({ name: a, credit_account: a, credit_sub: "" })),
+      titles: [{ name: "旅費交通費", debit_account: "旅費交通費", debit_sub: "" }],
+      default_tax: [{ account: "旅費交通費", tax_category: "課対仕入込10%" }],
+    },
+  });
+  expect(put.ok()).toBeTruthy();
+  await openApp(page);
+  await tab(page, "設定").click();
+  const options = () => page.locator("#tax-category-options option").evaluateAll((els) => els.map((e) => (e as HTMLOptionElement).value));
+  // 本則課税 × 税込経理(15 件)
+  expect(await options()).toContain("共対仕入込軽減8%");
+  expect(await options()).not.toContain("課対仕入");
+  await expect(page.getByTestId("tax-rounding")).toHaveCount(0);
+  // 税抜経理へ: 候補が内税・外税・別記に変わる。保存すると、込の税区分は選べないと指摘される
+  await page.getByTestId("tax-method").selectOption("exclusive");
+  expect((await options())[0]).toBe("課対仕入内10%");
+  await expect(page.getByTestId("tax-rounding")).toBeVisible();
+  await page.getByTestId("tax-rounding").selectOption("round");
+  await page.getByTestId("settings-save").click();
+  await expect(page.getByTestId("settings-default_tax")).toContainText("選べない税区分です");
+  // 選び直して保存 → 読み込み直しても残る
+  await page.getByLabel("科目ごとの既定の税区分 1 行目の税区分").fill("課対仕入内10%");
+  await page.getByTestId("settings-save").click();
+  await expect(page.getByTestId("settings-state")).toContainText("保存しました");
+  await openApp(page);
+  await tab(page, "設定").click();
+  await expect(page.getByTestId("tax-method")).toHaveValue("exclusive");
+  await expect(page.getByTestId("tax-rounding")).toHaveValue("round");
+  // 免税事業者: 候補は「対象外」だけ
+  await page.getByTestId("taxpayer").selectOption("exempt");
+  expect(await options()).toEqual(["対象外"]);
+  await request.put("/api/settings", { headers: AUTH, data: { wizard_done: true } });
+});

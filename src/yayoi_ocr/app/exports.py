@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..recognize.grammar import parse_amount, parse_date
+from . import tax as taxmod
 from .db import transaction
 from .settings import Settings, readiness
 from .settings import load as load_settings
@@ -47,11 +48,11 @@ ISSUE_LABELS = {
     "no_rows": "出力できる行がありません",
     "description_too_long": "摘要が長すぎます(弥生で切り捨てられます)",
     "formula_like": "摘要の先頭が = + - @ TAB のため、Excel で開くと数式として扱われる可能性があります(弥生への取り込みには影響しません。CSV は Excel で開かず、弥生で直接取り込んでください)",
-    "exclusive_tax_amount_empty": "税抜経理の設定ですが、借方税金額は空で出力されます(弥生側で税額を確認してください)",
+    "tax_amount_manual": "税抜経理の「外税」「別記」の行は、借方税金額を空で出力します(弥生側で税額を入力してください。税額は自動計算されません)",
     "title_lost": "スマート取引取込では勘定科目を指定できないため、ページのタイトル(借方の科目)は失われます(取り込み時に取引手段を選び、相手科目は弥生が摘要から推測します)",
     **dict(ERROR_LABELS),
 }
-WARNING_CODES = {"formula_like", "exclusive_tax_amount_empty", "title_lost"}
+WARNING_CODES = {"formula_like", "tax_amount_manual", "title_lost"}
 
 
 @dataclass
@@ -63,12 +64,13 @@ class Row:
     date: str  # 西暦 yyyy/mm/dd
     debit: str
     debit_sub: str
-    debit_tax: str
+    debit_tax: str  # 借方税区分(行ごとの上書き > 科目ごとの既定)
     credit: str
     credit_sub: str
     payment: str  # 帳票の「科目」欄に書かれた支払手段の名前(スマート取引取込のファイル分けに使う)
     description: str
     amount: int
+    tax_amount: int | None = None  # 借方税金額(税抜経理・内税の行だけ計算する。ほかは空で出力)
     content_sha256: str = ""
     cell_ids: dict[str, int] = field(default_factory=dict)  # 列 → セル ID(エラーのリンク用)
 
@@ -125,7 +127,7 @@ def yayoi_fields(r: Row, s: Settings) -> list[str]:
         "",  # G 借方部門(青色申告ではインポートできない)
         tax,  # H 借方税区分(必須)
         amt,  # I 借方金額
-        "",  # J 借方税金額(税込経理の前提)
+        "" if r.tax_amount is None else str(r.tax_amount),  # J 借方税金額(税抜経理・内税の行だけ)
         r.credit,  # K 貸方勘定科目
         r.credit_sub,  # L 貸方補助科目
         "",  # M 貸方部門
@@ -157,8 +159,12 @@ def _issue(code: str, page_id: int, cell_id: int | None = None, row: int | None 
 
 def _check_yayoi(rows: list[Row], s: Settings) -> list[dict]:
     out: list[dict] = []
-    if s.tax_method == "exclusive" and rows:
-        out.append(_issue("exclusive_tax_amount_empty", rows[0].page_id))
+    if s.taxpayer == "taxable" and s.tax_method == "exclusive":
+        seen: set[int] = set()
+        for r in rows:  # 税抜経理の外税・別記は税額が手入力の扱い(ページごとに 1 件の注意)
+            if r.page_id not in seen and taxmod.is_manual_tax(r.debit_tax):
+                seen.add(r.page_id)
+                out.append(_issue("tax_amount_manual", r.page_id, None, r.row))
     for r in rows:
         if len(r.description.encode(ENCODING, errors="ignore")) > MAX_DESC_BYTES_YAYOI:
             out.append(
@@ -270,10 +276,13 @@ def _enc_ok(text: str) -> bool:
     return True
 
 
-def row_hash(page: sqlite3.Row, title: str, row: int, values: list[str]) -> str:
-    """行の内容のハッシュ(入力ファイルのハッシュ + ページ番号 + タイトル + 行番号 + 確定値)。同じ行を 2 回出力していないかの判定に使う。"""
+def row_hash(
+    page: sqlite3.Row, title: str, row: int, values: list[str], debit_tax: str = ""
+) -> str:
+    """行の内容のハッシュ(入力ファイルのハッシュ + ページ番号 + タイトル + 行番号 + 確定値 + 借方税区分)。同じ行を 2 回出力していないかの判定に使う。"""
     blob = json.dumps(
-        [page["image_sha256"], page["source_index"], title, row, values], ensure_ascii=False
+        [page["image_sha256"], page["source_index"], title, row, values, debit_tax],
+        ensure_ascii=False,
     )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -378,6 +387,14 @@ def collect(
             desc = _value(vals["description"])
             if desc.startswith(FORMULA_PREFIX):  # 注意だけ(値は書き換えない)
                 issues.append(_issue("formula_like", pid, vals["description"]["id"], r))
+            row_tax = debit_tax
+            if s.taxpayer == "exempt":
+                row_tax = taxmod.EXEMPT
+            tax_amt = (
+                taxmod.tax_amount(amt, row_tax, s.tax_rounding)
+                if s.taxpayer == "taxable" and s.tax_method == "exclusive"
+                else None
+            )
             rows.append(
                 Row(
                     pid,
@@ -385,13 +402,14 @@ def collect(
                     f"{d.western_year()}/{d.month:02d}/{d.day:02d}",
                     debit,
                     debit_sub,
-                    debit_tax,
+                    row_tax,
                     pay.credit_account,
                     pay.credit_sub,
                     acct,
                     desc,
                     amt,
-                    row_hash(pg, title, r, [_value(vals[c]) for c in vals]),
+                    tax_amt,
+                    row_hash(pg, title, r, [_value(vals[c]) for c in vals], row_tax),
                     {c: vals[c]["id"] for c in vals},
                 )
             )

@@ -3,10 +3,12 @@ import { ApiError } from "./api";
 import { fetchSettings, saveSettings } from "./pageApi";
 import {
   MISSING_LABEL,
+  ROUNDING_LABEL,
   SETTINGS_PROBLEM_LABEL,
-  TAX_SUGGESTIONS,
+  taxOptionsFor,
   type AppSettings,
   type SettingsProblem,
+  type TaxOptions as TaxOptionMap,
 } from "./types";
 
 export const TAXPAYER = { taxable: "課税事業者", exempt: "免税事業者" } as const;
@@ -21,11 +23,11 @@ const EMPTY_ROW = {
   default_tax: { account: "", tax_category: "" },
 };
 
-/** 税区分の入力候補(目安)。弥生の登録名と完全に一致させる必要がある。 */
-export function TaxOptions() {
+/** 税区分の入力候補(サーバの許可リスト。今の課税方式・経理方式のもの)。弥生の登録名と完全に一致している。 */
+export function TaxOptions({ options }: { options: string[] }) {
   return (
     <datalist id="tax-category-options">
-      {TAX_SUGGESTIONS.map((t) => (
+      {options.map((t) => (
         <option key={t} value={t} />
       ))}
     </datalist>
@@ -94,13 +96,13 @@ function Table<G extends Group>({
       <button data-testid={`add-${group}`} onClick={() => onChange([...rows, { ...EMPTY_ROW[group] }])}>
         行を追加
       </button>
-      <TaxOptions />
     </fieldset>
   );
 }
 
 export default function SettingsScreen() {
   const [cfg, setCfg] = useState<AppSettings | null>(null);
+  const [taxMap, setTaxMap] = useState<TaxOptionMap>({});
   const [missing, setMissing] = useState<string[]>([]);
   const [problems, setProblems] = useState<Record<string, string>>({});
   const [state, setState] = useState<"clean" | "dirty" | "saved" | "error">("clean");
@@ -111,12 +113,15 @@ export default function SettingsScreen() {
       .then((r) => {
         setCfg(r.settings);
         setMissing(r.missing);
+        setTaxMap(r.tax_options);
       })
       .catch(() => setError("設定を読み込めません"));
   }, []);
 
   if (error) return <p role="alert">{error}</p>;
   if (!cfg) return <p>読み込み中…</p>;
+
+  const taxOptions = taxOptionsFor(taxMap, cfg);
 
   const edit = (patch: Partial<AppSettings>) => {
     setCfg({ ...cfg, ...patch });
@@ -201,9 +206,26 @@ export default function SettingsScreen() {
               </option>
             ))}
           </select>
-        </label>
+        </label>{" "}
+        {cfg.taxpayer === "taxable" && cfg.tax_method === "exclusive" && (
+          <label>
+            税額の端数処理{" "}
+            <select
+              data-testid="tax-rounding"
+              value={cfg.tax_rounding}
+              onChange={(e) => edit({ tax_rounding: e.target.value as AppSettings["tax_rounding"] })}
+            >
+              {Object.entries(ROUNDING_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <p className="hint">
-          免税事業者を選ぶと、借方・貸方の税区分はすべて「対象外」で出力します。税抜経理を選んでも、借方税金額は空で出力します(弥生側で税額を確認してください)。
+          免税事業者を選ぶと、借方・貸方の税区分はすべて「対象外」で出力します。税抜経理では、内税の行の借方税金額(金額 × 税率 ÷ (100 + 税率))を計算して出力します。
+          外税・別記の行は借方税金額を空で出力します(弥生側で入力してください)。
         </p>
       </fieldset>
       <fieldset>
@@ -256,7 +278,7 @@ export default function SettingsScreen() {
         help={
           cfg.taxpayer === "exempt"
             ? "免税事業者のため、すべて「対象外」で出力します(この表は使いません)。"
-            : "借方科目ごとに出力する税区分。税率つきで、弥生の登録名と完全に一致する名前を書きます(例: 課対仕入込10%)。税率のない課税区分(課対仕入 など)は弥生で 5% として取り込まれるため、保存できません。"
+            : "借方科目ごとに出力する税区分(候補から選びます。弥生の登録名と完全に一致します)。税率のない課税区分(課対仕入 など)は弥生で 5% として取り込まれるため、使えません。"
         }
         columns={[
           { key: "account", label: "借方科目" },
@@ -266,6 +288,7 @@ export default function SettingsScreen() {
         problems={problems}
         onChange={(rows) => edit({ default_tax: rows as unknown as AppSettings["default_tax"] })}
       />
+      <TaxOptions options={taxOptions} />
       <p>
         <button data-testid="settings-save" disabled={state === "clean" || state === "saved"} onClick={() => void save()}>
           保存

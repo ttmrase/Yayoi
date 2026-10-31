@@ -7,7 +7,7 @@ import ReviewScreen from "./ReviewScreen";
 import { fetchSettings } from "./pageApi";
 import SettingsScreen from "./SettingsScreen";
 import SetupWizard from "./SetupWizard";
-import type { AppSettings } from "./types";
+import type { AppSettings, TaxOptions } from "./types";
 
 type Health = { ok: boolean; version: string; schema: number; dev: boolean };
 type Profile = { id: number; name: string };
@@ -22,6 +22,7 @@ export default function App() {
   const [pageId, setPageId] = useState<number | null>(null); // 確認中のページ(確認タブ)
   const [startCell, setStartCell] = useState<number | null>(null); // 出力の検証の指摘から開くときの、最初のフォーカス
   const [wizard, setWizard] = useState<AppSettings | null>(null); // 初回起動の初期設定ウィザード(終えるまで他の画面は出さない)
+  const [taxMap, setTaxMap] = useState<TaxOptions>({}); // 税区分の許可リスト(サーバ定義)
 
   useEffect(() => {
     if (!hasToken()) {
@@ -33,7 +34,10 @@ export default function App() {
       .catch((e: unknown) => setError(e instanceof ApiError ? `接続できません (${e.status})` : "接続できません"));
     api<Profile[]>("/api/profiles").then(setProfiles).catch(() => undefined);
     fetchSettings()
-      .then((r) => setWizard(r.settings.wizard_done ? null : r.settings))
+      .then((r) => {
+        setTaxMap(r.tax_options);
+        setWizard(r.settings.wizard_done ? null : r.settings);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -66,6 +70,7 @@ export default function App() {
         {wizard !== null && (
           <SetupWizard
             settings={wizard}
+            taxMap={taxMap}
             onDone={() => {
               setWizard(null);
               setTab("ジョブ");

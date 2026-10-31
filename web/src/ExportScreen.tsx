@@ -240,7 +240,7 @@ export default function ExportScreen({ onOpenCell }: Props) {
 function dedupe(list: ExportIssue[]): ExportIssue[] {
   const seen = new Set<string>();
   return list.filter((i) => {
-    if (i.code !== "title_lost" && i.code !== "exclusive_tax_amount_empty") return true;
+    if (i.code !== "title_lost" && i.code !== "tax_amount_manual") return true;
     if (seen.has(i.code)) return false;
     seen.add(i.code);
     return true;

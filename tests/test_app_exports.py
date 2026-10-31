@@ -154,15 +154,73 @@ def test_the_debit_tax_category_is_required_for_taxable_businesses_only(client):
     assert first[7] == "対象外"
 
 
-def test_tax_exclusive_accounting_warns_that_the_debit_tax_amount_is_empty(client):
-    pid = confirmed_page(client, settings={**SETTINGS, "tax_method": "exclusive"})
+EXCLUSIVE = {**SETTINGS, "tax_method": "exclusive"}
+
+
+def _first_rows(client, export_id):
+    text = client.get(f"/api/exports/{export_id}/file").content.decode("cp932")
+    return [line.split(",") for line in text.split("\r\n") if line]
+
+
+def test_tax_exclusive_inner_tax_fills_the_debit_tax_amount(client):
+    """税抜経理・内税: J 列(借方税金額)= 金額 × 税率 ÷ (100 + 税率)(端数処理は設定。既定は切り捨て)。"""
+    settings = {
+        **EXCLUSIVE,
+        "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入内10%"}],
+    }
+    pid = confirmed_page(client, settings=settings)
     v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
-    assert v["errors"] == [] and [w["code"] for w in v["warnings"]] == [
-        "exclusive_tax_amount_empty"
-    ]
-    assert (
-        client.post("/api/exports", json={"page_ids": [pid]}).status_code == 200
-    )  # 注意は出力を止めない
+    assert v["errors"] == [] and v["warnings"] == []
+    rec = client.post("/api/exports", json={"page_ids": [pid]}).json()
+    rows = _first_rows(client, rec["id"])
+    assert len(rows) == 4 and all(len(r) == 25 for r in rows)
+    for r in rows:
+        amount = int(r[8])
+        assert r[7] == "課対仕入内10%" and r[9] == str(amount * 10 // 110) and r[14] == r[8]
+
+
+def test_tax_exclusive_rounding_modes(client):
+    base = {
+        **EXCLUSIVE,
+        "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入内10%"}],
+    }
+    seen = {}
+    for mode in ("floor", "round", "ceil"):
+        pid = confirmed_page(client, settings={**base, "tax_rounding": mode})
+        rec = client.post(
+            "/api/exports", json={"page_ids": [pid], "accept_duplicates": True}
+        ).json()
+        seen[mode] = [(int(r[8]), int(r[9])) for r in _first_rows(client, rec["id"])]
+    for (amt, fl), (_, rd), (_, ce) in zip(seen["floor"], seen["round"], seen["ceil"], strict=True):
+        assert fl == amt * 10 // 110
+        assert rd == (2 * amt * 10 + 110) // 220
+        assert ce == -(-amt * 10 // 110)
+
+
+def test_tax_exclusive_outer_tax_and_separate_notation_are_manual_with_a_warning(client):
+    for cat in ("課対仕入外10%", "課対仕入別軽減8%"):
+        settings = {**EXCLUSIVE, "default_tax": [{"account": "旅費交通費", "tax_category": cat}]}
+        pid = confirmed_page(client, settings=settings)
+        v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+        assert v["errors"] == [] and [w["code"] for w in v["warnings"]] == ["tax_amount_manual"]
+        rec = client.post("/api/exports", json={"page_ids": [pid]}).json()  # 注意は出力を止めない
+        assert all(r[9] == "" for r in _first_rows(client, rec["id"]))  # 税額は空(手入力の扱い)
+
+
+def test_tax_exclusive_non_taxable_categories_have_no_tax_amount_and_no_warning(client):
+    for cat in ("非課仕入", "対外仕入", "対象外"):
+        settings = {**EXCLUSIVE, "default_tax": [{"account": "旅費交通費", "tax_category": cat}]}
+        pid = confirmed_page(client, settings=settings)
+        v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+        assert v["errors"] == [] and v["warnings"] == []
+        rec = client.post("/api/exports", json={"page_ids": [pid]}).json()
+        assert all(r[7] == cat and r[9] == "" for r in _first_rows(client, rec["id"]))
+
+
+def test_tax_inclusive_never_fills_the_debit_tax_amount(client):
+    pid = confirmed_page(client)
+    rec = client.post("/api/exports", json={"page_ids": [pid]}).json()
+    assert all(r[9] == "" for r in _first_rows(client, rec["id"]))
 
 
 def test_tax_categories_without_a_rate_are_refused_in_settings(client):

@@ -32,23 +32,25 @@ def test_settings_default_and_round_trip(client):
     r = client.get("/api/settings").json()
     assert r["settings"]["payments"] == [] and set(r["missing"]) == {"no_payments", "no_titles"}
     body = {
-        "taxpayer": "exempt",
+        "taxpayer": "taxable",
         "tax_scheme": "simplified",
         "tax_method": "exclusive",
+        "tax_rounding": "round",
         "payments": [{"name": "現金", "credit_account": "現金"}],
         "titles": [{"name": "消耗品費", "debit_account": "消耗品費", "debit_sub": ""}],
-        "default_tax": [{"account": "消耗品費", "tax_category": "課対仕入10%"}],
+        "default_tax": [{"account": "消耗品費", "tax_category": "課対仕入内10%"}],
     }
     r = client.put("/api/settings", json=body)
     assert r.status_code == 200 and r.json()["missing"] == []
     got = client.get("/api/settings").json()["settings"]
-    assert (got["taxpayer"], got["tax_scheme"], got["tax_method"]) == (
-        "exempt",
+    assert (got["taxpayer"], got["tax_scheme"], got["tax_method"], got["tax_rounding"]) == (
+        "taxable",
         "simplified",
         "exclusive",
+        "round",
     )
     assert got["payments"][0]["name"] == "現金"
-    assert got["default_tax"][0]["tax_category"] == "課対仕入10%"
+    assert got["default_tax"][0]["tax_category"] == "課対仕入内10%"
 
 
 @pytest.mark.parametrize(
@@ -254,3 +256,67 @@ def test_accuracy_report_has_statistics_only_and_never_cell_values(client):
     collect_keys(rep)
     leftovers = [s for s in strings(rep) if s not in allowed_values | reason_codes | keys]
     assert leftovers == []  # キー・理由コード・選択肢のコード・バージョン以外の文字列は無い
+
+
+def _put_tax(client, category, **kw):
+    body = {
+        "payments": [{"name": "現金", "credit_account": "現金"}],
+        "titles": [{"name": "消耗品費", "debit_account": "消耗品費"}],
+        "default_tax": [{"account": "消耗品費", "tax_category": category}],
+        **kw,
+    }
+    return client.put("/api/settings", json=body)
+
+
+@pytest.mark.parametrize(
+    ("kw", "category", "ok"),
+    [
+        ({}, "課対仕入込10%", True),
+        ({}, "共対仕入込軽減8%", True),
+        ({}, "非課仕入", True),
+        ({}, "課対仕入内10%", False),  # 税込経理に内税の区分は使えない
+        ({}, "課対仕入", False),  # 税率なし = 弥生で 5% 扱い
+        ({}, "課対仕入込10％", False),  # 全角の %
+        ({}, "売上", False),  # 仕入系以外
+        ({"tax_method": "exclusive"}, "課対仕入内10%", True),
+        ({"tax_method": "exclusive"}, "共対仕入別軽減8%", True),
+        ({"tax_method": "exclusive"}, "課対仕入込10%", False),
+        ({"tax_scheme": "simplified"}, "課対仕入込10%", True),
+        ({"tax_scheme": "simplified"}, "共対仕入込10%", False),  # 簡易課税は課対のみ
+        ({"tax_scheme": "simplified", "tax_method": "exclusive"}, "課対仕入外5%", True),
+        ({"taxpayer": "exempt"}, "対象外", True),
+    ],
+)
+def test_default_tax_must_be_in_the_allow_list_for_the_scheme_and_method(client, kw, category, ok):
+    r = _put_tax(client, category, **kw)
+    assert (r.status_code == 200) is ok, r.text
+
+
+def test_the_error_code_tells_why(client):
+    def code(category, **kw):
+        r = _put_tax(client, category, **kw)
+        return r.json()["problems"][0]["code"]
+
+    assert code("課対仕入") == "tax_rate_missing"
+    assert code("課対仕入込10％") == "tax_percent_fullwidth"
+    assert code("課対仕入内10%") == "tax_category_not_allowed"
+
+
+def test_settings_response_has_the_allow_lists_for_the_screen(client):
+    r = client.get("/api/settings").json()
+    assert set(r["tax_options"]) == {
+        "general_inclusive",
+        "general_exclusive",
+        "simplified_inclusive",
+        "simplified_exclusive",
+    }
+    assert r["tax_options"]["general_inclusive"][0] == "課対仕入込10%"
+    assert r["tax_options"]["general_exclusive"][0] == "課対仕入内10%"
+
+
+def test_changing_the_method_leaves_old_categories_flagged_as_missing_settings(client):
+    assert _put_tax(client, "課対仕入込10%").status_code == 200
+    s = client.get("/api/settings").json()["settings"]
+    s["tax_method"] = "exclusive"
+    # 保存は拒否される(古い税区分が許可リストにない)ので、画面で直させる
+    assert client.put("/api/settings", json=s).status_code == 422

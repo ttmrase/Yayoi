@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, exports, metrics, retention, store, uploads
+from . import db, exports, metrics, retention, store, tax, uploads
 from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
@@ -133,13 +133,21 @@ def create_app(
     def settings_get() -> dict:
         with lock:
             cur = app_settings.load(con)
-        return {"settings": cur.model_dump(), "missing": app_settings.readiness(cur)}
+        return {
+            "settings": cur.model_dump(),
+            "missing": app_settings.readiness(cur),
+            "tax_options": tax.all_options(),
+        }
 
     @app.put("/api/settings")
     def settings_put(body: app_settings.Settings) -> dict:
         with lock:
             app_settings.save(con, body)
-        return {"settings": body.model_dump(), "missing": app_settings.readiness(body)}
+        return {
+            "settings": body.model_dump(),
+            "missing": app_settings.readiness(body),
+            "tax_options": tax.all_options(),
+        }
 
     @app.get("/api/learning")
     def learning(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:

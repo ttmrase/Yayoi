@@ -2,10 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { saveSettings } from "./pageApi";
 import { TAX_METHOD, TAX_SCHEME, TAXPAYER, TaxOptions } from "./SettingsScreen";
-import { SETTINGS_PROBLEM_LABEL, type AppSettings, type SettingsProblem } from "./types";
+import {
+  ROUNDING_LABEL,
+  SETTINGS_PROBLEM_LABEL,
+  taxOptionsFor,
+  type AppSettings,
+  type SettingsProblem,
+  type TaxOptions as TaxOptionMap,
+} from "./types";
 
 interface Props {
   settings: AppSettings;
+  /** 税区分の許可リスト(サーバが返す。課税方式 × 経理方式ごと) */
+  taxMap: TaxOptionMap;
   /** 完了またはスキップ。保存した設定を渡す */
   onDone: (s: AppSettings) => void;
 }
@@ -26,11 +35,12 @@ const isBlank = (r: object) => Object.values(r).every((v) => v === "");
  * 事業者区分・課税方式・経理方式を順に入れる。どの段階でも「あとで設定する」で閉じられる(閉じた後は設定画面で入れる)。
  * 完了・スキップのどちらでも `wizard_done` を立てる(二度と自動では出ない)。
  */
-export default function SetupWizard({ settings, onDone }: Props) {
+export default function SetupWizard({ settings, taxMap, onDone }: Props) {
   const [step, setStep] = useState(0);
   const [taxpayer, setTaxpayer] = useState(settings.taxpayer);
   const [scheme, setScheme] = useState(settings.tax_scheme);
   const [method, setMethod] = useState(settings.tax_method);
+  const [rounding, setRounding] = useState(settings.tax_rounding);
   const [payments, setPayments] = useState(() =>
     settings.payments.length > 0 ? settings.payments.map((p) => ({ ...p })) : [{ name: "", credit_account: "", credit_sub: "" }],
   );
@@ -46,12 +56,20 @@ export default function SetupWizard({ settings, onDone }: Props) {
   useEffect(() => heading.current?.focus(), [step]);
 
   const exempt = taxpayer === "exempt";
+  const taxOptions = taxOptionsFor(taxMap, { taxpayer, tax_scheme: scheme, tax_method: method });
 
   /** 入力から保存する設定を作る。表の行番号 → 画面の行番号の対応(検証エラーを指すため)も返す。 */
   const build = () => {
     const pays = payments.filter((r) => !isBlank(r));
     const tts = titles.filter((r) => !isBlank(r));
-    const base = { ...settings, taxpayer, tax_scheme: scheme, tax_method: method, wizard_done: true };
+    const base = {
+      ...settings,
+      taxpayer,
+      tax_scheme: scheme,
+      tax_method: method,
+      tax_rounding: rounding,
+      wizard_done: true,
+    };
     const taxRows: number[] = []; // default_tax[j] ← tts[taxRows[j]]
     let defaultTax = settings.default_tax;
     if (!exempt) {
@@ -197,6 +215,23 @@ export default function SetupWizard({ settings, onDone }: Props) {
               </select>
             </label>
           </p>
+          {!exempt && method === "exclusive" && (
+            <p>
+              <label>
+                税額の端数処理{" "}
+                <select value={rounding} onChange={(e) => setRounding(e.target.value as AppSettings["tax_rounding"])}>
+                  {Object.entries(ROUNDING_LABEL).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </p>
+          )}
+          {!exempt && method === "exclusive" && (
+            <p className="hint">税抜経理では、内税の行の借方税金額(金額 × 税率 ÷ (100 + 税率))を計算して出力します。外税・別記の行は空で出力します。</p>
+          )}
           {exempt && <p className="hint">免税事業者は、借方・貸方の税区分がすべて「対象外」で出力されます。</p>}
         </fieldset>
       )}
@@ -247,7 +282,7 @@ export default function SetupWizard({ settings, onDone }: Props) {
             ページ上部に書かれるタイトル(勘定科目名)と、仕訳の借方にする科目・補助科目を登録します。
             {exempt
               ? "免税事業者のため、税区分は入力不要です(すべて「対象外」で出力します)。"
-              : "税区分は税率つきで、弥生の登録名と完全に一致する名前を書きます(例: 課対仕入込10%)。税率のない課税区分は弥生で 5% として取り込まれるため、保存できません。"}
+              : "税区分は候補から選びます(弥生の登録名と完全に一致します)。税率のない課税区分は弥生で 5% として取り込まれるため、使えません。"}
           </p>
           <table className="settings-table" data-testid="wizard-titles">
             <thead>
@@ -278,7 +313,7 @@ export default function SetupWizard({ settings, onDone }: Props) {
               })}
             </tbody>
           </table>
-          <TaxOptions />
+          <TaxOptions options={taxOptions} />
           <button data-testid="wizard-add-title" onClick={() => setTitles([...titles, { name: "", debit_account: "", debit_sub: "", tax_category: "" }])}>
             行を追加
           </button>

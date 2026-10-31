@@ -179,8 +179,10 @@ export interface AppSettings {
   taxpayer: "taxable" | "exempt";
   /** 課税方式 */
   tax_scheme: "general" | "simplified";
-  /** 経理方式(税抜は借方税金額が空で出力されるので警告) */
+  /** 経理方式(税抜・内税の行は借方税金額を計算して出力。外税・別記は空で注意) */
   tax_method: "inclusive" | "exclusive";
+  /** 税抜経理・内税の借方税金額の端数処理 */
+  tax_rounding: "floor" | "round" | "ceil";
   /** 初期設定ウィザードを終えた(スキップを含む) */
   wizard_done: boolean;
   payments: PaymentMap[];
@@ -191,6 +193,7 @@ export interface AppSettings {
 }
 export interface SettingsResponse {
   settings: AppSettings;
+  tax_options: TaxOptions;
   /** 出力に足りない設定(コード) */
   missing: string[];
 }
@@ -283,20 +286,24 @@ export interface LearningData {
   phase: number;
 }
 
-/** 税区分の入力候補(目安。弥生の登録名と完全に一致させる。正式名称の一覧は docs/yayoi_export.md のとおり未確認) */
-export const TAX_SUGGESTIONS = [
-  "課対仕入込10%",
-  "課対仕入込8%(軽)",
-  "課対仕入込8%",
-  "課対仕入10%",
-  "課対仕入8%(軽)",
-  "課対仕入8%",
-  "対象外",
-];
+/** 税区分の許可リストのキー(課税方式 × 経理方式)。リスト自体はサーバが返す(`/api/settings` の tax_options。app/tax.py が唯一の定義) */
+export type TaxOptions = Record<string, string[]>;
+
+/** 今の事業者区分・課税方式・経理方式で選べる税区分(免税事業者は「対象外」だけ) */
+export function taxOptionsFor(
+  opts: TaxOptions,
+  s: Pick<AppSettings, "taxpayer" | "tax_scheme" | "tax_method">,
+): string[] {
+  if (s.taxpayer === "exempt") return ["対象外"];
+  return opts[`${s.tax_scheme}_${s.tax_method}`] ?? [];
+}
+
+export const ROUNDING_LABEL = { floor: "切り捨て", round: "四捨五入", ceil: "切り上げ" } as const;
 
 export const SETTINGS_PROBLEM_LABEL: Record<string, string> = {
   tax_rate_missing: "税率が書かれていません(税率なしの税区分は弥生で 5% として取り込まれます)。例: 課対仕入込10%",
   tax_percent_fullwidth: "% は半角で書いてください",
+  tax_category_not_allowed: "選べない税区分です(今の課税方式・経理方式の候補から選んでください)",
   too_long_bytes: "長すぎます(全角 12 文字・24 バイトまで)",
   duplicate: "同じ名前が重複しています",
   empty: "空にできません",
@@ -309,4 +316,5 @@ export const MISSING_LABEL: Record<string, string> = {
   no_titles: "タイトル → 借方科目が 1 つも登録されていません",
   title_without_debit_account: "借方科目が空のタイトルがあります",
   debit_account_without_tax_category: "借方科目に既定の税区分が設定されていません(借方税区分は必須です。免税事業者なら不要)",
+  tax_category_not_allowed: "既定の税区分に、今の課税方式・経理方式で選べないものがあります(設定画面で選び直してください)",
 };

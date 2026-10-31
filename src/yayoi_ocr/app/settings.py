@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from . import tax
 from .db import transaction
 from .store import StoreError
 
@@ -20,16 +21,6 @@ KEY = "app"
 MAX_NAME = 20  # 弥生の科目名・補助科目名の長さの目安(全角 20 文字)
 MAX_ITEMS = 100
 
-# 税区分の入力候補(目安。弥生の登録名と完全に一致する必要がある。正式名称の一覧は docs/yayoi_export.md の注記のとおり未確認)
-TAX_SUGGESTIONS = (
-    "課対仕入込10%",
-    "課対仕入込8%(軽)",
-    "課対仕入込8%",
-    "課対仕入10%",
-    "課対仕入8%(軽)",
-    "課対仕入8%",
-    "対象外",
-)
 MAX_ACCOUNT_BYTES = 24  # 勘定科目・補助科目(cp932 のバイト数)。弥生の借方勘定科目の上限
 
 
@@ -50,7 +41,7 @@ class TitleMap(BaseModel):
 
 
 class AccountTax(BaseModel):
-    """借方科目ごとの既定の税区分(弥生の登録名と完全に一致させる。税率を書かない課税区分は保存を拒否する)。"""
+    """借方科目ごとの既定の税区分。弥生の登録名と完全に一致させる。許可リスト(`tax.categories`)にないものは保存を拒否する。"""
 
     account: str = Field(max_length=MAX_NAME)
     tax_category: str = Field(default="", max_length=40)
@@ -64,6 +55,8 @@ class Settings(BaseModel):
     tax_method: Literal["inclusive", "exclusive"] = (
         "inclusive"  # 経理方式(税込 / 税抜。税抜は借方税金額が空になるので警告)
     )
+    # 税抜経理・内税の借方税金額 = 金額 × 税率 ÷ (100 + 税率) の端数処理(切り捨て / 四捨五入 / 切り上げ)
+    tax_rounding: Literal["floor", "round", "ceil"] = "floor"
     wizard_done: bool = False  # 初期設定ウィザードを終えた(スキップを含む)
     payments: list[PaymentMap] = Field(default_factory=list, max_length=MAX_ITEMS)
     titles: list[TitleMap] = Field(default_factory=list, max_length=MAX_ITEMS)
@@ -96,13 +89,20 @@ def problems(s: Settings) -> list[dict]:
         if _encodable(value) and len(value.encode("cp932")) > MAX_ACCOUNT_BYTES:
             out.append({"path": path, "code": "too_long_bytes"})
 
+    allowed = set(tax.categories(s.taxpayer, s.tax_scheme, s.tax_method))
     for i, it in enumerate(s.default_tax):
         c = it.tax_category
-        # 税率を書かない課税の税区分は、弥生が税率 5% として取り込んでしまう。% は半角
-        if "％" in c:
-            out.append({"path": f"default_tax[{i}].tax_category", "code": "tax_percent_fullwidth"})
-        elif c.startswith("課") and "%" not in c:
-            out.append({"path": f"default_tax[{i}].tax_category", "code": "tax_rate_missing"})
+        path = f"default_tax[{i}].tax_category"
+        if not c:
+            continue  # 未設定(出力の検証が指摘する)
+        if "％" in c:  # % は半角
+            out.append({"path": path, "code": "tax_percent_fullwidth"})
+        elif tax.has_rate_but_wrong(
+            c
+        ):  # 税率を書かない課税区分は、弥生が税率 5% として取り込んでしまう
+            out.append({"path": path, "code": "tax_rate_missing"})
+        elif s.taxpayer == "taxable" and c not in allowed:  # 免税事業者は使わないので検査しない
+            out.append({"path": path, "code": "tax_category_not_allowed"})
     for i, p in enumerate(s.payments):
         check_bytes(f"payments[{i}].credit_account", p.credit_account)
         check_bytes(f"payments[{i}].credit_sub", p.credit_sub)
@@ -160,7 +160,12 @@ def readiness(s: Settings) -> list[str]:
     elif any(not t.debit_account for t in s.titles):
         out.append("title_without_debit_account")
     if s.taxpayer == "taxable":  # 借方税区分(H)は必須。免税事業者はすべて「対象外」
-        tax = {a.account: a.tax_category for a in s.default_tax}
-        if any(t.debit_account and not tax.get(t.debit_account) for t in s.titles):
+        by_account = {a.account: a.tax_category for a in s.default_tax}
+        if any(t.debit_account and not by_account.get(t.debit_account) for t in s.titles):
             out.append("debit_account_without_tax_category")
+        allowed = set(tax.categories(s.taxpayer, s.tax_scheme, s.tax_method))
+        if any(c and c not in allowed for c in by_account.values()):
+            out.append(
+                "tax_category_not_allowed"
+            )  # 課税方式・経理方式を変えたあと、古い税区分が残っている
     return out
