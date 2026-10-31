@@ -32,7 +32,8 @@ def test_settings_default_and_round_trip(client):
     r = client.get("/api/settings").json()
     assert r["settings"]["payments"] == [] and set(r["missing"]) == {"no_payments", "no_titles"}
     body = {
-        "business_type": "corporate",
+        "taxpayer": "exempt",
+        "tax_scheme": "simplified",
         "tax_method": "exclusive",
         "payments": [{"name": "現金", "credit_account": "現金"}],
         "titles": [{"name": "消耗品費", "debit_account": "消耗品費", "debit_sub": ""}],
@@ -41,7 +42,12 @@ def test_settings_default_and_round_trip(client):
     r = client.put("/api/settings", json=body)
     assert r.status_code == 200 and r.json()["missing"] == []
     got = client.get("/api/settings").json()["settings"]
-    assert got["business_type"] == "corporate" and got["payments"][0]["name"] == "現金"
+    assert (got["taxpayer"], got["tax_scheme"], got["tax_method"]) == (
+        "exempt",
+        "simplified",
+        "exclusive",
+    )
+    assert got["payments"][0]["name"] == "現金"
     assert got["default_tax"][0]["tax_category"] == "課対仕入10%"
 
 
@@ -188,3 +194,63 @@ def test_learning_metrics_count_only_confirmed_pages_and_no_values(client):
     row = m["pages"][0]
     assert row["n_text"] == 24 and row["n_corrected"] >= 1 and 0 < row["review_rate"] <= 1
     assert all(not isinstance(v, str) for k, v in row.items())  # 値(文字列)を含まない
+
+
+# ---- 精度レポート(統計だけ)
+
+
+def test_accuracy_report_has_statistics_only_and_never_cell_values(client):
+    secret = "秘密の摘要テキスト"
+    client.put(
+        "/api/settings",
+        json={
+            "payments": [{"name": "秘密の支払手段", "credit_account": "秘密の科目"}],
+            "titles": [{"name": "秘密のタイトル", "debit_account": "秘密の借方"}],
+        },
+    )
+    job = new_job(client, error_rate=0.5, review_rate=0.7, ambiguous_rows=[], fill_rows=6)
+    p1 = job["pages"][0]["id"]
+    client.put(f"/api/pages/{p1}/title", json={"title": "秘密のタイトル"})
+    confirm_with(client, p1, {(0, 2): secret})
+    r = client.get("/api/learning/report")
+    assert r.status_code == 200 and "accuracy_report.json" in r.headers["content-disposition"]
+    rep = r.json()
+    assert rep["schema"] == 1 and rep["summary"]["n_pages"] == 1 and rep["pages"][0]["order"] == 1
+    assert set(rep["per_column"]) == {"date", "account", "description", "amount"}
+    assert sum(rep["edit_kinds"].values()) == 24
+    text = r.text
+    for word in (secret, "秘密の支払手段", "秘密の科目", "秘密のタイトル", "秘密の借方"):
+        assert word not in text  # 値・設定の名前・タイトルは含まない
+    assert rep["settings"] == {
+        "n_payments": 1, "n_titles": 1, "taxpayer": "taxable", "tax_scheme": "general", "tax_method": "inclusive",
+    }  # fmt: skip
+
+    def strings(x):
+        if isinstance(x, str):
+            yield x
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                yield k
+                yield from strings(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from strings(v)
+
+    from yayoi_ocr import __version__
+
+    allowed_values = {__version__, "taxable", "general", "inclusive"}
+    reason_codes = set(rep["review_reasons"]) | set(rep["edit_kinds"])
+    keys = set()
+
+    def collect_keys(x):
+        if isinstance(x, dict):
+            keys.update(x)
+            for v in x.values():
+                collect_keys(v)
+        elif isinstance(x, list):
+            for v in x:
+                collect_keys(v)
+
+    collect_keys(rep)
+    leftovers = [s for s in strings(rep) if s not in allowed_values | reason_codes | keys]
+    assert leftovers == []  # キー・理由コード・選択肢のコード・バージョン以外の文字列は無い

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchLearning, resetLearning } from "./pageApi";
+import { fetchLearning, learningReport, resetLearning } from "./pageApi";
 import type { LearningData, PageMetric } from "./types";
 
 const pct = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(1)}%`);
@@ -54,6 +54,18 @@ export default function LearningScreen() {
     setConfirmReset(false);
     load();
   };
+  const downloadReport = async () => {
+    try {
+      const url = await learningReport();
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "accuracy_report.json";
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch {
+      setMessage("レポートを作れませんでした");
+    }
+  };
   if (error) return <p role="alert">読み込めません</p>;
   if (!data) return <p>読み込み中…</p>;
   const s = data.summary;
@@ -97,6 +109,12 @@ export default function LearningScreen() {
           </p>
         </>
       )}
+      <p>
+        <button data-testid="download-report" onClick={() => void downloadReport()}>
+          精度レポートを保存(統計のみ)
+        </button>{" "}
+        <span className="hint">ページ数・要確認率・直した割合・確認時間だけを含みます。帳票の内容(日付・科目・摘要・金額の値)は含まれません。</span>
+      </p>
       <h2>世代</h2>
       <table className="jobs" data-testid="generations">
         <thead>

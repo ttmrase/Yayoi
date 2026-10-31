@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -157,6 +158,15 @@ def create_app(
                 "phase": 3,
             }
 
+    @app.get("/api/learning/report")
+    def learning_report(profile_id: int = db.DEFAULT_PROFILE_ID) -> JSONResponse:
+        """精度レポート(統計だけ。値・ファイル名・画像は含まない)。ダウンロードして開発者に送る。"""
+        with lock:
+            rep = metrics.report(con, profile_id, app_version, time.time())
+        return JSONResponse(
+            rep, headers={"Content-Disposition": 'attachment; filename="accuracy_report.json"'}
+        )
+
     @app.post("/api/learning/reset")
     def learning_reset() -> dict:
         """学習データの削除(確定したセルの切り出し画像 + 学習状態)。確定した値・出力の履歴は残る。"""
@@ -168,7 +178,7 @@ def create_app(
             return {
                 "exports": exports.list_exports(con),
                 "formats": [
-                    {"id": f.id, "label": f.label, "provisional": f.provisional}
+                    {"id": f.id, "label": f.label, "notes": list(f.notes)}
                     for f in exports.FORMATS.values()
                 ],
                 "candidates": exports.candidates(con),
@@ -192,8 +202,12 @@ def create_app(
 
     @app.get("/api/exports/{export_id}/file")
     def exports_file(export_id: int) -> FileResponse:
+        return exports_file_n(export_id, 0)
+
+    @app.get("/api/exports/{export_id}/files/{idx}")
+    def exports_file_n(export_id: int, idx: int) -> FileResponse:
         with lock:
-            path = exports.export_file(con, exports_root, export_id)
+            path = exports.export_file(con, exports_root, export_id, idx)
         return FileResponse(path, media_type="text/csv; charset=Shift_JIS", filename=path.name)
 
     @app.get("/api/jobs")

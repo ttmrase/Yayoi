@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "./api";
 import { exportFile, fetchExports, runExport, validateExport } from "./pageApi";
-import { MISSING_LABEL, type ExportIssue, type ExportList, type ExportValidation } from "./types";
+import { MISSING_LABEL, type ExportIssue, type ExportList, type ExportRecord, type ExportValidation } from "./types";
 
 interface Props {
   /** 検証の指摘から確認画面の該当セルへ */
@@ -9,6 +9,20 @@ interface Props {
 }
 
 const fmt = (t: number) => new Date(t * 1000).toLocaleString("ja-JP");
+
+function IssueList({ issues, onOpenCell }: { issues: ExportIssue[]; onOpenCell: Props["onOpenCell"] }) {
+  return (
+    <ul>
+      {issues.map((i, k) => (
+        <li key={k}>
+          {i.label}(ページ ID {i.page_id}
+          {i.row !== null && ` ・ ${i.row + 1} 行目`})
+          <button onClick={() => onOpenCell(i.page_id, i.cell_id)}>確認画面で開く</button>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 export default function ExportScreen({ onOpenCell }: Props) {
   const [data, setData] = useState<ExportList | null>(null);
@@ -56,12 +70,14 @@ export default function ExportScreen({ onOpenCell }: Props) {
     setBusy(true);
     try {
       const rec = await runExport(ids, format, acceptDup);
-      setMessage(`出力しました(${rec.n_pages} ページ・${rec.n_rows} 行)。下の履歴からダウンロードできます。`);
+      setMessage(
+        `出力しました(${rec.n_pages} ページ・${rec.n_rows} 行・${rec.files.length} ファイル)。下の履歴からダウンロードできます。`,
+      );
       setResult(null);
       setPicked(new Set());
       load();
     } catch (e) {
-      if (e instanceof ApiError && e.code === "duplicate_pages") setMessage("すでに出力したページが含まれています。承諾にチェックを入れてください。");
+      if (e instanceof ApiError && e.code === "duplicate_pages") setMessage("すでに出力した行が含まれています。承諾にチェックを入れてください。");
       else if (e instanceof ApiError && e.code === "validation_failed") setMessage("検証エラーがあるため出力しません。");
       else setMessage("出力できませんでした");
     } finally {
@@ -69,8 +85,8 @@ export default function ExportScreen({ onOpenCell }: Props) {
     }
   };
 
-  const download = async (id: number, name: string | null) => {
-    const url = await exportFile(id);
+  const download = async (id: number, idx: number, name: string | null) => {
+    const url = await exportFile(id, idx);
     const a = document.createElement("a");
     a.href = url;
     a.download = name ?? `export_${id}.csv`;
@@ -78,7 +94,7 @@ export default function ExportScreen({ onOpenCell }: Props) {
     window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   };
 
-  const blocked = !result || result.issues.length > 0 || result.missing_settings.length > 0 || result.n_rows === 0;
+  const blocked = !result || result.errors.length > 0 || result.missing_settings.length > 0 || result.n_rows === 0;
   const needsConsent = (result?.duplicates.length ?? 0) > 0 && !acceptDup;
 
   return (
@@ -86,7 +102,14 @@ export default function ExportScreen({ onOpenCell }: Props) {
       <h1>出力</h1>
       <label>
         形式{" "}
-        <select value={format} onChange={(e) => { setFormat(e.target.value); setResult(null); }}>
+        <select
+          data-testid="export-format"
+          value={format}
+          onChange={(e) => {
+            setFormat(e.target.value);
+            setResult(null);
+          }}
+        >
           {data.formats.map((x) => (
             <option key={x.id} value={x.id}>
               {x.label}
@@ -94,9 +117,14 @@ export default function ExportScreen({ onOpenCell }: Props) {
           ))}
         </select>
       </label>
-      {f?.provisional && (
-        <div className="banner" data-testid="provisional-banner" role="note">
-          この形式は仮のものです。弥生のインポート形式(列・必須項目・税区分の値)は確定後に差し替えます。
+      {f && (
+        <div className="banner" data-testid="export-notes" role="note">
+          <b>取り込む前に</b>
+          <ul>
+            {f.notes.map((n, k) => (
+              <li key={k}>{n}</li>
+            ))}
+          </ul>
         </div>
       )}
       <h2>出力するページ(確定済み)</h2>
@@ -110,6 +138,7 @@ export default function ExportScreen({ onOpenCell }: Props) {
               <th>ジョブ</th>
               <th>ページ</th>
               <th>タイトル</th>
+              <th>行数</th>
               <th>出力</th>
             </tr>
           </thead>
@@ -122,7 +151,8 @@ export default function ExportScreen({ onOpenCell }: Props) {
                 <td>{c.job_name}</td>
                 <td>{c.idx + 1}</td>
                 <td>{c.title ?? <span className="ng">未入力</span>}</td>
-                <td>{c.exported ? "出力済み" : "未出力"}</td>
+                <td>{c.n_rows}</td>
+                <td>{c.n_exported === 0 ? "未出力" : c.exported ? "出力済み" : `一部出力済み(${c.n_exported} 行)`}</td>
               </tr>
             ))}
           </tbody>
@@ -142,33 +172,32 @@ export default function ExportScreen({ onOpenCell }: Props) {
       {result && (
         <div data-testid="export-result">
           {result.missing_settings.length > 0 && (
-            <div className="banner ng" role="alert">
+            <div className="banner ng" role="alert" data-testid="export-missing">
               設定が足りません: {result.missing_settings.map((m) => MISSING_LABEL[m] ?? m).join("、")}(設定画面で入力してください)
             </div>
           )}
-          {result.issues.length > 0 ? (
+          {result.errors.length > 0 ? (
             <div className="banner ng" role="alert" data-testid="export-issues">
-              検証エラー {result.issues.length} 件
-              <ul>
-                {result.issues.map((i: ExportIssue, k) => (
-                  <li key={k}>
-                    {i.label}(ページ ID {i.page_id}
-                    {i.row !== null && ` ・ ${i.row + 1} 行目`})
-                    <button onClick={() => onOpenCell(i.page_id, i.cell_id)}>確認画面で開く</button>
-                  </li>
-                ))}
-              </ul>
+              検証エラー {result.errors.length} 件(エラーがあるうちは出力できません)
+              <IssueList issues={result.errors} onOpenCell={onOpenCell} />
             </div>
           ) : (
             <p role="status" data-testid="export-ok">
               検証しました: {result.n_rows} 行を出力できます。
             </p>
           )}
+          {result.warnings.length > 0 && (
+            <div className="banner" role="note" data-testid="export-warnings">
+              注意 {result.warnings.length} 件(出力は止まりません)
+              <IssueList issues={dedupe(result.warnings)} onOpenCell={onOpenCell} />
+            </div>
+          )}
           {result.duplicates.length > 0 && (
             <div className="banner" role="alert" data-testid="export-duplicates">
-              すでに出力したページが {result.duplicates.length} 件含まれています(同じ画像・同じ確定値)。二重に取り込まないよう注意してください。
+              すでに出力した行が含まれています(ページ {result.duplicates.length} 件・合計 {result.duplicates.reduce((a, d) => a + d.n_rows, 0)} 行。同じ画像・同じ確定値)。
+              弥生は再インポートを警告せずに重複登録するので、二重に取り込まないよう注意してください。
               <label>
-                <input type="checkbox" checked={acceptDup} onChange={(e) => setAcceptDup(e.target.checked)} /> 重複を承知で出力する
+                <input type="checkbox" data-testid="accept-duplicates" checked={acceptDup} onChange={(e) => setAcceptDup(e.target.checked)} /> 重複を承知で出力する
               </label>
             </div>
           )}
@@ -193,28 +222,50 @@ export default function ExportScreen({ onOpenCell }: Props) {
               <th>形式</th>
               <th>ページ</th>
               <th>行数</th>
-              <th>ファイルのハッシュ</th>
-              <th />
+              <th>ファイル(ハッシュ)</th>
             </tr>
           </thead>
           <tbody>
             {data.exports.map((e) => (
-              <tr key={e.id}>
-                <td>{fmt(e.created_at)}</td>
-                <td>{e.format_label}</td>
-                <td>{e.n_pages}</td>
-                <td>{e.n_rows}</td>
-                <td title={e.file_sha256}>
-                  <code>{e.file_sha256.slice(0, 12)}…</code>
-                </td>
-                <td>
-                  <button onClick={() => void download(e.id, e.file_name)}>ダウンロード</button>
-                </td>
-              </tr>
+              <HistoryRow key={e.id} e={e} onDownload={download} />
             ))}
           </tbody>
         </table>
       )}
     </section>
+  );
+}
+
+/** 同じ理由の注意は 1 件にまとめる(行ごとに出すと長くなる)。先頭の 1 件へ移動できる。 */
+function dedupe(list: ExportIssue[]): ExportIssue[] {
+  const seen = new Set<string>();
+  return list.filter((i) => {
+    if (i.code !== "title_lost" && i.code !== "exclusive_tax_amount_empty") return true;
+    if (seen.has(i.code)) return false;
+    seen.add(i.code);
+    return true;
+  });
+}
+
+function HistoryRow({ e, onDownload }: { e: ExportRecord; onDownload: (id: number, idx: number, name: string | null) => Promise<void> }) {
+  return (
+    <tr data-testid={`export-${e.id}`}>
+      <td>{fmt(e.created_at)}</td>
+      <td>{e.format_label}</td>
+      <td>{e.n_pages}</td>
+      <td>{e.n_rows}</td>
+      <td>
+        <ul className="plain">
+          {e.files.map((file) => (
+            <li key={file.idx} title={file.sha256}>
+              <button data-testid={`download-${e.id}-${file.idx}`} onClick={() => void onDownload(e.id, file.idx, file.name)}>
+                ダウンロード
+              </button>{" "}
+              {file.payment !== null && <b>{file.payment}</b>} {file.n_rows} 行 <code>{file.sha256.slice(0, 10)}…</code>
+            </li>
+          ))}
+        </ul>
+      </td>
+    </tr>
   );
 }

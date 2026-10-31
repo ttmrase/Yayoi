@@ -44,4 +44,9 @@ def validate_value(column: str, value: str, row_nonblank: bool = True) -> list[s
         except UnicodeEncodeError:
             return [E_CP932]
         return [E_LONG] if (n_bytes > 64 or len(v) > 80) else []
+    if column == "account":  # 科目(支払手段)も、出力で cp932 に変換する
+        try:
+            v.encode("cp932")
+        except UnicodeEncodeError:
+            return [E_CP932]
     return []

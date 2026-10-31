@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+
+from .settings import load as load_settings
 
 CORRECTED = ("corrected", "candidate", "expanded_edit")
 
@@ -73,3 +76,71 @@ def generations(con: sqlite3.Connection, profile_id: int) -> list[dict]:
         (profile_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def report(con: sqlite3.Connection, profile_id: int, app_version: str, now: float) -> dict:
+    """試用版の精度レポート(**統計だけ**。セルの値・タイトル・科目・ファイル名・画像は一切含まない)。開発者に送って精度を見るためのもの。
+    含めるのは、件数・割合・時間・理由コード(要確認の理由の種類ごとの件数)・設定の種類(件数と選択肢のコード)だけ。"""
+    rows = page_metrics(con, profile_id)
+    per_col: dict[str, dict[str, int]] = {}
+    for r in con.execute(
+        "SELECT c.column_kind AS col,"
+        " SUM(c.kind != 'blank') AS n_text,"
+        " SUM(c.kind != 'blank' AND c.review = 1) AS n_review,"
+        " SUM(c.kind != 'blank' AND c.edit_kind IN ('corrected','candidate','expanded_edit')) AS n_corrected,"
+        " SUM(c.kind != 'blank' AND c.review = 0 AND c.edit_kind IN ('corrected','candidate','expanded_edit')) AS n_unflagged_corrected"
+        " FROM cells c JOIN pages p ON p.id = c.page_id JOIN jobs j ON j.id = p.job_id"
+        " WHERE p.status = 'confirmed' AND j.profile_id = ? GROUP BY c.column_kind",
+        (profile_id,),
+    ):
+        per_col[r["col"]] = {
+            k: int(r[k] or 0)
+            for k in ("n_text", "n_review", "n_corrected", "n_unflagged_corrected")
+        }
+    reasons: dict[str, int] = {}
+    for r in con.execute(
+        "SELECT c.reasons FROM cells c JOIN pages p ON p.id = c.page_id JOIN jobs j ON j.id = p.job_id"
+        " WHERE p.status = 'confirmed' AND j.profile_id = ? AND c.review = 1",
+        (profile_id,),
+    ):
+        for code in json.loads(r["reasons"]):
+            reasons[code] = reasons.get(code, 0) + 1
+    edit_kinds = {
+        r["edit_kind"]: int(r["n"])
+        for r in con.execute(
+            "SELECT c.edit_kind, COUNT(*) AS n FROM cells c JOIN pages p ON p.id = c.page_id JOIN jobs j ON j.id = p.job_id"
+            " WHERE p.status = 'confirmed' AND j.profile_id = ? AND c.kind != 'blank' GROUP BY c.edit_kind",
+            (profile_id,),
+        )
+    }
+    cfg = load_settings(con)
+    n_exp = con.execute("SELECT COUNT(*), COALESCE(SUM(n_rows), 0) FROM exports").fetchone()
+    return {
+        "schema": 1,
+        "app_version": app_version,
+        "generated_at": now,
+        "summary": summary(rows),
+        "per_column": per_col,
+        "review_reasons": dict(sorted(reasons.items())),
+        "edit_kinds": edit_kinds,
+        "pages": [
+            {
+                "order": i + 1,
+                "generation": r["generation"],
+                "n_text": r["n_text"],
+                "n_review": r["n_review"],
+                "n_corrected": r["n_corrected"],
+                "n_unflagged_corrected": r["n_unflagged_corrected"],
+                "review_seconds": round(r["review_seconds"], 1),
+            }
+            for i, r in enumerate(rows)
+        ],
+        "settings": {
+            "n_payments": len(cfg.payments),
+            "n_titles": len(cfg.titles),
+            "taxpayer": cfg.taxpayer,
+            "tax_scheme": cfg.tax_scheme,
+            "tax_method": cfg.tax_method,
+        },
+        "exports": {"n_exports": int(n_exp[0]), "n_rows": int(n_exp[1])},
+    }

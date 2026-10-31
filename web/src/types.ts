@@ -175,9 +175,14 @@ export interface AccountTax {
   tax_category: string;
 }
 export interface AppSettings {
-  business_type: "individual" | "corporate";
-  tax_method: "inclusive" | "exclusive" | "exempt";
-  accounting_method: "cash" | "accrual";
+  /** 事業者区分(免税事業者はすべて「対象外」) */
+  taxpayer: "taxable" | "exempt";
+  /** 課税方式 */
+  tax_scheme: "general" | "simplified";
+  /** 経理方式(税抜は借方税金額が空で出力されるので警告) */
+  tax_method: "inclusive" | "exclusive";
+  /** 初期設定ウィザードを終えた(スキップを含む) */
+  wizard_done: boolean;
   payments: PaymentMap[];
   titles: TitleMap[];
   default_tax: AccountTax[];
@@ -198,6 +203,8 @@ export interface SettingsProblem {
 export interface ExportIssue {
   code: string;
   label: string;
+  /** error = 出力できない / warning = 注意(出力は止めない) */
+  severity: "error" | "warning";
   page_id: number;
   cell_id: number | null;
   row: number | null;
@@ -205,9 +212,12 @@ export interface ExportIssue {
 export interface ExportValidation {
   n_rows: number;
   issues: ExportIssue[];
-  duplicates: { page_id: number; export_ids: number[] }[];
+  errors: ExportIssue[];
+  warnings: ExportIssue[];
+  duplicates: { page_id: number; n_rows: number; export_ids: number[] }[];
   missing_settings: string[];
-  provisional: boolean;
+  notes: string[];
+  format: string;
 }
 export interface ExportCandidate {
   id: number;
@@ -215,7 +225,16 @@ export interface ExportCandidate {
   job_name: string;
   idx: number;
   title: string | null;
+  n_rows: number;
+  n_exported: number;
   exported: boolean;
+}
+export interface ExportFile {
+  idx: number;
+  name: string;
+  sha256: string;
+  n_rows: number;
+  payment: string | null;
 }
 export interface ExportRecord {
   id: number;
@@ -226,10 +245,11 @@ export interface ExportRecord {
   n_rows: number;
   file_sha256: string;
   file_name: string | null;
+  files: ExportFile[];
 }
 export interface ExportList {
   exports: ExportRecord[];
-  formats: { id: string; label: string; provisional: boolean }[];
+  formats: { id: string; label: string; notes: string[] }[];
   candidates: ExportCandidate[];
 }
 
@@ -263,7 +283,21 @@ export interface LearningData {
   phase: number;
 }
 
+/** 税区分の入力候補(目安。弥生の登録名と完全に一致させる。正式名称の一覧は docs/yayoi_export.md のとおり未確認) */
+export const TAX_SUGGESTIONS = [
+  "課対仕入込10%",
+  "課対仕入込8%(軽)",
+  "課対仕入込8%",
+  "課対仕入10%",
+  "課対仕入8%(軽)",
+  "課対仕入8%",
+  "対象外",
+];
+
 export const SETTINGS_PROBLEM_LABEL: Record<string, string> = {
+  tax_rate_missing: "税率が書かれていません(税率なしの税区分は弥生で 5% として取り込まれます)。例: 課対仕入込10%",
+  tax_percent_fullwidth: "% は半角で書いてください",
+  too_long_bytes: "長すぎます(全角 12 文字・24 バイトまで)",
   duplicate: "同じ名前が重複しています",
   empty: "空にできません",
   surrounding_space: "前後に空白があります",
@@ -274,4 +308,5 @@ export const MISSING_LABEL: Record<string, string> = {
   payment_without_credit_account: "貸方科目が空の支払手段があります",
   no_titles: "タイトル → 借方科目が 1 つも登録されていません",
   title_without_debit_account: "借方科目が空のタイトルがあります",
+  debit_account_without_tax_category: "借方科目に既定の税区分が設定されていません(借方税区分は必須です。免税事業者なら不要)",
 };

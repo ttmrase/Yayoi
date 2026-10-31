@@ -245,6 +245,7 @@ def test_settings_feed_the_recognizer_vocabulary(tmp_path):
                     {"name": "普通預金", "credit_account": "普通預金", "credit_sub": "A銀行"},
                 ],
                 "titles": [{"name": "旅費交通費", "debit_account": "旅費交通費"}],
+                "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入込10%"}],
             },
         )
         assert r.status_code == 200 and r.json()["missing"] == []

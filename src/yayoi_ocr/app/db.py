@@ -141,6 +141,26 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE uploads ADD COLUMN deleted_at REAL;
     """,
+    # --- v7: 出力の行単位の履歴と、出力ファイル(1 回の出力が複数ファイルになり得る)
+    """
+    CREATE TABLE export_rows (        -- 行ごとの出力済みの記録(同じ行の再出力を警告する)。値は載せない(ハッシュだけ)
+        export_id INTEGER NOT NULL REFERENCES exports(id) ON DELETE CASCADE,
+        page_id INTEGER NOT NULL REFERENCES pages(id),
+        row INTEGER NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        PRIMARY KEY (export_id, page_id, row)
+    );
+    CREATE INDEX idx_export_rows_hash ON export_rows(content_sha256);
+    CREATE TABLE export_files (
+        export_id INTEGER NOT NULL REFERENCES exports(id) ON DELETE CASCADE,
+        idx INTEGER NOT NULL,
+        name TEXT NOT NULL,           -- exports ディレクトリの中のファイル名
+        sha256 TEXT NOT NULL,
+        n_rows INTEGER NOT NULL,
+        payment TEXT,                 -- スマート取引取込: 支払手段ごとのファイル
+        PRIMARY KEY (export_id, idx)
+    );
+    """,
 ]
 
 

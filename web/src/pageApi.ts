@@ -38,8 +38,9 @@ export const validateExport = (pageIds: number[], format: string) =>
   api<ExportValidation>("/api/exports/validate", json("POST", { page_ids: pageIds, format }));
 export const runExport = (pageIds: number[], format: string, acceptDuplicates: boolean) =>
   api<ExportRecord>("/api/exports", json("POST", { page_ids: pageIds, format, accept_duplicates: acceptDuplicates }));
-export const exportFile = (id: number) => apiBlobUrl(`/api/exports/${id}/file`);
+export const exportFile = (id: number, idx = 0) => apiBlobUrl(`/api/exports/${id}/files/${idx}`);
 export const fetchLearning = () => api<LearningData>("/api/learning");
+export const learningReport = () => apiBlobUrl("/api/learning/report");
 export const resetLearning = () =>
   api<{ deleted_images: number }>("/api/learning/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 

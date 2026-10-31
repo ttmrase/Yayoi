@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const TOKEN = "e2e-token-0123456789abcdef0123456789abcdef";
 

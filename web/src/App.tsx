@@ -4,7 +4,10 @@ import ExportScreen from "./ExportScreen";
 import JobsScreen from "./JobsScreen";
 import LearningScreen from "./LearningScreen";
 import ReviewScreen from "./ReviewScreen";
+import { fetchSettings } from "./pageApi";
 import SettingsScreen from "./SettingsScreen";
+import SetupWizard from "./SetupWizard";
+import type { AppSettings } from "./types";
 
 type Health = { ok: boolean; version: string; schema: number; dev: boolean };
 type Profile = { id: number; name: string };
@@ -18,6 +21,7 @@ export default function App() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("ジョブ");
   const [pageId, setPageId] = useState<number | null>(null); // 確認中のページ(確認タブ)
   const [startCell, setStartCell] = useState<number | null>(null); // 出力の検証の指摘から開くときの、最初のフォーカス
+  const [wizard, setWizard] = useState<AppSettings | null>(null); // 初回起動の初期設定ウィザード(終えるまで他の画面は出さない)
 
   useEffect(() => {
     if (!hasToken()) {
@@ -28,6 +32,9 @@ export default function App() {
       .then(setHealth)
       .catch((e: unknown) => setError(e instanceof ApiError ? `接続できません (${e.status})` : "接続できません"));
     api<Profile[]>("/api/profiles").then(setProfiles).catch(() => undefined);
+    fetchSettings()
+      .then((r) => setWizard(r.settings.wizard_done ? null : r.settings))
+      .catch(() => undefined);
   }, []);
 
   return (
@@ -36,7 +43,7 @@ export default function App() {
         <strong>yayoi-ocr</strong>
         <nav aria-label="画面">
           {TABS.map((t) => (
-            <button key={t} aria-current={t === tab ? "page" : undefined} onClick={() => setTab(t)}>
+            <button key={t} aria-current={t === tab ? "page" : undefined} disabled={wizard !== null} onClick={() => setTab(t)}>
               {t}
             </button>
           ))}
@@ -56,7 +63,16 @@ export default function App() {
         </span>
       </header>
       <main>
-        {tab === "ジョブ" && (
+        {wizard !== null && (
+          <SetupWizard
+            settings={wizard}
+            onDone={() => {
+              setWizard(null);
+              setTab("ジョブ");
+            }}
+          />
+        )}
+        {wizard === null && tab === "ジョブ" && (
           <JobsScreen
             dev={health?.dev ?? false}
             onOpenPage={(id) => {
@@ -65,7 +81,7 @@ export default function App() {
             }}
           />
         )}
-        {tab === "確認" &&
+        {wizard === null && tab === "確認" &&
           (pageId === null ? (
             <p>ジョブ一覧から開いてください。</p>
           ) : (
@@ -79,8 +95,8 @@ export default function App() {
               onExit={() => setTab("ジョブ")}
             />
           ))}
-        {tab === "設定" && <SettingsScreen />}
-        {tab === "出力" && (
+        {wizard === null && tab === "設定" && <SettingsScreen />}
+        {wizard === null && tab === "出力" && (
           <ExportScreen
             onOpenCell={(id, cell) => {
               setStartCell(cell);
@@ -89,7 +105,7 @@ export default function App() {
             }}
           />
         )}
-        {tab === "学習" && <LearningScreen />}
+        {wizard === null && tab === "学習" && <LearningScreen />}
       </main>
     </div>
   );

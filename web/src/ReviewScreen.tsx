@@ -43,6 +43,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
   const [block, setBlock] = useState<Summary | null>(null); // 確定を拒否された理由
   const [reloadKey, setReloadKey] = useState(0); // 認識が終わった・再試行したときに読み直す
   const [titles, setTitles] = useState<string[]>([]); // 設定のタイトル(入力の候補)
+  const [noVocabulary, setNoVocabulary] = useState(false); // 支払手段が未登録 = 科目の語彙がない
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("row"); // 行モード(紙の並び)/ 列モード(1 列ずつ)
   const [layoutOpen, setLayoutOpen] = useState(false); // 罫線の確認・補正のパネル
@@ -116,7 +117,10 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
   // ---- タイトルの候補(設定から)
   useEffect(() => {
     void fetchSettings()
-      .then((r) => setTitles(r.settings.titles.map((t) => t.name)))
+      .then((r) => {
+        setTitles(r.settings.titles.map((t) => t.name));
+        setNoVocabulary(r.settings.payments.length === 0);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -465,6 +469,11 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
         {!page.title && titleDraft === null && <span className="ng small">未入力(出力に必要です)</span>}
       </div>
 
+      {noVocabulary && (
+        <div className="banner" data-testid="no-vocabulary" role="note">
+          科目の語彙が未設定のため、科目はすべて要確認になります。設定画面で支払手段を登録してください(確定した科目は、次のページから語彙に加わります)。
+        </div>
+      )}
       {page.layout_status !== "ok" && (
         <div className="banner" data-testid="layout-banner" role="alert">
           表の罫線の検出に自信がありません({page.layout_reasons.map((r) => REASON_LABEL[r] ?? r).join("、") || "要確認"})。

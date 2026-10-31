@@ -1,4 +1,4 @@
-"""出力(検証・重複の警告・履歴・ファイル)のテスト。形式は暫定。合成した認識結果だけを使う。"""
+"""出力(検証・行単位の重複警告・履歴・ファイル)のテスト。仕様は docs/yayoi_export.md。合成した認識結果だけを使う。"""
 
 from __future__ import annotations
 
@@ -22,12 +22,13 @@ TOKEN = new_token()
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 SETTINGS = {
+    "wizard_done": True,
     "payments": [
-        {"name": a, "credit_account": a, "credit_sub": "補助" if a == "普通預金" else ""}
+        {"name": a, "credit_account": a, "credit_sub": "A銀行" if a == "普通預金" else ""}
         for a in ACCOUNTS
     ],
     "titles": [{"name": "旅費交通費", "debit_account": "旅費交通費"}],
-    "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入"}],
+    "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入込10%"}],
 }
 
 
@@ -35,7 +36,6 @@ SETTINGS = {
 def client(tmp_path):
     app = create_app(tmp_path / "a.sqlite3", TOKEN, allowed_hosts_for(PORT), dev=True)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=AUTH) as c:
-        c.root_ = tmp_path
         yield c
 
 
@@ -60,39 +60,145 @@ def confirmed_page(client, title="旅費交通費", settings=SETTINGS, **kw):
     return pid
 
 
-def issues_of(r):
-    return {(i["code"], i["page_id"]) for i in r.json()["issues"]}
+def codes(r, key="issues"):
+    return {(i["code"], i["page_id"]) for i in r.json()[key]}
 
 
-def test_validate_and_export_a_confirmed_page(client):
+def test_validate_and_export_a_confirmed_page_in_the_yayoi_import_format(client):
     pid = confirmed_page(client)
     v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
-    assert v["issues"] == [] and v["n_rows"] == 4 and v["duplicates"] == [] and v["provisional"]
+    assert (
+        v["errors"] == []
+        and v["n_rows"] == 4
+        and v["duplicates"] == []
+        and v["format"] == "yayoi_import"
+    )
+    assert any("マッチングリスト" in n for n in v["notes"]) and any(
+        "Excel" in n for n in v["notes"]
+    )
     r = client.post("/api/exports", json={"page_ids": [pid]})
     assert r.status_code == 200, r.text
     e = r.json()
-    assert e["n_rows"] == 4 and e["n_pages"] == 1 and "仮の形式" in e["format_label"]
+    assert e["n_rows"] == 4 and e["n_pages"] == 1 and len(e["files"]) == 1
     data = client.get(f"/api/exports/{e['id']}/file").content
-    assert hashlib.sha256(data).hexdigest() == e["file_sha256"]
-    text = data.decode("cp932")
-    lines = text.split("\r\n")
-    assert lines[0] == "日付,借方科目,借方補助科目,貸方科目,貸方補助科目,摘要,金額,税区分"
-    assert len(lines) == 4 + 2 and lines[-1] == ""
-    first = lines[1].split(",")
-    assert first[0].startswith("2026/") and first[1] == "旅費交通費" and first[7] == "課対仕入"
-    assert first[3] in ACCOUNTS and int(first[6]) > 0
+    assert hashlib.sha256(data).hexdigest() == e["files"][0]["sha256"]
+    lines = data.decode("cp932").split("\r\n")
+    assert len(lines) == 5 and lines[-1] == ""  # ヘッダーなし、4 仕訳 + 末尾の CRLF
+    first = lines[0].split(",")
+    assert len(first) == 25 and first[0] == "2000" and first[3].startswith("2026/")
+    assert first[4] == "旅費交通費" and first[7] == "課対仕入込10%" and first[10] in ACCOUNTS
+    assert (
+        first[8] == first[14]
+        and int(first[8]) > 0
+        and first[13] == "対象外"
+        and first[19] == "0"
+        and first[24] == "no"
+    )
+    assert all(len(ln.split(",")) == 25 for ln in lines[:-1])
+
+
+def test_smart_torihiki_files_are_split_per_payment_and_have_four_columns(client):
+    pid = confirmed_page(client)
+    e = client.post("/api/exports", json={"page_ids": [pid], "format": "smart_torihiki"}).json()
+    assert e["format"] == "smart_torihiki" and sum(f["n_rows"] for f in e["files"]) == 4
+    pays = {f["payment"] for f in e["files"]}
+    assert pays <= set(ACCOUNTS) and len(pays) >= 1
+    for f in e["files"]:
+        assert f["payment"] in f["name"]  # ファイル名に支払手段の名前
+        data = client.get(f"/api/exports/{e['id']}/files/{f['idx']}").content
+        for ln in data.decode("cp932").split("\r\n")[:-1]:
+            cols = ln.split(",")
+            assert (
+                len(cols) == 4
+                and cols[0].startswith("2026/")
+                and cols[1] == ""
+                and int(cols[2]) > 0
+            )
+    v = client.post(
+        "/api/exports/validate", json={"page_ids": [pid], "format": "smart_torihiki"}
+    ).json()
+    assert any(w["code"] == "title_lost" for w in v["warnings"]) and v["errors"] == []
 
 
 def test_export_requires_a_complete_valid_page(client):
     pid = confirmed_page(client, title="")
     r = client.post("/api/exports", json={"page_ids": [pid]})
     assert r.status_code == 409 and r.json()["error"] == "validation_failed"
-    assert ("title_missing", pid) in issues_of(r)
+    assert ("title_missing", pid) in codes(r)
     client.post(f"/api/pages/{pid}/reopen")
     client.put(f"/api/pages/{pid}/title", json={"title": "未設定の科目"})
     confirm_with(client, pid, {})
-    assert ("title_unmapped", pid) in issues_of(
+    assert ("title_unmapped", pid) in codes(
         client.post("/api/exports/validate", json={"page_ids": [pid]})
+    )
+
+
+def test_the_debit_tax_category_is_required_for_taxable_businesses_only(client):
+    s = {**SETTINGS, "default_tax": []}
+    pid = confirmed_page(client, settings=s)
+    v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+    assert "tax_category_missing" in {i["code"] for i in v["errors"]}
+    assert "debit_account_without_tax_category" in v["missing_settings"]
+    assert client.post("/api/exports", json={"page_ids": [pid]}).status_code == 409
+    # 免税事業者はすべて「対象外」(税区分の設定は要らない)
+    client.put("/api/settings", json={**s, "taxpayer": "exempt"})
+    v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+    assert v["errors"] == [] and v["missing_settings"] == []
+    e = client.post("/api/exports", json={"page_ids": [pid]}).json()
+    first = (
+        client.get(f"/api/exports/{e['id']}/file")
+        .content.decode("cp932")
+        .split("\r\n")[0]
+        .split(",")
+    )
+    assert first[7] == "対象外"
+
+
+def test_tax_exclusive_accounting_warns_that_the_debit_tax_amount_is_empty(client):
+    pid = confirmed_page(client, settings={**SETTINGS, "tax_method": "exclusive"})
+    v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+    assert v["errors"] == [] and [w["code"] for w in v["warnings"]] == [
+        "exclusive_tax_amount_empty"
+    ]
+    assert (
+        client.post("/api/exports", json={"page_ids": [pid]}).status_code == 200
+    )  # 注意は出力を止めない
+
+
+def test_tax_categories_without_a_rate_are_refused_in_settings(client):
+    bad = {**SETTINGS, "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入"}]}
+    r = client.put("/api/settings", json=bad)
+    assert (
+        r.status_code == 422
+        and {"path": "default_tax[0].tax_category", "code": "tax_rate_missing"}
+        in r.json()["problems"]
+    )
+    full = {
+        **SETTINGS,
+        "default_tax": [{"account": "旅費交通費", "tax_category": "課対仕入込10％"}],
+    }
+    r = client.put("/api/settings", json=full)
+    assert {"path": "default_tax[0].tax_category", "code": "tax_percent_fullwidth"} in r.json()[
+        "problems"
+    ]
+    assert (
+        client.put(
+            "/api/settings",
+            json={**SETTINGS, "default_tax": [{"account": "旅費交通費", "tax_category": "対象外"}]},
+        ).status_code
+        == 200
+    )
+
+
+def test_account_names_longer_than_24_bytes_are_refused_in_settings(client):
+    s = {
+        **SETTINGS,
+        "titles": [{"name": "長い科目", "debit_account": "あ" * 13}],
+    }  # 全角 13 文字 = 26 バイト
+    r = client.put("/api/settings", json=s)
+    assert (
+        r.status_code == 422
+        and {"path": "titles[0].debit_account", "code": "too_long_bytes"} in r.json()["problems"]
     )
 
 
@@ -103,9 +209,10 @@ def test_unmapped_account_links_back_to_the_cell(client):
     v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
     bad = [i for i in v["issues"] if i["code"] == "account_unmapped"]
     cells = {c["id"]: c for c in client.get(f"/api/pages/{pid}").json()["cells"]}
-    # 設定にない支払手段が書かれた行が、セルへのリンクつきで指摘される(値は指摘に含まれない)
     assert bad and all(cells[i["cell_id"]]["col"] == 1 for i in bad)
-    assert all(set(i) == {"code", "label", "page_id", "cell_id", "row"} for i in v["issues"])
+    assert all(
+        set(i) == {"code", "label", "severity", "page_id", "cell_id", "row"} for i in v["issues"]
+    )
 
 
 def test_unconfirmed_pages_and_missing_settings_are_reported(client):
@@ -123,13 +230,20 @@ def test_unconfirmed_pages_and_missing_settings_are_reported(client):
     )
 
 
-def test_exporting_the_same_page_twice_needs_explicit_consent(client):
+# ---- 行単位の重複の警告
+
+
+def test_exporting_the_same_rows_twice_needs_explicit_consent(client):
     pid = confirmed_page(client)
     first = client.post("/api/exports", json={"page_ids": [pid]}).json()
-    assert [c["exported"] for c in client.get("/api/exports").json()["candidates"]] == [True]
+    cand = client.get("/api/exports").json()["candidates"]
+    assert [(c["n_rows"], c["n_exported"], c["exported"]) for c in cand] == [(4, 4, True)]
     v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
-    assert v["duplicates"] == [{"page_id": pid, "export_ids": [first["id"]]}]
+    assert v["duplicates"] == [{"page_id": pid, "n_rows": 4, "export_ids": [first["id"]]}]
     r = client.post("/api/exports", json={"page_ids": [pid]})
+    assert r.status_code == 409 and r.json()["error"] == "duplicate_pages"
+    # 別の形式でも、同じ行の二重の取り込みになるので警告する
+    r = client.post("/api/exports", json={"page_ids": [pid], "format": "smart_torihiki"})
     assert r.status_code == 409 and r.json()["error"] == "duplicate_pages"
     ok = client.post("/api/exports", json={"page_ids": [pid], "accept_duplicates": True})
     assert ok.status_code == 200 and ok.json()["id"] != first["id"]
@@ -139,7 +253,7 @@ def test_exporting_the_same_page_twice_needs_explicit_consent(client):
     ]
 
 
-def test_a_page_corrected_after_export_is_no_longer_a_duplicate(client):
+def test_only_the_corrected_row_is_new_after_reopening_an_exported_page(client):
     pid = confirmed_page(client)
     client.post("/api/exports", json={"page_ids": [pid]})
     client.post(f"/api/pages/{pid}/reopen")
@@ -150,7 +264,10 @@ def test_a_page_corrected_after_export_is_no_longer_a_duplicate(client):
     )
     client.patch(f"/api/pages/{pid}/cells/{cell['id']}", json={"action": "edit", "value": "99999"})
     confirm_with(client, pid, {})
-    assert client.post("/api/exports/validate", json={"page_ids": [pid]}).json()["duplicates"] == []
+    v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+    assert v["duplicates"][0]["n_rows"] == 3  # 直した 1 行は新しい行、残り 3 行は出力済み
+    cand = client.get("/api/exports").json()["candidates"][0]
+    assert (cand["n_rows"], cand["n_exported"], cand["exported"]) == (4, 3, False)
 
 
 def test_history_keeps_no_cell_values_and_the_settings_snapshot(client):
@@ -165,18 +282,24 @@ def test_history_keeps_no_cell_values_and_the_settings_snapshot(client):
         "n_rows",
         "file_sha256",
         "file_name",
+        "files",
     }
     con = client.app.state.db
     snap = con.execute("SELECT settings_snapshot FROM exports WHERE id = ?", (e["id"],)).fetchone()[
         0
     ]
     assert "旅費交通費" in snap  # 設定のスナップショット(確定値ではない)
+    rows = con.execute("SELECT * FROM export_rows WHERE export_id = ?", (e["id"],)).fetchall()
+    assert len(rows) == 4 and all(
+        len(r["content_sha256"]) == 64 for r in rows
+    )  # 行ごとのハッシュだけ
     assert client.get("/api/exports/999/file").status_code == 404
+    assert client.get(f"/api/exports/{e['id']}/files/5").status_code == 404
 
 
 def test_export_file_download_is_confined_to_the_exports_directory(client):
     pid = confirmed_page(client)
     e = client.post("/api/exports", json={"page_ids": [pid]}).json()
     con = client.app.state.db
-    con.execute("UPDATE exports SET file_name = '../../a.sqlite3' WHERE id = ?", (e["id"],))
+    con.execute("UPDATE export_files SET name = '../../a.sqlite3' WHERE export_id = ?", (e["id"],))
     assert client.get(f"/api/exports/{e['id']}/file").status_code == 404

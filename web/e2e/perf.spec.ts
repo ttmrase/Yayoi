@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { type APIRequestContext } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // 操作の遅延の機械計測(開発機での基準値。実際の PC での値は Windows 実機で測り直す)。値は標準出力に出し、緩い上限だけ検査する(回帰の検知用)。
 const TOKEN = "e2e-token-0123456789abcdef0123456789abcdef";

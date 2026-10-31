@@ -11,6 +11,8 @@ from pathlib import Path
 
 ENV_PRIVATE_DATA = "YAYOI_PRIVATE_DATA"
 DEFAULT_PRIVATE_DATA = "~/yayoi_private"
+# 試用版(Windows)では、同梱した重みの置き場をこれで指す(開発用の YAYOI_PRIVATE_DATA/models より優先)
+ENV_MODELS_DIR = "YAYOI_MODELS_DIR"
 
 
 def private_data_dir() -> Path:
@@ -28,7 +30,13 @@ def fonts_dir() -> Path:
 
 
 def models_dir() -> Path:
-    """学習済みモデルの重み置き場(scripts/fetch_models.py の取得先・学習結果。コミットしない)。"""
+    """学習済みモデルの重み置き場(scripts/fetch_models.py の取得先・学習結果。コミットしない)。
+
+    環境変数 `YAYOI_MODELS_DIR` があればそれ(試用版のセットアップが指す)。無ければ `YAYOI_PRIVATE_DATA/models`。
+    """
+    env = os.environ.get(ENV_MODELS_DIR)
+    if env:
+        return Path(env).expanduser().resolve()
     return private_data_dir() / "models"
 
 

@@ -4,13 +4,14 @@ import { fetchSettings, saveSettings } from "./pageApi";
 import {
   MISSING_LABEL,
   SETTINGS_PROBLEM_LABEL,
+  TAX_SUGGESTIONS,
   type AppSettings,
   type SettingsProblem,
 } from "./types";
 
-const BUSINESS = { individual: "個人事業", corporate: "法人" } as const;
-const TAX = { inclusive: "税込", exclusive: "税抜", exempt: "免税" } as const;
-const ACCOUNTING = { cash: "現金主義", accrual: "発生主義" } as const;
+export const TAXPAYER = { taxable: "課税事業者", exempt: "免税事業者" } as const;
+export const TAX_SCHEME = { general: "本則課税", simplified: "簡易課税" } as const;
+export const TAX_METHOD = { inclusive: "税込経理", exclusive: "税抜経理" } as const;
 
 type Group = "payments" | "titles" | "default_tax";
 
@@ -19,6 +20,17 @@ const EMPTY_ROW = {
   titles: { name: "", debit_account: "", debit_sub: "" },
   default_tax: { account: "", tax_category: "" },
 };
+
+/** 税区分の入力候補(目安)。弥生の登録名と完全に一致させる必要がある。 */
+export function TaxOptions() {
+  return (
+    <datalist id="tax-category-options">
+      {TAX_SUGGESTIONS.map((t) => (
+        <option key={t} value={t} />
+      ))}
+    </datalist>
+  );
+}
 
 /** 設定の表。1 行 = 1 件。入力欄ごとに、保存時の検証エラー(path で指す)を出す。 */
 function Table<G extends Group>({
@@ -61,6 +73,7 @@ function Table<G extends Group>({
                     <input
                       aria-label={`${title} ${i + 1} 行目の${c.label}`}
                       aria-invalid={err ? true : undefined}
+                      list={c.key === "tax_category" ? "tax-category-options" : undefined}
                       value={row[c.key]}
                       maxLength={c.key === "tax_category" ? 40 : 20}
                       onChange={(e) => onChange(rows.map((r, k) => (k === i ? { ...r, [c.key]: e.target.value } : r)))}
@@ -81,6 +94,7 @@ function Table<G extends Group>({
       <button data-testid={`add-${group}`} onClick={() => onChange([...rows, { ...EMPTY_ROW[group] }])}>
         行を追加
       </button>
+      <TaxOptions />
     </fieldset>
   );
 }
@@ -143,12 +157,16 @@ export default function SettingsScreen() {
           出力にはまだ足りない設定があります: {missing.map((m) => MISSING_LABEL[m] ?? m).join("、")}
         </div>
       )}
-      <fieldset>
-        <legend>事業者(仮の選択肢。弥生のインポート形式で必要な値は確定後に差し替えます)</legend>
+      <fieldset data-testid="settings-business">
+        <legend>事業者・経理の方式</legend>
         <label>
           事業者区分{" "}
-          <select value={cfg.business_type} onChange={(e) => edit({ business_type: e.target.value as AppSettings["business_type"] })}>
-            {Object.entries(BUSINESS).map(([k, v]) => (
+          <select
+            data-testid="taxpayer"
+            value={cfg.taxpayer}
+            onChange={(e) => edit({ taxpayer: e.target.value as AppSettings["taxpayer"] })}
+          >
+            {Object.entries(TAXPAYER).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
               </option>
@@ -157,8 +175,13 @@ export default function SettingsScreen() {
         </label>{" "}
         <label>
           課税方式{" "}
-          <select value={cfg.tax_method} onChange={(e) => edit({ tax_method: e.target.value as AppSettings["tax_method"] })}>
-            {Object.entries(TAX).map(([k, v]) => (
+          <select
+            data-testid="tax-scheme"
+            value={cfg.tax_scheme}
+            disabled={cfg.taxpayer === "exempt"}
+            onChange={(e) => edit({ tax_scheme: e.target.value as AppSettings["tax_scheme"] })}
+          >
+            {Object.entries(TAX_SCHEME).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
               </option>
@@ -167,14 +190,21 @@ export default function SettingsScreen() {
         </label>{" "}
         <label>
           経理方式{" "}
-          <select value={cfg.accounting_method} onChange={(e) => edit({ accounting_method: e.target.value as AppSettings["accounting_method"] })}>
-            {Object.entries(ACCOUNTING).map(([k, v]) => (
+          <select
+            data-testid="tax-method"
+            value={cfg.tax_method}
+            onChange={(e) => edit({ tax_method: e.target.value as AppSettings["tax_method"] })}
+          >
+            {Object.entries(TAX_METHOD).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
               </option>
             ))}
           </select>
         </label>
+        <p className="hint">
+          免税事業者を選ぶと、借方・貸方の税区分はすべて「対象外」で出力します。税抜経理を選んでも、借方税金額は空で出力します(弥生側で税額を確認してください)。
+        </p>
       </fieldset>
       <fieldset>
         <legend>データの保管</legend>
@@ -223,7 +253,11 @@ export default function SettingsScreen() {
       <Table
         group="default_tax"
         title="科目ごとの既定の税区分"
-        help="借方科目ごとに出力する税区分(値は弥生のインポート形式に合わせて確定します)。"
+        help={
+          cfg.taxpayer === "exempt"
+            ? "免税事業者のため、すべて「対象外」で出力します(この表は使いません)。"
+            : "借方科目ごとに出力する税区分。税率つきで、弥生の登録名と完全に一致する名前を書きます(例: 課対仕入込10%)。税率のない課税区分(課対仕入 など)は弥生で 5% として取り込まれるため、保存できません。"
+        }
         columns={[
           { key: "account", label: "借方科目" },
           { key: "tax_category", label: "税区分" },

@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const TOKEN = "e2e-token-0123456789abcdef0123456789abcdef";
 const AUTH = { Authorization: `Bearer ${TOKEN}` };

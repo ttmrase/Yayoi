@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const TOKEN = "e2e-token-0123456789abcdef0123456789abcdef";
 const AUTH = { Authorization: `Bearer ${TOKEN}` };
@@ -24,9 +25,10 @@ async function putSettings(request: APIRequestContext, title = "旅費交通費"
   const res = await request.put("/api/settings", {
     headers: AUTH,
     data: {
+      wizard_done: true,
       payments: ACCOUNTS.map((a) => ({ name: a, credit_account: a, credit_sub: "" })),
       titles: [{ name: title, debit_account: title, debit_sub: "" }],
-      default_tax: [{ account: title, tax_category: "課対仕入" }],
+      default_tax: [{ account: title, tax_category: "課対仕入込10%" }],
     },
   });
   expect(res.ok()).toBeTruthy();
@@ -39,7 +41,7 @@ async function openJobFromList(page: Page, jobId: number) {
 }
 
 test("⑮ 設定を画面で入力・保存でき、不正な入力は欄ごとに理由が出る", async ({ page, request }) => {
-  const reset = await request.put("/api/settings", { headers: AUTH, data: {} }); // 他の試験が入れた設定を空にする
+  const reset = await request.put("/api/settings", { headers: AUTH, data: { wizard_done: true } }); // 他の試験が入れた設定を空にする(ウィザードは終えた状態)
   expect(reset.ok()).toBeTruthy();
   await openApp(page);
   await tab(page, "設定").click();
@@ -63,6 +65,17 @@ test("⑮ 設定を画面で入力・保存でき、不正な入力は欄ごと�
   const titles = page.getByTestId("settings-titles");
   await titles.getByLabel("タイトル → 借方科目 1 行目の帳票に書かれるタイトル").fill("旅費交通費");
   await titles.getByLabel("タイトル → 借方科目 1 行目の借方科目").fill("旅費交通費");
+  // 借方の税区分は必須: 未設定の間は「足りない設定」に出る。税率のない課税区分は保存できない
+  await page.getByTestId("settings-save").click();
+  await expect(page.getByTestId("settings-state")).toContainText("保存しました");
+  await expect(page.getByTestId("settings-missing")).toContainText("既定の税区分が設定されていません");
+  await page.getByTestId("add-default_tax").click();
+  const tax = page.getByTestId("settings-default_tax");
+  await tax.getByLabel("科目ごとの既定の税区分 1 行目の借方科目").fill("旅費交通費");
+  await tax.getByLabel("科目ごとの既定の税区分 1 行目の税区分").fill("課対仕入");
+  await page.getByTestId("settings-save").click();
+  await expect(tax).toContainText("税率が書かれていません");
+  await tax.getByLabel("科目ごとの既定の税区分 1 行目の税区分").fill("課対仕入込10%");
   await page.getByTestId("settings-save").click();
   await expect(page.getByTestId("settings-state")).toContainText("保存しました");
   await expect(page.getByTestId("settings-missing")).toHaveCount(0);
@@ -86,7 +99,8 @@ test("⑯ タイトルを入れて確定 → 出力の検証・出力・履歴 �
   await expect(page.getByTestId("review")).toHaveCount(0); // 1 ページのジョブなのでジョブ一覧へ戻る
   // 出力
   await tab(page, "出力").click();
-  await expect(page.getByTestId("provisional-banner")).toBeVisible();
+  await expect(page.getByTestId("export-notes")).toContainText("Excel で開かず、弥生で直接取り込んでください");
+  await expect(page.getByTestId("export-notes")).toContainText("元に戻せません");
   const cand = page.getByTestId(`candidate-${job.pages[0].id}`);
   await expect(cand).toContainText("旅費交通費");
   await expect(cand).toContainText("未出力");
@@ -94,11 +108,11 @@ test("⑯ タイトルを入れて確定 → 出力の検証・出力・履歴 �
   await page.getByTestId("export-validate").click();
   await expect(page.getByTestId("export-ok")).toContainText("5 行を出力できます");
   await page.getByTestId("export-run").click();
-  await expect(page.getByTestId("export-message")).toContainText("出力しました(1 ページ・5 行)");
+  await expect(page.getByTestId("export-message")).toContainText("出力しました(1 ページ・5 行・1 ファイル)");
   await expect(page.getByTestId("export-history").locator("tbody tr")).toHaveCount(1);
   // ダウンロードできる(Shift_JIS の CSV)
   const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "ダウンロード" }).first().click()]);
-  expect(dl.suggestedFilename()).toMatch(/^export_\d+_\d+_\d+\.csv$/);
+  expect(dl.suggestedFilename()).toMatch(/^export_\d+_\d+_\d+_yayoi_import\.csv$/);
   // 同じページをもう一度 → 重複の警告、承諾するまで出力できない
   await expect(cand).toContainText("出力済み");
   await cand.getByRole("checkbox").check();

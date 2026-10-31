@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // 主要な画面を axe-core で検査する(コントラスト・ラベル・ロール・フォーカスなど)。重大(critical)・深刻(serious)な違反があれば失敗。
 const TOKEN = "e2e-token-0123456789abcdef0123456789abcdef";
@@ -23,8 +24,10 @@ async function setup(request: APIRequestContext) {
   await request.put("/api/settings", {
     headers: AUTH,
     data: {
+      wizard_done: true,
       payments: [{ name: "現金", credit_account: "現金", credit_sub: "" }],
       titles: [{ name: "旅費交通費", debit_account: "旅費交通費", debit_sub: "" }],
+      default_tax: [{ account: "旅費交通費", tax_category: "課対仕入込10%" }],
     },
   });
   const res = await request.post("/api/dev/jobs", { headers: AUTH, data: { pages: 2, seed: 777, fill_rows: 8 } });
