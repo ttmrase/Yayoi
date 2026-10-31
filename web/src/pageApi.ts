@@ -1,6 +1,7 @@
-import { api, apiBlobUrl, apiUpload } from "./api";
+import { api, apiBlobUrl, apiPutWithProgress, apiUpload } from "./api";
 import type {
   AppSettings,
+  BackupStatus,
   ExportList,
   ExportRecord,
   ExportValidation,
@@ -95,3 +96,15 @@ export const devCreateJob = (body: Record<string, unknown>) =>
     "/api/dev/jobs",
     json("POST", body),
   );
+
+export const fetchBackup = () => api<BackupStatus>("/api/backup");
+export const createBackup = (includeOriginals: boolean) =>
+  api<BackupStatus>("/api/backup/create", json("POST", { include_originals: includeOriginals }));
+export const backupDownloadLink = () => api<{ url: string }>("/api/backup/download-link", json("POST", {}));
+export const discardBackup = () => api<BackupStatus>("/api/backup/file", { method: "DELETE" });
+export const uploadBackup = (file: File, onProgress: (ratio: number) => void) =>
+  apiPutWithProgress<BackupStatus>("/api/backup/upload", file, onProgress);
+export const restoreBackup = () => api<BackupStatus>("/api/backup/restore", json("POST", {}));
+export const cancelBackup = () => api<BackupStatus>("/api/backup/cancel", json("POST", {}));
+export const ackBackupResult = () => api<BackupStatus>("/api/backup/ack", json("POST", {}));
+export const deleteBackupUndo = () => api<BackupStatus>("/api/backup/undo", { method: "DELETE" });

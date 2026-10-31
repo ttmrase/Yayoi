@@ -14,6 +14,7 @@ from pathlib import Path
 
 import uvicorn
 
+from . import backup
 from .paths import AppPaths, app_data_dir
 from .security import allowed_hosts_for, new_token
 from .server import close_app, create_app
@@ -38,7 +39,12 @@ class RunningServer:
         dev: bool = False,
         backend: str = "real",
     ) -> None:
-        self.paths = AppPaths(data_dir or app_data_dir()).ensure()
+        paths = AppPaths(data_dir or app_data_dir())
+        if paths.root.is_dir():
+            backup.apply_pending(
+                paths.root
+            )  # バックアップからの復元の準備ができていれば、DB を開く前に入れ替える
+        self.paths = paths.ensure()
         self.sock = _bind_localhost(port)
         self.port = self.sock.getsockname()[1]
         self.token = token or new_token()
@@ -81,6 +87,12 @@ class RunningServer:
         self.sock.close()
 
 
+def configure_webview(webview) -> None:
+    """pywebview の設定。WebView2 のダウンロード(出力の CSV・精度レポート・バックアップ)は、`ALLOW_DOWNLOADS` が False(既定)だと
+    **何も表示されずに取り消される**。True にすると、保存先を選ぶ「名前を付けて保存」ダイアログが出る。画面は自分のサーバ(127.0.0.1)の内容だけで、外部のページは開かない(CSP)。"""
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
+
 def run(
     data_dir: Path | None = None,
     window: bool = True,
@@ -101,6 +113,7 @@ def run(
                 print(srv.url)
                 window = False
             else:
+                configure_webview(webview)
                 webview.create_window(
                     "yayoi-ocr", srv.url, width=1440, height=900, min_size=(1100, 700)
                 )

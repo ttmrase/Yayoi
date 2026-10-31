@@ -482,3 +482,37 @@ export interface TaxMemory {
   options: string[];
   exempt: boolean;
 }
+
+/** バックアップの要約(件数・大きさ・日時。実データの値は含まない) */
+export interface BackupSummary {
+  created_at: number;
+  app_version: string;
+  schema: number;
+  includes_originals: boolean;
+  n_files: number;
+  total_bytes: number;
+  zip_bytes: number;
+  n_pages: number;
+  n_confirmed_pages: number;
+  n_generations: number;
+  n_images: number;
+  n_pagedata: number;
+}
+export interface BackupStatus {
+  op: "create" | "inspect" | "extract" | null;
+  running: boolean;
+  stage: string | null;
+  done: number;
+  total: number;
+  error: string | null;
+  /** 作成したバックアップ(ダウンロード待ち) */
+  created: { name: string; bytes: number; summary: BackupSummary } | null;
+  /** 検査済みの、復元しようとしている zip */
+  incoming: BackupSummary | null;
+  /** 復元の準備ができている(次の起動で入れ替わる) */
+  pending: { at: number; summary: BackupSummary } | null;
+  /** 直近の復元の結果 */
+  result: { ok: boolean; code?: string; at: number; summary?: BackupSummary; pairs?: { checked: number; broken: number } } | null;
+  /** 入れ替え前のデータの退避 */
+  undo: { bytes: number; at: number } | null;
+}

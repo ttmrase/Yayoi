@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "./api";
 import { fetchSettings, saveSettings } from "./pageApi";
+import BackupPanel from "./BackupPanel";
 import TaxMemoryEditor from "./TaxMemoryEditor";
 import {
   MISSING_LABEL,
@@ -303,6 +304,7 @@ export default function SettingsScreen() {
           {state === "error" && <span className="ng">入力に誤りがあります(赤い欄を直してください)</span>}
         </span>
       </p>
+      <BackupPanel />
     </section>
   );
 }

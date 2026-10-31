@@ -75,6 +75,9 @@ class JobRunner:
             self._thread.join(timeout=10)
         self.backend.close()
 
+    def is_idle(self) -> bool:
+        return self._idle.is_set()
+
     def wait_idle(self, timeout: float | None = None) -> bool:
         """キューが空になるまで待つ(テスト用)。"""
         return self._idle.wait(timeout)

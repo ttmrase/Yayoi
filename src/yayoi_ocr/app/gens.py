@@ -255,6 +255,23 @@ def weights_for(
     return Weights(s["id"], 0, suggest=_suggestion(con, models_root, profile_id, s["id"]))
 
 
+def check_all(con: sqlite3.Connection, models_root: Path) -> dict:
+    """全世代の重みと確信度の組を照合する(バックアップからの復元の後など)。使用中・提案モードの世代は `weights_for` と同じ扱い
+    (壊れていれば出荷時の組へ戻し、警告を出す)。過去の世代は、壊れていれば `broken` にする(戻せなくなる)。返り値: 件数だけ。"""
+    for p in con.execute("SELECT id FROM profiles").fetchall():
+        weights_for(con, models_root, p["id"])
+    checked = broken = 0
+    for r in con.execute(
+        "SELECT * FROM generations WHERE kind != 'shipped' AND status IN ('active', 'retired', 'suggest')"
+    ).fetchall():
+        checked += 1
+        reason = verify_pair(models_root, r)
+        if reason is not None:
+            mark_broken(con, r, reason, models_root)
+            broken += 1
+    return {"checked": checked, "broken": broken}
+
+
 def _suggestion(
     con: sqlite3.Connection, models_root: Path, profile_id: int, parent_id: int
 ) -> Weights | None:

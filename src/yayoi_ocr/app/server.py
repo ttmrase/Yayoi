@@ -17,8 +17,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, exports, gens, metrics, monitor, retention, rowtax, store, tax, uploads
+from . import (
+    backup,
+    db,
+    exports,
+    gens,
+    metrics,
+    monitor,
+    retention,
+    rowtax,
+    store,
+    tax,
+    uploads,
+)
 from . import settings as app_settings
+from .backup_mgr import BackupManager
 from .paths import AppPaths
 from .runner import JobRunner
 from .security import SecurityMiddleware
@@ -54,6 +67,10 @@ class DevTrainerBody(BaseModel):
     auto: bool | None = (
         None  # False: 設定 auto_train が有効でも自動では始めない(共有サーバの E2E 用)
     )
+
+
+class BackupCreateBody(BaseModel):
+    include_originals: bool = False  # 取り込んだ元画像(実帳票。大きい)も含める
 
 
 class GenerationResetBody(BaseModel):
@@ -163,6 +180,20 @@ def create_app(
     trainer_mgr = TrainManager(con, lock, paths, trainer)
     trainer_mgr.mark_interrupted()  # 前回、学習の途中でアプリが閉じていたら「中断」にする
     app.state.trainer = trainer_mgr
+    # バックアップ(作成・復元の準備)。復元の入れ替え自体は、次の起動の最初(DB を開く前。launcher)に行う
+    restored = backup.read_result(paths.root)
+    if (
+        restored and restored.get("ok") and "pairs" not in restored
+    ):  # 復元の直後: 世代の重みと確信度の組を全部照合する
+        backup.record_pairs(paths.root, gens.check_all(con, models_root))
+    backup_mgr = BackupManager(
+        con,
+        lock,
+        paths,
+        busy=lambda: trainer_mgr.running or (runner is not None and not runner.is_idle()),
+        app_version=app_version,
+    )
+    app.state.backup = backup_mgr
     app.state.runner = runner  # 起動は launcher(テストは run_job を直接呼ぶ)
     app.state.purge_unused = lambda: uploads.purge_unused(
         con, lock, uploads_root
@@ -257,6 +288,62 @@ def create_app(
         """この世代に戻す(ロールバック)。以降に認識するページから使う。すでに認識したページは変わらない。"""
         with lock:
             return gens.activate(con, models_root, gen_id)
+
+    # ---- バックアップと復元(ユーザー要件 B5)
+
+    @app.get("/api/backup")
+    def backup_status() -> dict:
+        return backup_mgr.status()
+
+    @app.post("/api/backup/create")
+    def backup_create(body: BackupCreateBody) -> dict:
+        backup_mgr.start_create(body.include_originals)
+        return backup_mgr.status()
+
+    @app.post("/api/backup/download-link")
+    def backup_download_link() -> dict:
+        # 1 回だけ使える合言葉つきの URL(`/api/` はトークンをヘッダーで送るため、リンクのダウンロードには使えない)
+        return {"url": f"/download/backup/{backup_mgr.mint_download()}"}
+
+    @app.delete("/api/backup/file")
+    def backup_discard() -> dict:
+        backup_mgr.discard_created()
+        return backup_mgr.status()
+
+    @app.put("/api/backup/upload")
+    async def backup_upload(request: Request) -> dict:
+        declared = request.headers.get("content-length")
+        await backup_mgr.receive_incoming(
+            request.stream(), int(declared) if declared and declared.isdigit() else None
+        )
+        return backup_mgr.status()
+
+    @app.post("/api/backup/restore")
+    def backup_restore() -> dict:
+        backup_mgr.start_prepare()
+        return backup_mgr.status()
+
+    @app.post("/api/backup/cancel")
+    def backup_cancel() -> dict:
+        backup_mgr.cancel()
+        return backup_mgr.status()
+
+    @app.post("/api/backup/ack")
+    def backup_ack() -> dict:
+        backup_mgr.acknowledge_result()
+        return backup_mgr.status()
+
+    @app.delete("/api/backup/undo")
+    def backup_delete_undo() -> dict:
+        backup_mgr.delete_undo()
+        return backup_mgr.status()
+
+    @app.get("/download/backup/{nonce}")
+    def backup_download(nonce: str) -> Response:
+        path = backup_mgr.take_download(nonce)
+        if path is None:
+            return JSONResponse({"error": "download_expired"}, status_code=404)
+        return FileResponse(path, media_type="application/zip", filename=path.name)
 
     @app.get("/api/notices")
     def notices_list(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
@@ -566,6 +653,7 @@ def create_app(
 
 
 def close_app(app: FastAPI) -> None:
+    app.state.backup.close()
     app.state.trainer.close()  # 学習中なら止める(結果は使わない。次の起動で「中断」と記録される)
     runner: JobRunner | None = app.state.runner
     if runner is not None:

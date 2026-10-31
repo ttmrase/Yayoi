@@ -75,3 +75,32 @@ export async function apiBlobUrl(path: string): Promise<string> {
   if (!res.ok) throw await errorFrom(res);
   return URL.createObjectURL(await res.blob());
 }
+
+/** ファイルの中身をそのまま PUT する(復元の zip など、大きいファイル用。送った割合を `onProgress`(0〜1)で知らせる)。 */
+export function apiPutWithProgress<T>(path: string, file: Blob, onProgress: (ratio: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (token === null) {
+      reject(new ApiError(401, "no token"));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", path);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total);
+    };
+    xhr.onerror = () => reject(new ApiError(0, "network"));
+    xhr.onload = () => {
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(xhr.responseText) as Record<string, unknown>;
+      } catch {
+        /* 本文が JSON でない */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body as T);
+      else reject(new ApiError(xhr.status, xhr.statusText, body));
+    };
+    xhr.send(file);
+  });
+}
