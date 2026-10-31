@@ -3,12 +3,12 @@ name: Trial publish
 # 試用版を GitHub の Release(pre-release)として公開する。**ユーザーが GitHub の画面で「Run workflow」を押したときだけ動く**(入力なし。このボタンが公開の承認になる)。
 #
 # 公開する内容は、リポジトリにコミットした次の 2 つで決まる(押す前に、中身を確かめられる):
-#   docs/release/trial-v0.1.0.json … ビルド(trial-build.yml)の run_id・zip の SHA256・タグ名・タグを付けるコミット(= ビルドのコミット)・zip の名前・題名
+#   docs/release/trial-v0.1.0.json … ビルド(trial-build.yml)の run_id・評価(trial-eval.yml)の eval_run_id・zip の SHA256・タグ名・タグを付けるコミット(= ビルドのコミット)・zip の名前・題名
 #   docs/release/trial-v0.1.0.md   … Release の本文(SHA256 を含む)
 #
 # 流れ: verify(読み取りだけ)→ publish(contents: write はこのジョブにだけ)
-#   verify : 指定の run が trial-build で、そのコミットで、成功したことを確かめ、artifact「trial-bundle」をダウンロードして、SHA256・ビルドの記録・B1〜B7 を再確認する。
-#            同じタグ・同じ Release がすでにあれば、上書きせずに失敗する。
+#   verify : 指定の run が trial-build(ブランチ・イベント・ワークフローのパスを確認)で、そのコミットで、成功したことを確かめ、artifact「trial-bundle」をダウンロードして、SHA256・ビルドの記録・B1〜B7 を再確認する。
+#            **重みの質の評価(trial-eval)が、その zip の SHA256 に対して合格であること**も確認する。同じタグ・同じ Release がすでにあれば、上書きせずに失敗する。
 #   publish: 再ダウンロードして SHA256 を再確認 → タグ(指定のコミット)と pre-release を作り、zip と .sha256 を添付 →
 #            アセットをダウンロードし直して(認証あり・なしの両方)SHA256 を照合。一致しなければ Release とタグを削除して失敗にする。
 # 外部アクションはすべてコミットの SHA で固定。トークンは GITHUB_TOKEN だけ(PAT・secrets は使わない)。
@@ -50,21 +50,19 @@ jobs:
           python scripts/trial_ci.py release-spec --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" > "$RUNNER_TEMP/spec.txt"
           cat "$RUNNER_TEMP/spec.txt"
           cat "$RUNNER_TEMP/spec.txt" >> "$GITHUB_OUTPUT"
-      - name: The build run is a successful trial-build of exactly this commit
+      - name: The build run and the eval run are successful runs of the expected workflows, on the expected branch, for exactly this commit
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.spec.outputs.run_id }}
+          EVAL_RUN_ID: ${{ steps.spec.outputs.eval_run_id }}
           COMMIT: ${{ steps.spec.outputs.commit }}
         run: |
-          gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,headSha,workflowName,status,event,headBranch | tee run.json
-          python - <<'EOF'
-          import json, os, sys
-          r = json.load(open("run.json"))
-          ok = (r["workflowName"] == "Trial build" and r["status"] == "completed" and r["conclusion"] == "success"
-                and r["headSha"] == os.environ["COMMIT"])
-          print("run:", r)
-          sys.exit(0 if ok else "ビルドの run が、成功した Trial build ではない、または、コミットが JSON と違う")
-          EOF
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/build-run.json"
+          python scripts/trial_ci.py run-check --run "$RUNNER_TEMP/build-run.json" \
+            --workflow-path .github/workflows/trial-build.yml --branch claude/handwritten-document-ocr-sgf76h --sha "$COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVAL_RUN_ID" > "$RUNNER_TEMP/eval-run.json"
+          python scripts/trial_ci.py run-check --run "$RUNNER_TEMP/eval-run.json" \
+            --workflow-path .github/workflows/trial-eval.yml --branch claude/handwritten-document-ocr-sgf76h
           git cat-file -e "$COMMIT^{commit}"
           git merge-base --is-ancestor "$COMMIT" HEAD
       - name: The tag and the release must not exist yet (never overwrite)
@@ -82,8 +80,15 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/artifact
-      - name: The artifact matches the release spec (SHA-256, build record, checks passed)
-        run: python scripts/trial_ci.py release-check --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" --dir "$RUNNER_TEMP/artifact"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trial-eval-result
+          run-id: ${{ steps.spec.outputs.eval_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/eval
+      - name: The artifact matches the release spec (SHA-256, build record, checks passed, quality evaluation passed)
+        run: python scripts/trial_ci.py release-check --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" --dir "$RUNNER_TEMP/artifact" --eval-dir "$RUNNER_TEMP/eval"
       - name: Re-run the bundle checks (B1–B7)
         env:
           SHA256: ${{ steps.spec.outputs.sha256 }}
@@ -130,8 +135,15 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/artifact
-      - name: The artifact still matches the release spec
-        run: python scripts/trial_ci.py release-check --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" --dir "$RUNNER_TEMP/artifact"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: trial-eval-result
+          run-id: ${{ steps.spec.outputs.eval_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/eval
+      - name: The artifact and the evaluation still match the release spec
+        run: python scripts/trial_ci.py release-check --json "$RELEASE_JSON" --notes "$RELEASE_NOTES" --dir "$RUNNER_TEMP/artifact" --eval-dir "$RUNNER_TEMP/eval"
 
       - name: Create the tag and the pre-release, and attach the zip and its checksum
         id: create

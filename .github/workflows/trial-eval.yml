@@ -1,0 +1,140 @@
+name: Trial eval
+
+# 配布物の重みの質の評価。**公開の前の必須の確認**(director 指示): trial-build が作った束の重み(基本・適応済みの両方)で、学習・較正に一度も使っていない
+# 合成の評価ページ(最終ホールドアウト 200 ページ: 標準語彙・一般語彙 x 未使用の書き手・未知フォント 各 50 ページ。docs/recognition.md)を認識し、
+# 列ごとの正解率・要確認率・見逃し率を数える。合格の基準(点推定): 全体の見逃し率 <= 0.5%、金額 <= 0.1%、列ごとの値の正解率がコンテナでの出荷時の評価から 3 ポイントを超えて下がっていない。
+# 結果は JSON(zip の SHA256 に結び付ける)にして artifact「trial-eval-result」に保存する。trial-publish は、その zip の SHA256 の評価が合格であることを確かめる。
+# 評価ページはこのジョブの中で作って捨てる(artifact にしない)。公開はしない(contents: read・actions: read だけ)。
+#
+# 起動: .github/trial-eval-request(mode と build_run_id)を変更して push する。手動でも起動できる。
+
+on:
+  push:
+    branches: [claude/handwritten-document-ocr-sgf76h]
+    paths: [".github/trial-eval-request"]
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "評価する trial-build の run_id"
+        type: string
+        required: true
+      mode:
+        description: "full = 配布物の評価 / mini = 通し試験(trial-build の mini の束)"
+        type: choice
+        options: [full, mini]
+        default: full
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: trial-eval
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  evaluate:
+    name: evaluate the weights of the bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set private data dir (outside the repository)
+        run: echo "YAYOI_PRIVATE_DATA=$RUNNER_TEMP/yayoi_private" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/trial-build-linux.txt
+      - name: Read the request and check the build run
+        id: req
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_RUN: ${{ inputs.build_run_id }}
+        run: |
+          MODE="${INPUT_MODE:-}"; RUN="${INPUT_RUN:-}"
+          if [ -z "$MODE" ]; then MODE=$(sed -n 's/^mode: *//p' .github/trial-eval-request | head -1 | tr -d '[:space:]'); fi
+          if [ -z "$RUN" ]; then RUN=$(sed -n 's/^build_run_id: *//p' .github/trial-eval-request | head -1 | tr -d '[:space:]'); fi
+          case "$MODE" in full|mini) ;; *) echo "mode が不正です: '$MODE'"; exit 1 ;; esac
+          case "$RUN" in ''|*[!0-9]*) echo "build_run_id が不正です: '$RUN'"; exit 1 ;; esac
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" > "$RUNNER_TEMP/build-run.json"
+          python scripts/trial_ci.py run-check --run "$RUNNER_TEMP/build-run.json" \
+            --workflow-path .github/workflows/trial-build.yml --branch claude/handwritten-document-ocr-sgf76h
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          echo "commit=$(python -c "import json; print(json.load(open('$RUNNER_TEMP/build-run.json'))['head_sha'])")" >> "$GITHUB_OUTPUT"
+          if [ "$MODE" = full ]; then echo "artifact=trial-bundle" >> "$GITHUB_OUTPUT"; else echo "artifact=trial-bundle-mini" >> "$GITHUB_OUTPUT"; fi
+      - name: Install (PyTorch CPU build, pinned libraries)
+        run: |
+          python -m pip install "torch==2.15.0" --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple || python -m pip install "torch==2.15.0"
+          python -m pip install -e ".[ml,ml-dev]" -c requirements/trial-build-linux.txt
+      - name: Fetch handwriting fonts (pinned commit, SHA-256 verified; the evaluation pages use them)
+        run: python scripts/fetch_fonts.py --ref "$(sed -n 's/^ref=//p' requirements/fonts-pin.txt)" --verify requirements/fonts.sha256
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ steps.req.outputs.artifact }}
+          run-id: ${{ steps.req.outputs.run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/bundle
+      - name: Take the weights from the zip itself (the exact files that ship)
+        id: zip
+        run: |
+          zip=$(ls "$RUNNER_TEMP"/bundle/yayoi-ocr-trial-*.zip)
+          sha=$(sha256sum "$zip" | cut -d' ' -f1)
+          test "$(cut -d' ' -f1 "$zip.sha256")" = "$sha"
+          echo "zip: $(basename "$zip") $sha"
+          echo "name=$(basename "$zip")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/unz"
+          unzip -q "$zip" 'models/*' -d "$RUNNER_TEMP/unz"
+          ls -R "$RUNNER_TEMP/unz/models" | head -20
+      - name: Generate the evaluation pages (synthetic; never used for training; not kept)
+        run: |
+          MODE="${{ steps.req.outputs.mode }}"
+          for id in $(python scripts/trial_ci.py plan --mode "$MODE" --field eval_shards | python -c "import sys,json; print(' '.join(s['id'] for s in json.load(sys.stdin)))"); do
+            python scripts/trial_ci.py run shard --mode "$MODE" --id "$id" --jobs 3 \
+              --data "$YAYOI_PRIVATE_DATA/datasets" --models "$YAYOI_PRIVATE_DATA/models" --evals "$YAYOI_PRIVATE_DATA/evals"
+          done
+          ls "$YAYOI_PRIVATE_DATA/datasets"
+      - name: Evaluate the base weights
+        run: python scripts/trial_ci.py eval --models "$RUNNER_TEMP/unz/models" --data "$YAYOI_PRIVATE_DATA/datasets" --weights base --threads 3 --out "$RUNNER_TEMP/eval.base.json"
+      - name: Evaluate the adapted weights
+        run: python scripts/trial_ci.py eval --models "$RUNNER_TEMP/unz/models" --data "$YAYOI_PRIVATE_DATA/datasets" --weights adapted --threads 3 --out "$RUNNER_TEMP/eval.adapted.json"
+      - name: Merge, judge against the criteria, and bind the result to the zip's SHA-256
+        run: |
+          mkdir -p "$RUNNER_TEMP/result"
+          python scripts/trial_ci.py eval-merge --base "$RUNNER_TEMP/eval.base.json" --adapted "$RUNNER_TEMP/eval.adapted.json" \
+            --zip-name "${{ steps.zip.outputs.name }}" --zip-sha256 "${{ steps.zip.outputs.sha256 }}" \
+            --build-run-id "${{ steps.req.outputs.run }}" --build-commit "${{ steps.req.outputs.commit }}" \
+            --mode "${{ steps.req.outputs.mode }}" --out "$RUNNER_TEMP/result/eval-result.json" | tee "$RUNNER_TEMP/result/eval-summary.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.req.outputs.mode == 'full' && 'trial-eval-result' || 'trial-eval-result-mini' }}
+          path: ${{ runner.temp }}/result
+          retention-days: 90
+          if-no-files-found: error
+      - name: Gate (fail the run when the weights do not meet the criteria; mini weights are junk, so mini only records)
+        if: steps.req.outputs.mode == 'full'
+        run: jq -e '.passed' "$RUNNER_TEMP/result/eval-result.json" > /dev/null
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### 重みの質の評価(モード: ${{ steps.req.outputs.mode }})— $(jq -r 'if .passed then "合格" else "不合格" end' "$RUNNER_TEMP/result/eval-result.json")"
+            echo
+            echo "- 評価した束: \`${{ steps.zip.outputs.name }}\`(SHA256 \`${{ steps.zip.outputs.sha256 }}\`)、ビルドの run ${{ steps.req.outputs.run }}"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/result/eval-summary.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

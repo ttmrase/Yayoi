@@ -52,10 +52,35 @@ RECIPES = [
     ),
     ("calib_gen", "typical", "typical", 200, 9000000, 700000, ["--vocab", "general-eval"]),
 ]
+# 最終ホールドアウト(docs/recognition.md「確信度の較正」: 学習・較正に一度も使っていない新規 200 ページ。
+# 標準語彙・一般語彙 x 未使用の書き手・未知フォント(評価専用の yusei・klee)各 50 ページ)の生成レシピ。メタデータと正解の文字列が、コンテナで作ったものと一致することを確認済み。
+EVAL_RECIPES = [
+    ("final_std", "typical", 50, 9900000, 900000, FONT_EXCLUDE),
+    ("final_gen", "typical", 50, 9910000, 910000, [*FONT_EXCLUDE, "--vocab", "general-eval"]),
+    ("final_uf_std", "typical", 50, 9920000, 920000, ["--font-include", "yusei", "klee"]),
+    (
+        "final_uf_gen",
+        "typical",
+        50,
+        9930000,
+        930000,
+        ["--font-include", "yusei", "klee", "--vocab", "general-eval"],
+    ),
+]
+# 公開の合格基準(director 指示): 点推定で、全体の見逃し率 <= 0.5%、金額 <= 0.1%。列ごとの値の正解率(空欄を除く)が、コンテナでの出荷時の評価
+# (docs/recognition.md の最終ホールドアウトの表)から 3 ポイントを超えて下がっていない。基本の重みと適応済みの重みの両方に適用する。
+MISS_LIMIT_ALL = 0.005
+MISS_LIMIT_AMOUNT = 0.001
+ACC_DROP_LIMIT = 0.03
+BASELINE_ACCURACY = {  # 値の正解率(空欄を除く)。docs/recognition.md の最終ホールドアウト
+    "adapted": {"date": 0.564, "account": 0.848, "description": 0.432, "amount": 0.628},
+    "base": {"date": 0.387, "account": 0.721, "description": 0.193, "amount": 0.526},
+}
 MODES = {
     "full": {
         "chunk": 100,
         "pages": None,  # レシピのページ数のまま
+        "eval_pages": None,
         "celltype": ["--epochs", "8", "--threads", "4"],
         "adapt": ["--l2sp", "0.1", "--epochs", "3", "--threads", "3"],
         "dump": ["--threads", "3"],
@@ -63,6 +88,7 @@ MODES = {
     "mini": {
         "chunk": 12,
         "pages": 12,
+        "eval_pages": 6,
         "celltype": ["--epochs", "1", "--threads", "4"],
         "adapt": [
             "--l2sp",
@@ -127,9 +153,22 @@ def plan(mode: str) -> dict:
                     "extra": FONT_EXCLUDE + extra,
                 }
             )
+    eval_shards = [
+        {
+            "id": f"{name}.0",
+            "dataset": name,
+            "preset": preset,
+            "n": cfg["eval_pages"] or n,
+            "seed0": seed0,
+            "writer0": writer0,
+            "extra": extra,
+        }
+        for name, preset, n, seed0, writer0, extra in EVAL_RECIPES
+    ]
     return {
         "mode": mode,
         "shards": shards,
+        "eval_shards": eval_shards,
         "celltype": cfg["celltype"],
         "adapt": cfg["adapt"],
         "dump": cfg["dump"],
@@ -145,7 +184,9 @@ def stage_commands(
 ) -> list[list[str]]:
     cfg = MODES[mode]
     if stage == "shard":
-        s = next(x for x in plan(mode)["shards"] if x["id"] == kw["id"])
+        s = next(
+            x for x in [*plan(mode)["shards"], *plan(mode)["eval_shards"]] if x["id"] == kw["id"]
+        )
         return [
             [
                 *PY,
@@ -523,6 +564,183 @@ def cmd_provenance(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 重みの質の評価(trial-eval.yml)
+
+
+def _nan_to_none(d: dict) -> dict:
+    return {k: (None if isinstance(v, float) and v != v else v) for k, v in d.items()}
+
+
+def evaluate_weights(
+    models: Path, data: Path, names: list[str], weights: str, threads: int = 3
+) -> dict:
+    """束の重み(base = 素 / adapted = 適応済み)で、最終ホールドアウトのページを認識して、列ごとの正解率・要確認率・見逃し率を数える。
+    `scripts/eval_recognize.py` と同じ処理(出荷設定の確信度・種別分類器・辞書なし = cold)。"""
+    import torch
+
+    from yayoi_ocr.recognize.celltype import CellTypeClassifier
+    from yayoi_ocr.recognize.confidence import ConfidenceModel
+    from yayoi_ocr.recognize.evaluate import judge, summarize
+    from yayoi_ocr.recognize.inputs import from_page_data
+    from yayoi_ocr.recognize.page import JobContext, PageRecognizer
+    from yayoi_ocr.recognize.parseq.engine import ParseqEngine
+    from yayoi_ocr.synth.content import ACCOUNTS, TITLES
+    from yayoi_ocr.synth.dataset import list_pages, load_page
+
+    torch.set_num_threads(threads)
+    adapted = weights == "adapted"
+    engine = ParseqEngine(models_dir=models / "adapted" if adapted else models)
+    clf = CellTypeClassifier.load(models / "celltype.pt")
+    cal = ConfidenceModel.load(
+        models / ("adapted/confidence.json" if adapted else "confidence.json")
+    )
+    rec = PageRecognizer(engine, clf, calibrator=cal)
+    ctx = JobContext(accounts=list(ACCOUNTS), titles=list(TITLES))
+    columns = ("date", "account", "description", "amount")
+    rows_all: list = []
+    per_dataset: dict[str, dict] = {}
+    for name in names:
+        rows: list = []
+        pages = list_pages(str(data / name))
+        for p in pages:
+            page = load_page(p)
+            res = rec.recognize_page(from_page_data(page), ctx, None)
+            page_review = page.meta["status"] != "ok"
+            rows += [judge(r, c, page_review) for r, c in zip(res.cells, page.cells, strict=True)]
+        rows_all += rows
+        per_dataset[name] = {
+            "pages": len(pages),
+            "overall": _nan_to_none(summarize(rows)["all"]),
+            "columns": {
+                c: _nan_to_none(summarize([j for j in rows if j.column == c])["all"])
+                for c in columns
+            },
+        }
+        print(f"{weights} {name}: {len(pages)} ページ", flush=True)
+    return {
+        "weights": weights,
+        "pages": sum(d["pages"] for d in per_dataset.values()),
+        "overall": _nan_to_none(summarize(rows_all)["all"]),
+        "columns": {
+            c: _nan_to_none(summarize([j for j in rows_all if j.column == c])["all"])
+            for c in columns
+        },
+        "per_dataset": per_dataset,
+    }
+
+
+def eval_checks(result: dict, weights: str) -> list[dict]:
+    """合格の基準(director 指示)。点推定で判定する。"""
+    out = [
+        {
+            "name": f"{weights}: 全体の見逃し率 <= {MISS_LIMIT_ALL:.1%}",
+            "value": result["overall"]["miss_rate"],
+            "limit": MISS_LIMIT_ALL,
+            "ok": result["overall"]["miss_rate"] <= MISS_LIMIT_ALL,
+        },
+        {
+            "name": f"{weights}: 金額の見逃し率 <= {MISS_LIMIT_AMOUNT:.1%}",
+            "value": result["columns"]["amount"]["miss_rate"],
+            "limit": MISS_LIMIT_AMOUNT,
+            "ok": result["columns"]["amount"]["miss_rate"] <= MISS_LIMIT_AMOUNT,
+        },
+    ]
+    for col, base in BASELINE_ACCURACY[weights].items():
+        acc = result["columns"][col]["accuracy_nonblank"]
+        floor = round(base - ACC_DROP_LIMIT, 4)
+        out.append(
+            {
+                "name": f"{weights}: {col} の値の正解率 >= コンテナの値 {base} - {ACC_DROP_LIMIT}",
+                "value": acc,
+                "limit": floor,
+                "ok": acc is not None and acc >= floor,
+            }
+        )
+    return out
+
+
+def merge_eval(base: dict, adapted: dict, meta: dict) -> dict:
+    checks = eval_checks(base, "base") + eval_checks(adapted, "adapted")
+    pages_ok = base["pages"] >= 200 and adapted["pages"] >= 200 if meta["mode"] == "full" else True
+    checks.append(
+        {"name": "評価ページ数 >= 200(full)", "value": base["pages"], "limit": 200, "ok": pages_ok}
+    )
+    return {
+        **meta,
+        "criteria": {
+            "miss_limit_all": MISS_LIMIT_ALL,
+            "miss_limit_amount": MISS_LIMIT_AMOUNT,
+            "accuracy_drop_limit": ACC_DROP_LIMIT,
+            "baseline_accuracy": BASELINE_ACCURACY,
+        },
+        "results": {"base": base, "adapted": adapted},
+        "checks": checks,
+        "passed": all(c["ok"] for c in checks),
+    }
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    result = evaluate_weights(
+        Path(args.models), Path(args.data), args.datasets.split(","), args.weights, args.threads
+    )
+    Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    o = result["overall"]
+    print(
+        f"{args.weights}: {result['pages']} ページ 正解率 {o['accuracy']:.3f} 要確認率 {o['review_rate']:.3f} 見逃し率 {o['miss_rate']:.4%}"
+    )
+    return 0
+
+
+def cmd_eval_merge(args: argparse.Namespace) -> int:
+    base = json.loads(Path(args.base).read_text(encoding="utf-8"))
+    adapted = json.loads(Path(args.adapted).read_text(encoding="utf-8"))
+    meta = {
+        "zip_name": args.zip_name,
+        "zip_sha256": args.zip_sha256,
+        "build_run_id": str(args.build_run_id),
+        "build_commit": args.build_commit,
+        "mode": args.mode,
+        "eval_commit": os.environ.get("GITHUB_SHA", ""),
+        "eval_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+    }
+    final = merge_eval(base, adapted, meta)
+    Path(args.out).write_text(json.dumps(final, ensure_ascii=False, indent=1), encoding="utf-8")
+    for c in final["checks"]:
+        v = c["value"]
+        print(
+            f"[{'OK' if c['ok'] else 'NG'}] {c['name']}: {v if v is None else f'{v:.4f}'}(基準 {c['limit']})"
+        )
+    print("結果:", "合格" if final["passed"] else "不合格")
+    return 0
+
+
+def cmd_run_check(args: argparse.Namespace) -> int:
+    """`gh api repos/.../actions/runs/ID` の結果が、期待したワークフロー・ブランチ・コミットの、成功した実行であることを確かめる(W-2)。"""
+    r = json.loads(Path(args.run).read_text(encoding="utf-8"))
+    checks = [
+        ("ワークフローのパス", r.get("path"), r.get("path") == args.workflow_path),
+        ("ブランチ", r.get("head_branch"), r.get("head_branch") == args.branch),
+        (
+            "イベント(push か workflow_dispatch)",
+            r.get("event"),
+            r.get("event") in ("push", "workflow_dispatch"),
+        ),
+        (
+            "完了して成功",
+            f"{r.get('status')}/{r.get('conclusion')}",
+            r.get("status") == "completed" and r.get("conclusion") == "success",
+        ),
+    ]
+    if args.sha:
+        checks.append(("コミット", r.get("head_sha"), r.get("head_sha") == args.sha))
+    for label, value, ok in checks:
+        print(f"[{'OK' if ok else 'NG'}] {label}: {value}")
+    if not all(ok for _l, _v, ok in checks):
+        print(f"run {r.get('id')} は、期待した実行ではありません", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_augment(args: argparse.Namespace) -> int:
     """ビルドの記録(build-info.json)に、zip・検査の結果・Windows の煙試験の結果・GitHub の run を書き足す。"""
     info = json.loads(Path(args.info).read_text(encoding="utf-8"))
@@ -568,6 +786,8 @@ def load_release_spec(spec_path: Path, notes_path: Path) -> dict:
         problems.append("commit は 40 桁の 16 進(完全なコミット ID)")
     if not re.fullmatch(r"\d+", str(spec.get("run_id", ""))):
         problems.append("run_id は数字")
+    if not re.fullmatch(r"\d+", str(spec.get("eval_run_id", ""))):
+        problems.append("eval_run_id は数字(trial-eval の run)")
     if not _HEX64.fullmatch(str(spec.get("zip_sha256", ""))):
         problems.append("zip_sha256 は 64 桁の小文字の 16 進")
     if not re.fullmatch(r"yayoi-ocr-trial-[0-9.]+\.zip", str(spec.get("zip_name", ""))):
@@ -587,7 +807,7 @@ def load_release_spec(spec_path: Path, notes_path: Path) -> dict:
 
 def cmd_release_spec(args: argparse.Namespace) -> int:
     spec = load_release_spec(Path(args.json), Path(args.notes))
-    for k in ("tag", "commit", "run_id", "zip_name", "title"):
+    for k in ("tag", "commit", "run_id", "eval_run_id", "zip_name", "title"):
         print(f"{k}={spec[k]}")
     print(f"sha256={spec['zip_sha256']}")
     return 0
@@ -625,6 +845,24 @@ def cmd_release_check(args: argparse.Namespace) -> int:
         "束の検査(B1〜B7)が OK": info.get("verify_bundle", {}).get("ok") is True,
         "Windows の煙試験が OK": info.get("smoke_windows", {}).get("ok") is True,
     }
+    if args.eval_dir:
+        try:
+            ev = json.loads((Path(args.eval_dir) / "eval-result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise SystemExit("eval-result.json を読めません") from None
+        checks.update(
+            {
+                "評価の結果が、この zip の SHA256 に対するもの": ev.get("zip_sha256")
+                == spec["zip_sha256"],
+                "評価したビルドの run が JSON と同じ": str(ev.get("build_run_id"))
+                == spec["run_id"],
+                "評価したビルドのコミットが JSON と同じ": ev.get("build_commit") == spec["commit"],
+                "評価の run が JSON の eval_run_id と同じ": str(ev.get("eval_run_id"))
+                == spec["eval_run_id"],
+                "評価の mode が full": ev.get("mode") == "full",
+                "重みの質の評価が合格": ev.get("passed") is True,
+            }
+        )
     problems += [f"{k}: 不一致" for k, ok in checks.items() if not ok]
     for k, ok in checks.items():
         print(f"[{'OK' if ok else 'NG'}] {k}")
@@ -674,6 +912,27 @@ def main() -> int:
     a.add_argument("--zip", required=True)
     a.add_argument("--verify-output")
     a.add_argument("--smoke")
+    e = sub.add_parser("eval")
+    e.add_argument("--models", required=True)
+    e.add_argument("--data", required=True)
+    e.add_argument("--weights", choices=["base", "adapted"], required=True)
+    e.add_argument("--datasets", default=",".join(r[0] for r in EVAL_RECIPES))
+    e.add_argument("--threads", type=int, default=3)
+    e.add_argument("--out", required=True)
+    em = sub.add_parser("eval-merge")
+    em.add_argument("--base", required=True)
+    em.add_argument("--adapted", required=True)
+    em.add_argument("--zip-name", required=True)
+    em.add_argument("--zip-sha256", required=True)
+    em.add_argument("--build-run-id", required=True)
+    em.add_argument("--build-commit", required=True)
+    em.add_argument("--mode", choices=sorted(MODES), required=True)
+    em.add_argument("--out", required=True)
+    rk = sub.add_parser("run-check")
+    rk.add_argument("--run", required=True)
+    rk.add_argument("--workflow-path", required=True)
+    rk.add_argument("--branch", required=True)
+    rk.add_argument("--sha")
     rs = sub.add_parser("release-spec")
     rs.add_argument("--json", required=True)
     rs.add_argument("--notes", required=True)
@@ -681,7 +940,14 @@ def main() -> int:
     rc.add_argument("--json", required=True)
     rc.add_argument("--notes", required=True)
     rc.add_argument("--dir", required=True)
+    rc.add_argument("--eval-dir", help="trial-eval の artifact(eval-result.json)。公開では必須")
     args = ap.parse_args()
+    if args.cmd == "eval":
+        return cmd_eval(args)
+    if args.cmd == "eval-merge":
+        return cmd_eval_merge(args)
+    if args.cmd == "run-check":
+        return cmd_run_check(args)
     if args.cmd == "release-spec":
         return cmd_release_spec(args)
     if args.cmd == "release-check":

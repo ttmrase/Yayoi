@@ -83,3 +83,20 @@ def test_trial_publish_never_overwrites_and_rolls_back_a_failed_publication():
     assert "--clobber" not in t and "--force" not in t
     assert "gh release delete" in t and "--cleanup-tag" in t
     assert "--prerelease" in t and "--target" in t
+
+
+def test_trial_eval_only_reads_and_does_not_keep_the_evaluation_pages():
+    t = text("trial-eval.yml")
+    assert re.search(r"^permissions:\n  contents: read\n  actions: read\n", t, re.M)
+    assert not re.search(r":\s*write\b", t) and "gh release" not in t and "git push" not in t
+    # 評価ページは artifact にしない(結果の JSON だけを保存する)
+    uploads = re.findall(r"upload-artifact@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+name: ([^\n]+)\n", t)
+    assert len(uploads) == 1 and "trial-eval-result" in uploads[0]
+
+
+def test_trial_publish_requires_the_quality_evaluation_and_the_expected_runs():
+    t = text("trial-publish.yml")
+    assert t.count("--eval-dir") == 2 and t.count("name: trial-eval-result") == 2
+    # ワークフローのパス・ブランチ・コミットを確かめる(W-2)
+    assert ".github/workflows/trial-build.yml" in t and ".github/workflows/trial-eval.yml" in t
+    assert t.count("claude/handwritten-document-ocr-sgf76h") >= 2

@@ -204,16 +204,29 @@ def make_release(tmp_path: Path, **override) -> tuple[Path, Path, Path]:
         "github": {"run_id": "99", "sha": "e" * 40},
     }
     info.update(override.pop("info", {}))
+    eval_override = override.pop("eval", {})
     (art / "build-info.json").write_text(json.dumps(info))
     spec = {
         "tag": "trial-v0.1.0",
         "commit": "e" * 40,
         "run_id": "99",
+        "eval_run_id": "100",
         "zip_name": "yayoi-ocr-trial-0.1.0.zip",
         "zip_sha256": digest,
         "title": "試用版",
     }
     spec.update(override)
+    ev = {
+        "zip_sha256": digest,
+        "build_run_id": "99",
+        "build_commit": "e" * 40,
+        "eval_run_id": "100",
+        "mode": "full",
+        "passed": True,
+    }
+    ev.update(eval_override)
+    (tmp_path / "eval").mkdir(exist_ok=True)
+    (tmp_path / "eval" / "eval-result.json").write_text(json.dumps(ev))
     sp = tmp_path / "spec.json"
     sp.write_text(json.dumps(spec))
     notes = tmp_path / "notes.md"
@@ -225,6 +238,7 @@ def check(sp, notes, art) -> int:
     class A:
         json = str(sp)
         dir = str(art)
+        eval_dir = str(sp.parent / "eval")
 
     A.notes = str(notes)
     return tci.cmd_release_check(A)
@@ -321,3 +335,127 @@ def test_a_smoke_result_for_a_different_zip_or_a_failed_check_is_not_ok(tmp_path
         tmp_path, {"passed": False, "zip_sha256": sha(b"zip bytes")}, "結果: OK\n"
     )
     assert out2["smoke_windows"]["ok"] is False
+
+
+# ---- 評価(trial-eval)と公開の条件
+
+
+def stats(miss_rate: float, acc: float) -> dict:
+    return {"miss_rate": miss_rate, "accuracy_nonblank": acc}
+
+
+def good_result(weights: str, pages: int = 200) -> dict:
+    base = tci.BASELINE_ACCURACY[weights]
+    return {
+        "weights": weights,
+        "pages": pages,
+        "overall": stats(0.002, 0.6),
+        "columns": {c: stats(0.0005, base[c] - 0.01) for c in base},
+    }
+
+
+def test_the_eval_plan_is_the_documented_final_holdout_and_disjoint_from_training():
+    shards = tci.plan("full")["eval_shards"]
+    assert [s["dataset"] for s in shards] == [
+        "final_std",
+        "final_gen",
+        "final_uf_std",
+        "final_uf_gen",
+    ]
+    assert sum(s["n"] for s in shards) == 200
+    train_pages = {
+        s0 + i for s in tci.plan("full")["shards"] for s0 in [s["seed0"]] for i in range(s["n"])
+    }
+    train_writers = {
+        w0 + i for s in tci.plan("full")["shards"] for w0 in [s["writer0"]] for i in range(s["n"])
+    }
+    for s in shards:
+        assert not (set(range(s["seed0"], s["seed0"] + s["n"])) & train_pages)
+        assert not (set(range(s["writer0"], s["writer0"] + s["n"])) & train_writers)
+    uf = [s for s in shards if "uf" in s["dataset"]]
+    assert all("--font-include" in s["extra"] for s in uf)  # 未知のフォントの組を含む
+    assert tci.plan("mini")["eval_shards"][0]["n"] == 6
+
+
+def test_a_result_that_meets_the_criteria_passes_for_both_weights():
+    out = tci.merge_eval(good_result("base"), good_result("adapted"), {"mode": "full"})
+    assert out["passed"] is True and all(c["ok"] for c in out["checks"])
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["overall"].update(miss_rate=0.0051),  # 全体の見逃し率が 0.5% を超える
+        lambda r: r["columns"]["amount"].update(miss_rate=0.0011),  # 金額が 0.1% を超える
+        lambda r: r["columns"]["description"].update(
+            accuracy_nonblank=tci.BASELINE_ACCURACY["adapted"]["description"] - 0.031
+        ),  # コンテナの値から 3 ポイントを超えて劣化
+    ],
+)
+def test_a_result_that_misses_a_criterion_is_rejected(mutate):
+    adapted = good_result("adapted")
+    mutate(adapted)
+    out = tci.merge_eval(good_result("base"), adapted, {"mode": "full"})
+    assert out["passed"] is False and any(not c["ok"] for c in out["checks"])
+
+
+def test_fewer_than_200_pages_cannot_pass_a_full_evaluation():
+    out = tci.merge_eval(good_result("base", 50), good_result("adapted", 50), {"mode": "full"})
+    assert out["passed"] is False
+
+
+def test_the_release_needs_a_passing_evaluation_of_exactly_this_zip(tmp_path):
+    sp, notes, art = make_release(tmp_path)
+    assert check(sp, notes, art) == 0
+    for k, v in (
+        ("passed", False),
+        ("zip_sha256", "0" * 64),
+        ("build_run_id", "98"),
+        ("build_commit", "f" * 40),
+        ("eval_run_id", "101"),
+        ("mode", "mini"),
+    ):
+        d = tmp_path / f"case_{k}"
+        d.mkdir()
+        sp2, notes2, art2 = make_release(d, eval={k: v})
+        assert check(sp2, notes2, art2) == 1, k
+
+
+def test_a_release_spec_without_an_eval_run_is_invalid(tmp_path):
+    sp, notes, _art = make_release(tmp_path, eval_run_id="abc")
+    with pytest.raises(SystemExit):
+        tci.load_release_spec(sp, notes)
+
+
+def test_run_check_accepts_only_the_expected_workflow_branch_and_commit(tmp_path):
+    import argparse
+
+    run = {
+        "id": 1,
+        "path": ".github/workflows/trial-build.yml",
+        "head_branch": "claude/handwritten-document-ocr-sgf76h",
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": "a" * 40,
+    }
+
+    def go(**override):
+        r = {**run, **override}
+        f = tmp_path / "run.json"
+        f.write_text(json.dumps(r))
+        return tci.cmd_run_check(
+            argparse.Namespace(
+                run=str(f),
+                workflow_path=".github/workflows/trial-build.yml",
+                branch="claude/handwritten-document-ocr-sgf76h",
+                sha="a" * 40,
+            )
+        )
+
+    assert go() == 0
+    assert go(path=".github/workflows/ci.yml") == 1
+    assert go(head_branch="main") == 1
+    assert go(event="pull_request") == 1
+    assert go(conclusion="failure") == 1
+    assert go(head_sha="b" * 40) == 1
