@@ -93,7 +93,7 @@ python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経
 | Python と依存(作成時: Python 3.13.17・torch 2.15.0(CPU 版)・numpy 2.5.3・Pillow 12.3.0・opencv-python-headless 5.0.0.93・onnx 1.23.2・onnxruntime 1.29.0・scipy 1.18.1) | `pip install -e ".[dev,ml,ml-dev]"` | **数値の再現は、版・CPU・スレッド数に依存しうる**(§7.3)。作成時の環境は Linux・Intel Xeon 2.1 GHz・4 コア・RAM 15 GB |
 | 合成帳票用の手書き風フォント(OFL・14 ファイル) | `python scripts/fetch_fonts.py`(ネットワーク。google/fonts の `main`) | 取得したファイルの SHA256 を `docs/fonts.md` の表と突き合わせる(2026-10-31 に再取得して **14/14 一致**を確認。一致しないと、データはビット単位では再生成できない) |
 | NDLOCR-Lite の ONNX(固定コミット + SHA256 検証) | `python scripts/fetch_models.py` | 基本の重みへの変換は、ビット単位で一致する(§7.3) |
-| 拒否リスト `$YAYOI_PRIVATE_DATA/denylist.txt` | **リポジトリにない**(実データの語を含むため)。別の経路で再作成が必要 | `scripts/check_no_private_data.py` と `scripts/model_provenance.py`(C4・C6)が使う。**重みの作成そのものには要らない**が、無いと、混入の検査とコミット前のフックが働かない |
+| 拒否リスト `$YAYOI_PRIVATE_DATA/denylist.txt` | **リポジトリにない**(実データの語を含むため)。控えは作らない(下の方針) | `scripts/check_no_private_data.py` と `scripts/model_provenance.py`(C4・C6)が使う。**重みの作成そのものには要らない**が、無いと、混入の検査とコミット前のフックが働かない |
 | 実サンプル | 不要 | 重みの作成には使っていない(`docs/model_provenance.md` §4) |
 
 - **拒否リストの方針(director の判断)**: 拒否リストは、実データの語を外に出さないため、別の経路に控えを作らない。コンテナが回収されて失われた場合は、それを受け入れ、`scripts/check_no_private_data.py` の拡張子・バイナリ(画像・PDF・整数列)の検査と、`scripts/model_provenance.py` の残りの検査(C1〜C3・C5)で運用する(今後の開発では実データを一切読まないので、混入のリスクは低いと判断)。
