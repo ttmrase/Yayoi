@@ -1007,9 +1007,8 @@ def cmd_eval_merge(args: argparse.Namespace) -> int:
     print()
     for c in final["checks"]:
         v = c["value"]
-        print(
-            f"[{'OK' if c['ok'] else 'NG'}] {c['name']}: {v if v is None else f'{v:.4f}'}(基準 {c['limit']})"
-        )
+        shown = f"{v:.4f}" if isinstance(v, int | float) and not isinstance(v, bool) else str(v)
+        print(f"[{'OK' if c['ok'] else 'NG'}] {c['name']}: {shown}(基準 {c['limit']})")
     print("結果:", "合格" if final["passed"] else "不合格")
     return 0
 

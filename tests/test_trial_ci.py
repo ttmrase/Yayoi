@@ -544,6 +544,32 @@ def test_a_release_spec_without_an_eval_run_is_invalid(tmp_path):
         tci.load_release_spec(sp, notes)
 
 
+def test_the_merge_command_prints_every_check_including_the_text_valued_ones(tmp_path, capsys):
+    # 判定の値が文字列(ホールドアウトの名前)のものがあっても、表示で落ちない(mini の通し試験で見つけた不具合)
+    import argparse
+
+    base, adapted = tmp_path / "b.json", tmp_path / "a.json"
+    base.write_text(json.dumps(good_result("base")))
+    adapted.write_text(json.dumps(good_result("adapted")))
+    rc = tci.cmd_eval_merge(
+        argparse.Namespace(
+            base=str(base),
+            adapted=str(adapted),
+            zip_name="z.zip",
+            zip_sha256="0" * 64,
+            build_run_id="1",
+            build_commit="e" * 40,
+            mode="full",
+            out=str(tmp_path / "out.json"),
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0 and "結果: 合格" in out and "[NG]" not in out
+    assert "holdout" not in out or "v2" in out  # 判定の名前に v2 が出る
+    saved = json.loads((tmp_path / "out.json").read_text())
+    assert saved["passed"] is True and saved["holdout"] == tci.FINAL_HOLDOUT
+
+
 def test_a_result_from_another_holdout_cannot_pass():
     old = good_result("adapted")
     old["holdout"] = "v1"

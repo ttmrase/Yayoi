@@ -5,4 +5,4 @@
 #   mode: mini  = 通し試験(mini の束。重みは使い物にならないので、合格にならない。記録だけ)
 mode: mini
 build_run_id: 41236790991
-request: 4
+request: 5
