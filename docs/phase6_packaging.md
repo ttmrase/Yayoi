@@ -1,6 +1,6 @@
 # Phase 6(配布・インストーラ)に向けた注意
 
-インストーラは Phase 6。それまでの試用版は「セットアップのスクリプト + 手順書」(`docs/windows_setup.md`)。ここには、配布するときに守る事項を集める。
+インストーラは Phase 6。それまでの試用版は「セットアップのスクリプト + 手順書」(`docs/windows_setup.md`。オフライン版のみ。依存は `requirements/trial-win-cp311.txt` のバージョン固定 + ハッシュ。重みの出所は `docs/model_provenance.md`)。ここには、配布するときに守る事項を集める。
 
 ## 保存データの保護(checker I-3)
 
