@@ -8,10 +8,10 @@
 | 項目 | 値 |
 |---|---|
 | ファイル | `yayoi-ocr-trial-0.1.0.zip`(オフライン版。`--smoke` でない完全版) |
-| 大きさ | 385,420,526 バイト(385.4 MB)、114 ファイル |
-| **zip の SHA256** | `188a56fe23d2fc74a0dcd70a371b6d70e47d09b4e8e4978a09a2d247a122dd27` |
-| 作ったコミット | `50189bc9e83e8f025fa889ed80a750e0de5fd103`(作業ツリーはクリーン。ブランチ `claude/handwritten-document-ocr-sgf76h`) |
-| 作った日時 | 2026-10-31 07:32 UTC |
+| 大きさ | 385,422,030 バイト(385.4 MB)、114 ファイル |
+| **zip の SHA256** | `5d69f66680faea2bd6b9846063236d85cbd82dc1f058a3316349146568526d89` |
+| 作ったコミット | `4651b73d6e2b6b9c8cd96749ded501f624df5dfc`(作業ツリーはクリーン。ブランチ `claude/handwritten-document-ocr-sgf76h`。このあとのコミットは、束に入らない文書だけの変更) |
+| 作った日時 | 2026-10-31 07:36 UTC |
 | 作った環境 | Linux・Python 3.13.17・Node 22(フロントエンドのビルド)。同梱するものは Windows 64 ビット・CPython 3.11 向け |
 | 作り方 | `cd web && npm run build` → `python scripts/make_trial_bundle.py`(出力先 `$YAYOI_PRIVATE_DATA/trial/`) |
 | 同梱の Python | python-build-standalone `cpython-3.11.18+20261026`(install_only_stripped、Windows x86_64)。SHA256 `67215a7bf1643e33d01b17ee3f1e91a8b0b39163746855ee02594bf0608f68b4`(固定値と公式 SHA256SUMS の両方で検証) |
@@ -58,9 +58,9 @@ C3(データセット間の seed・書き手 ID の重なりなし)・C4(同梱 
 
 | 確認 | 対象 | 結果 |
 |---|---|---|
-| Windows の CI `trial-windows`(windows-latest・Windows PowerShell 5.1): 束を展開 → `setup.ps1` → 開発用でないモードで起動 → HTTP の煙試験(取り込み〜認識〜確定〜cp932 の出力〜バックアップ〜**復元(再起動して入れ替え)**)→ ウィンドウ起動 → アンインストール(データを残す/消す/別フォルダの拒否) | **smoke 版の束**(基本の重みだけ。CI に適応済みの重みを置けない)。コミット `becbb80` | CI_62_RESULT |
-| 同じ煙試験(`scripts/trial_smoke.py`)を、**この RC の `models/`(zip から取り出した適応済みの重みを含む 9 ファイル)** で実行(Linux、データ領域 = インストール先の配置) | RC の重み。コミット `becbb80` の煙試験 | すべて成功(認識 10 秒・116 セル、確定、cp932 の出力、バックアップ → 検査 → 復元の準備 → 再起動して入れ替え → 出荷時の重みが残る・世代の組の照合・新しいページの認識、標準出力・標準エラーに入力した値なし) |
-| CI(Python 3.11 の試験・lint・フロントエンドの Vitest・Playwright E2E) | コミット `50189bc` | CI_63_RESULT |
+| Windows の CI `trial-windows`(windows-latest・Windows PowerShell 5.1): 束を展開 → `setup.ps1` → 開発用でないモードで起動 → HTTP の煙試験(取り込み〜認識〜確定〜cp932 の出力〜バックアップ〜**復元(再起動して入れ替え)**)→ ウィンドウ起動 → アンインストール(データを残す/消す・世代の保持・別フォルダと印のないフォルダの拒否) | **smoke 版の束**(基本の重みだけ。CI に適応済みの重みを置けない)。コミット `0b9e09d`(run 64)・`4651b73`(run 65。RC のビルド元)・`618a91c`(run 66。最終) | **成功**(run 64・66 は全ジョブ成功。run 65 は trial-windows を含む 5 ジョブが成功し、E2E の 2 件が共有ランナーの遅さで揺れて落ちた → `618a91c` で是正)。経緯: run 62・63 は、アンインストールの確認(`models\` が空のまま残った)で落ち、`0b9e09d` で修正 |
+| 同じ煙試験(`scripts/trial_smoke.py`)を、**この RC の `models/`(zip から取り出した適応済みの重みを含む 9 ファイル)** で実行(Linux、データ領域 = インストール先の配置) | 最終の RC の束(zip の SHA256 `5d69f666…`)から取り出した重み。コミット `4651b73` の煙試験 | すべて成功(認識 8 秒・116 セル、確定、cp932 の出力、バックアップ → 検査 → 復元の準備 → 再起動して入れ替え → 出荷時の重みが残る・世代の組の照合・新しいページの認識、標準出力・標準エラーに入力した値なし) |
+| CI(Python 3.11 の試験・`ruff`・フロントエンドの型検査/Vitest/ビルド・Playwright E2E(ubuntu と windows)・trial-windows) | コミット `618a91c`(run 66。ここまでの変更の最終) | **全ジョブ成功**(`618a91c` は `4651b73` に対して、E2E の試験 2 件の揺れの是正だけ。**束に入るファイルは同一**) |
 
 - **RC そのものを Windows の CI に通すことはできない**(適応済みの重みは公開リポジトリに置けない)。smoke 版の束の Windows CI の結果で代える。smoke 版と RC は、`make_trial_bundle.py` の同じ経路で作る(違いは `models/` の中身と `SMOKE-ONLY.txt` の有無だけ)。
 - **Windows の実機の確認は未実施**: `docs/windows_checklist.md` の F'(T1〜T12)・H(バックアップ)・I(ライセンス・ログ・アンインストール)・GPU は、利用者の PC で行う。
@@ -80,11 +80,11 @@ sha256sum yayoi-ocr-trial-0.1.0.zip                      # 上の SHA256 と比�
 python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経路で受け取った SHA256>
 ```
 
-## 7. 束に含まれる全ファイル(パス・大きさ・SHA256。`MANIFEST.sha256` と同じ値)
+## 7. 束に含まれる全ファイル(パス・大きさ・SHA256。`MANIFEST.sha256` 自身の行を除き、`MANIFEST.sha256` と同じ値)
 
 | パス | バイト数 | SHA256 |
 |---|---:|---|
-| `MANIFEST.sha256` | 11,612 | `212f159a08ca367dc41cbfb4df50ef85b6418c700f1fc8314f0010c8c70f9d02` |
+| `MANIFEST.sha256` | 11,612 | `83e8563c0fb73dc424889b4f8595c8adb0647d2f562c08597f793552d16788d4` |
 | `NOTICE.txt` | 1,346 | `ccf8ff8dbeab15462b2a36952501ff3c8a52403bf01ba1e047c0b98c1557a6ec` |
 | `README.txt` | 2,237 | `0900f002b31532e0b5e7f9d22b3353767002bf28b3f38d5534a04265b277888a` |
 | `licenses/LICENSE-parseq-Apache-2.0.txt` | 11,358 | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
@@ -157,7 +157,7 @@ python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経
 | `requirements-lock.txt` | 62,999 | `5490428a3c75a2f740bf36bb10460464d3498c2ee237da0842bc491685a4610f` |
 | `setup.ps1` | 11,347 | `20fd4df1db7cfe693ddac1e471758cec0bc2df165e553de31abceef6af25a49c` |
 | `start-yayoi-ocr.cmd` | 457 | `c3dd86787feb525c05b700cbbdb2706d241e48a8b2469f1cc52e3d268b9431e9` |
-| `uninstall.ps1` | 7,305 | `fd0dc6ba057649462af49d10ae1663a811d1f59293aa436292fd15074ee5be5a` |
+| `uninstall.ps1` | 7,569 | `7a35f46357868c0bfae5b42dd39c919244e5225d1d20556fc458cdc05c2c9b03` |
 | `user_manual.md` | 13,898 | `54708e4418c6b73e378d1653bed61822fc797c478e3d6e9f1d9951abceb980ca` |
 | `wheels/annotated_doc-0.0.5-py3-none-any.whl` | 5,302 | `117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101` |
 | `wheels/annotated_types-0.8.0-py3-none-any.whl` | 13,427 | `f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0` |
@@ -194,7 +194,7 @@ python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経
 | `wheels/typing_extensions-4.16.0-py3-none-any.whl` | 45,571 | `481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8` |
 | `wheels/typing_inspection-0.4.4-py3-none-any.whl` | 14,750 | `65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147` |
 | `wheels/uvicorn-0.54.0-py3-none-any.whl` | 87,427 | `505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf` |
-| `wheels/yayoi_ocr-0.1.0-py3-none-any.whl` | 380,661 | `3ba15de4f766e338e4119d1c5abdff7cbf1e0f129c029b2ddf3e27921c7d4fd4` |
-| `windows_checklist.md` | 22,742 | `e1e23e5af060eaae6593a7c6c3b74c7fc057f84cbc0ddf21062a869e4f2b1ad3` |
+| `wheels/yayoi_ocr-0.1.0-py3-none-any.whl` | 382,023 | `1fa0b5d11e24df275a40d9058a5c131c1fb1e93642ba83ffe68bb222d7172536` |
+| `windows_checklist.md` | 22,950 | `b2a6dbae71e6ea6c851b4d6313b64b24cd7854794adc9bbf604a147885985c48` |
 | `windows_setup.md` | 11,426 | `8a12650df260e147999b4f8aa151bedb23a3f0cb50aba98b15a422e6ac293151` |
 | `yayoi_export.md` | 10,757 | `0514534a3d2f167fd27f26587f3f617dc4a9af158d329005841df80b2d985713` |
