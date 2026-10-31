@@ -117,6 +117,7 @@ def code_of(path: Path, **kw) -> str:
         "models/1/gen_0012/parseq-ndl-24x256-30-tiny.pt",
         "uploads/0123456789abcdef0123456789abcdef/original.pdf",
         "exports/export_0001_20260101_現金.csv",
+        "exports/smart_現金_1.CSV",
     ],
 )
 def test_expected_entry_names_are_accepted(name):
@@ -145,6 +146,11 @@ def test_expected_entry_names_are_accepted(name):
         "exports/a:b.csv",
         "exports/a\x00b.csv",
         "exports/a*b.csv",
+        "exports/evil\u202egnp.csv",  # 右から左への上書き(見かけの偽装)
+        "exports/a\u200bb.csv",  # ゼロ幅スペース
+        "exports/run.exe",
+        "exports/note.txt",
+        "exports/nosuffix",
         "somewhere/else.txt",
         "app.sqlite3",
         "",
@@ -441,7 +447,7 @@ def stage(root: Path, tag: str) -> None:
 def test_apply_pending_swaps_the_data_and_keeps_the_old_data_in_undo(tmp_path):
     root = make_root(tmp_path, "old")
     stage(root, "new")
-    res = backup.apply_pending(root)
+    res = backup.apply_pending(root, recheck=False)
     assert res and res["ok"] and res["summary"] == {"n_pages": 3}
     assert (root / "app.sqlite3").read_bytes() == b"db-new"
     assert (root / "images" / "2" / "2.png").read_bytes() == b"new"
@@ -470,7 +476,7 @@ def test_a_failure_in_the_middle_of_the_swap_restores_the_old_data(tmp_path, mon
         return real(src, dst)
 
     monkeypatch.setattr(os, "replace", flaky)
-    res = backup.apply_pending(root)
+    res = backup.apply_pending(root, recheck=False)
     monkeypatch.setattr(os, "replace", real)
     assert res and res["ok"] is False and res["code"] == "error_OSError"
     assert (root / "app.sqlite3").read_bytes() == b"db-old"  # 元のまま
@@ -494,7 +500,7 @@ def test_a_transient_permission_error_is_retried_and_the_swap_succeeds(tmp_path,
         return real(src, dst)
 
     monkeypatch.setattr(os, "replace", flaky)
-    res = backup.apply_pending(root)
+    res = backup.apply_pending(root, recheck=False)
     monkeypatch.setattr(os, "replace", real)
     assert res and res["ok"] is True and fails["left"] == 0
     assert (root / "app.sqlite3").read_bytes() == b"db-new"
@@ -513,7 +519,7 @@ def test_a_persistent_permission_error_rolls_back_and_names_the_entry(tmp_path, 
         return real(src, dst)
 
     monkeypatch.setattr(os, "replace", locked)
-    res = backup.apply_pending(root)
+    res = backup.apply_pending(root, recheck=False)
     monkeypatch.setattr(os, "replace", real)
     assert res and res["ok"] is False and res["code"] == "error_PermissionError"
     assert res["entry"] == "pagedata"  # 固定の名前だけ(値・パスは含まない)
@@ -527,7 +533,7 @@ def test_a_pending_mark_without_staged_data_is_ignored_and_cleared(tmp_path):
     root = make_root(tmp_path, "old")
     (root / backup.PENDING_DIR).mkdir()
     backup.write_pending(root, {})
-    res = backup.apply_pending(root)
+    res = backup.apply_pending(root, recheck=False)
     assert res and res["ok"] is False and res["code"] == "staging_missing"
     assert (root / "app.sqlite3").read_bytes() == b"db-old"
     assert backup.read_pending(root) is None
@@ -747,3 +753,133 @@ def test_stale_download_files_are_removed_at_startup_but_a_staged_restore_is_kep
         assert c.get("/api/backup").json()["pending"]["summary"] == {"n_pages": 3}
         assert c.post("/api/backup/cancel").json()["pending"] is None
         assert not (tmp_path / backup.PENDING_DIR).exists()
+
+
+# ---------------------------------------------------------------- 試用版の配置: 出荷時の重みと世代が同じ models/ に同居している(checker R-1)
+
+
+def make_trial_root(tmp_path: Path) -> Path:
+    r = make_root(tmp_path, "old")
+    (r / "models" / "adapted").mkdir(parents=True)
+    (r / "models" / "NDLmoji.yaml").write_bytes(b"yaml")
+    (r / "models" / "parseq-ndl-24x256-30-tiny.pt").write_bytes(b"pt256")
+    (r / "models" / "confidence.json").write_bytes(b"{}")
+    (r / "models" / "adapted" / "confidence.json").write_bytes(b"{}")
+    (r / "models" / "1" / "gen_0001").mkdir(parents=True)
+    (r / "models" / "1" / "gen_0001" / "meta.json").write_bytes(b"old-gen")
+    return r
+
+
+def shipped_files(models: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(models).as_posix(): p.read_bytes()
+        for p in models.rglob("*")
+        if p.is_file() and not p.relative_to(models).parts[0].isdigit()
+    }
+
+
+def test_a_restore_replaces_only_the_generations_and_keeps_the_shipped_weights_next_to_them(
+    tmp_path,
+):
+    root = make_trial_root(tmp_path)
+    shipped = shipped_files(root / "models")
+    stage(root, "new")
+    s = root / backup.PENDING_DIR / backup.STAGING / "models" / "1" / "gen_0002"
+    s.mkdir(parents=True)
+    (s / "meta.json").write_bytes(b"new-gen")
+    res = backup.apply_pending(root, recheck=False)
+    assert res and res["ok"] is True
+    assert shipped_files(root / "models") == shipped  # 出荷時の重み・確信度・adapted/ はそのまま
+    assert (root / "models" / "1" / "gen_0002" / "meta.json").read_bytes() == b"new-gen"
+    assert not (root / "models" / "1" / "gen_0001").exists()  # 古い世代は置き換わる
+    undo = root / backup.UNDO_DIR
+    assert (undo / "models" / "1" / "gen_0001" / "meta.json").read_bytes() == b"old-gen"
+    assert not (undo / "models" / "NDLmoji.yaml").exists()  # 出荷時の重みは退避しない
+
+
+def test_a_backup_without_generations_still_keeps_the_shipped_weights(tmp_path):
+    root = make_trial_root(tmp_path)
+    shipped = shipped_files(root / "models")
+    stage(root, "new")  # models/ を含まないバックアップ
+    res = backup.apply_pending(root, recheck=False)
+    assert res and res["ok"] is True
+    assert shipped_files(root / "models") == shipped
+    assert not (root / "models" / "1").exists()  # DB には世代がないので、世代の置き場は退避される
+    assert (root / backup.UNDO_DIR / "models" / "1" / "gen_0001" / "meta.json").exists()
+
+
+def test_a_failure_while_swapping_restores_the_generations_and_leaves_the_shipped_weights(
+    tmp_path, monkeypatch
+):
+    root = make_trial_root(tmp_path)
+    shipped = shipped_files(root / "models")
+    stage(root, "new")
+    monkeypatch.setattr(backup, "REPLACE_DELAY_S", 0.0)
+    monkeypatch.setattr(backup, "REPLACE_ATTEMPTS", 1)
+    real = os.replace
+
+    def locked(src, dst):
+        if str(src).endswith("pagedata"):
+            raise PermissionError("locked")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", locked)
+    res = backup.apply_pending(root, recheck=False)
+    monkeypatch.setattr(os, "replace", real)
+    assert res and res["ok"] is False
+    assert shipped_files(root / "models") == shipped
+    assert (root / "models" / "1" / "gen_0001" / "meta.json").read_bytes() == b"old-gen"
+
+
+def test_the_staged_database_is_checked_again_in_a_separate_process_before_swapping(tmp_path):
+    """準備から入れ替えまでの間に、取り出してあった DB が書き換えられても、入れ替えない(checker R-5)。"""
+    root = make_root(tmp_path, "old")
+    (root / backup.PENDING_DIR / backup.STAGING / "db").mkdir(parents=True)
+    good = db_bytes(tmp_path, name="good.sqlite3")
+    (root / backup.PENDING_DIR / backup.STAGING / backup.DB_ENTRY).write_bytes(good)
+    backup.write_pending(root, {"n_pages": 1})
+    res = backup.apply_pending(root)  # 実物の DB: 再検査を通って入れ替わる
+    assert res and res["ok"] is True and (root / "app.sqlite3").read_bytes() == good
+
+    root2 = make_root(tmp_path / "second", "old")
+
+    def evil(con):
+        con.executescript("CREATE TRIGGER t AFTER INSERT ON settings BEGIN SELECT 1; END;")
+
+    (root2 / backup.PENDING_DIR / backup.STAGING / "db").mkdir(parents=True)
+    (root2 / backup.PENDING_DIR / backup.STAGING / backup.DB_ENTRY).write_bytes(
+        db_bytes(tmp_path, evil, "evil.sqlite3")
+    )
+    backup.write_pending(root2, {"n_pages": 1})
+    res = backup.apply_pending(root2)
+    assert res and res["ok"] is False and res["code"] == "db_schema_mismatch"
+    assert (root2 / "app.sqlite3").read_bytes() == b"db-old"  # 何も動かしていない
+    assert not (root2 / backup.UNDO_DIR).exists() and backup.read_pending(root2) is None
+
+
+# ---------------------------------------------------------------- アップロードの途中の空き容量(checker R-8)
+
+
+def test_the_upload_stops_when_the_disk_fills_up_even_without_a_content_length(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from yayoi_ocr.app import backup_mgr
+
+    _app, c = make(tmp_path)
+    with c:
+        monkeypatch.setattr(backup_mgr, "FREE_CHECK_EVERY", 1000)
+
+        def usage(_path):
+            return SimpleNamespace(total=1, used=1, free=10)  # 空きがほとんど無い
+
+        monkeypatch.setattr(backup_mgr.shutil, "disk_usage", usage)
+
+        def chunks():
+            for _ in range(20):
+                yield b"x" * 600
+
+        r = c.put("/api/backup/upload", content=chunks())  # chunked(Content-Length なし)
+        assert r.status_code == 507 and r.json()["error"] == "disk_full"
+        assert not (tmp_path / backup.PENDING_DIR).exists()  # 途中までの書き込みは消える

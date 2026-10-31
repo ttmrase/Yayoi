@@ -33,6 +33,10 @@ TIMEOUT_S = 2 * 3600  # 1 つの操作の上限
 DOWNLOAD_TTL_S = 600
 POLL_S = 0.4
 MAX_INCOMING_BYTES = backup.DEFAULT_LIMITS.max_total_bytes + (1 << 30)
+FREE_CHECK_EVERY = (
+    64 << 20
+)  # 受け取りの途中で、これだけ書くごとに空き容量を確認する(chunked で Content-Length が無い場合にも備える)
+FREE_MARGIN = 256 << 20
 
 
 class BackupManager:
@@ -313,12 +317,17 @@ class BackupManager:
         if declared is not None and shutil.disk_usage(self.root).free < declared + (256 << 20):
             raise StoreError(507, "disk_full")
         size = 0
+        checked = 0
         try:
             with open(dest, "wb") as fh:
                 async for chunk in body:
                     size += len(chunk)
                     if size > MAX_INCOMING_BYTES:
                         raise StoreError(413, "too_large")
+                    if size - checked >= FREE_CHECK_EVERY:
+                        checked = size
+                        if shutil.disk_usage(self.root).free < FREE_MARGIN:
+                            raise StoreError(507, "disk_full")
                     await run_in_threadpool(fh.write, chunk)
             if size == 0:
                 raise StoreError(422, "empty_file")

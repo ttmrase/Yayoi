@@ -90,6 +90,36 @@ def test_setup_twice_does_not_duplicate_lines(tmp_path):
     assert read_logs(tmp_path / "logs").count("once") == 1
 
 
+def test_an_unhandled_server_error_is_logged_as_a_type_name_only_and_not_to_the_console(
+    tmp_path, capfd
+):
+    import urllib.error
+    import urllib.request
+
+    from yayoi_ocr.app.launcher import RunningServer
+
+    srv = RunningServer(tmp_path / "data", backend="fake")
+
+    def boom():
+        raise ValueError("秘密の摘要 C:/Users/secret/path 12345678")
+
+    srv.app.add_api_route("/boom", boom)
+    srv.app.router.routes.insert(0, srv.app.router.routes.pop())  # 静的ファイルの受け皿より前に置く
+    srv.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(f"http://127.0.0.1:{srv.port}/boom", timeout=10)
+        assert err.value.code == 500
+    finally:
+        srv.stop()
+    text = read_logs(tmp_path / "data" / "logs")
+    assert "exception_type=ValueError" in text
+    console = capfd.readouterr()
+    for out in (text, console.out, console.err):
+        assert "秘密" not in out and "secret" not in out and "12345678" not in out
+        assert "Traceback" not in out
+
+
 # ---- 一通りの操作の後で、値がログに無い
 
 

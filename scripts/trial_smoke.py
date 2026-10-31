@@ -11,7 +11,8 @@
   1. 127.0.0.1 だけで待ち受ける(この PC の他のアドレスから繋がらない)・開発用の API が無い・セキュリティヘッダー
   2. 合成ページの取り込み → 本物の認識(重みは基本の重みだけでもよい)→ 要確認の処理 → 確定
   3. 設定 → 出力前の検証 → 弥生インポート形式の出力 → **cp932 のバイト列**(25 項目・CRLF・BOM なし・行数・日本語の保たれ方)
-  4. バックアップの作成 → 保存(合言葉つきの URL)→ 検査(別プロセス)
+  4. バックアップの作成 → 保存(合言葉つきの URL)→ 検査(別プロセス)→ **復元**(準備 → アプリを閉じる → 開き直す → 入れ替わる。
+     データ領域とインストール先が同じ配置で、出荷時の重みが残ること・確定したページが元どおりなこと・新しいページを認識できること)
   5. アプリの出力(標準出力・標準エラー)に、入力した値が出ていない
 IME・高 DPI・GPU・弥生への実際の取り込みは、実機のチェックリスト(docs/windows_checklist.md)。
 """
@@ -106,12 +107,10 @@ class Client:
 
 
 def start_server(
-    python: str, models: Path, data_dir: Path, log_dir: Path
+    python: str, models: Path, data_dir: Path, log_dir: Path, tag: str = ""
 ) -> tuple[subprocess.Popen, str, str, Path, Path]:
-    import os
-
     env = {**os.environ, "YAYOI_MODELS_DIR": str(models), "PYTHONUTF8": "1"}
-    out_path, err_path = log_dir / "server.out", log_dir / "server.err"
+    out_path, err_path = log_dir / f"server{tag}.out", log_dir / f"server{tag}.err"
     out, err = open(out_path, "w", encoding="utf-8"), open(err_path, "w", encoding="utf-8")  # noqa: SIM115
     proc = subprocess.Popen(
         [python, "-c", SERVER, str(data_dir)], stdout=out, stderr=err, env=env, text=True
@@ -150,6 +149,13 @@ def wait_for(c: Client, fn, what: str, timeout: float, every: float = 1.0):
             return last
         time.sleep(every)
     raise SmokeError(f"時間切れ: {what}")
+
+
+def _recognized(c: Client, pid: int):
+    p = c.json("GET", f"/api/pages/{pid}")
+    if p["status"] == "failed" or p.get("error"):
+        raise SmokeError(f"認識に失敗しました({p.get('error')})")
+    return p if p["status"] in ("review", "reviewing") and p["cells"] else None
 
 
 def check_network(port: int) -> None:
@@ -226,13 +232,7 @@ def run(args: argparse.Namespace) -> None:
         pid = job["page_ids"][0]
         t0 = time.time()
 
-        def recognized():
-            p = c.json("GET", f"/api/pages/{pid}")
-            if p["status"] == "failed" or p.get("error"):
-                raise SmokeError(f"認識に失敗しました({p.get('error')})")
-            return p if p["status"] in ("review", "reviewing") and p["cells"] else None
-
-        page = wait_for(c, recognized, "認識", args.timeout, every=2.0)
+        page = wait_for(c, lambda: _recognized(c, pid), "認識", args.timeout, every=2.0)
         log(f"OK 認識({time.time() - t0:.0f} 秒、セル {len(page['cells'])})")
         if len(page["cells"]) != 116:
             raise SmokeError(f"セル数が 116 ではありません({len(page['cells'])})")
@@ -321,12 +321,58 @@ def run(args: argparse.Namespace) -> None:
         )
         if st["error"] or st["incoming"]["n_confirmed_pages"] != 1:
             raise SmokeError(f"バックアップの検査に失敗しました({st['error']})")
-        c.json("POST", "/api/backup/cancel", {})
         log(f"OK バックアップ(作成 → 保存 → 検査。zip {len(blob)} バイト)")
+
+        # ---- 4b. 復元: 準備(取り出し + 検査)→ アプリを閉じる → 開き直す(起動の最初に入れ替わる)
+        c.json("POST", "/api/backup/restore", {})
+        wait_for(
+            c,
+            lambda: (lambda s: s if (not s["running"] and (s["pending"] or s["error"])) else None)(
+                c.json("GET", "/api/backup")
+            ),
+            "復元の準備",
+            300,
+        )
+        st = c.json("GET", "/api/backup")
+        if st["error"] or not st["pending"]:
+            raise SmokeError(f"復元の準備に失敗しました({st['error']})")
+        log("OK 復元の準備(取り出し + 検査)")
+    finally:
+        stop_tree(proc)
+    shipped = [*sorted(p.name for p in args.models.glob("*.pt")), "NDLmoji.yaml"]
+    proc, base, token, out2, err2 = start_server(args.python, args.models, data_dir, work, "2")
+    STATE["err"] = err2
+    c = Client(base, token)
+    try:
+        st = c.json("GET", "/api/backup")
+        res = st["result"]
+        if not res or not res.get("ok") or st["pending"]:
+            raise SmokeError(f"復元の入れ替えに失敗しました({res})")
+        if res.get("pairs", {}).get("broken") != 0:
+            raise SmokeError("復元のあと、世代の重みと確信度の組に不整合があります")
+        missing = [n for n in shipped if not (args.models / n).is_file()]
+        if missing:
+            raise SmokeError(
+                f"復元のあと、出荷時の重みが消えています({len(missing)} 個)"
+            )  # models/ が同居する配置
+        page = c.json("GET", f"/api/pages/{pid}")
+        if page["status"] != "confirmed" or len(page["cells"]) != 116:
+            raise SmokeError("復元のあと、確定したページが元どおりではありません")
+        # 復元のあとも、新しいページを取り込んで認識できる(重み・確信度が読めている)
+        up2 = c.json("POST", "/api/uploads?name=smoke2.png", raw=png, timeout=120)
+        job2 = c.json("POST", "/api/jobs", {"upload_ids": [up2["id"]], "name": "smoke2"})
+        pid2 = job2["page_ids"][0]
+        p2 = wait_for(c, lambda: _recognized(c, pid2), "復元のあとの認識", args.timeout, every=2.0)
+        if len(p2["cells"]) != 116:
+            raise SmokeError("復元のあとの認識で、セル数が 116 ではありません")
+        c.json("POST", "/api/backup/ack", {})
+        log(
+            "OK 復元(次の起動の最初に入れ替わる → 確定したページが元どおり・出荷時の重みが残る・世代の組の照合・新しいページを認識)"
+        )
     finally:
         stop_tree(proc)
     # ---- 5. 出力に値が出ていない
-    for p in (out_path, err_path):
+    for p in (out_path, err_path, out2, err2):
         text = p.read_text(encoding="utf-8", errors="replace")
         leaked = [w for w in SECRET_WORDS if w in text]
         if leaked:

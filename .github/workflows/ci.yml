@@ -161,6 +161,7 @@ jobs:
           python scripts/trial_smoke.py
           --python "$env:RUNNER_TEMP\yayoi-ocr\venv\Scripts\python.exe"
           --models "$env:RUNNER_TEMP\yayoi-ocr\models"
+          --data-dir "$env:RUNNER_TEMP\yayoi-ocr"
           --timeout 1500
 
       - name: Window launch check (informational)
@@ -219,4 +220,10 @@ jobs:
           if ($LASTEXITCODE -eq 0) { Write-Host "should refuse other-dir"; exit 1 }
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\uninstall.ps1" -InstallDir "C:\" -Force
           if ($LASTEXITCODE -eq 0) { Write-Host "should refuse the drive root"; exit 1 }
+          # 5) -Force を付けても、このアプリのインストール先に見えない(起動ファイル・DB・仮想環境が無い)フォルダは拒否する
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\yayoi-ocr-other\images" | Out-Null
+          Set-Content "$env:RUNNER_TEMP\yayoi-ocr-other\images\keep.png" "x"
+          "DELETE" | & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\uninstall.ps1" -InstallDir "$env:RUNNER_TEMP\yayoi-ocr-other" -Force -DeleteData
+          if ($LASTEXITCODE -eq 0) { Write-Host "should refuse an unmarked folder even with -Force"; exit 1 }
+          if (-not (Test-Path "$env:RUNNER_TEMP\yayoi-ocr-other\images\keep.png")) { Write-Host "unmarked folder was modified"; exit 1 }
           exit 0  # 最後に実行した外部コマンドの終了コード(拒否の 1)を、このステップの結果にしない

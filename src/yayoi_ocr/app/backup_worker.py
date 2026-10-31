@@ -5,6 +5,7 @@
     python -I -m yayoi_ocr.app.backup_worker create  --root DIR --snapshot FILE --out ZIP --version V [--originals] [--progress FILE]
     python -I -m yayoi_ocr.app.backup_worker inspect --zip ZIP [--progress FILE]
     python -I -m yayoi_ocr.app.backup_worker extract --zip ZIP --staging DIR [--progress FILE]
+    python -I -m yayoi_ocr.app.backup_worker checkdb --db FILE        (入れ替えの直前の、取り出し済みの DB の再検査)
 
 標準出力の最後の 1 行が結果の JSON: 成功 `{"ok": true, "result": {...}}`、失敗 `{"ok": false, "code": コード}`(終了コード 2)。
 進捗は `--progress` のファイルに JSON `{"stage", "done", "total"}` を上書きで書く(親が読む)。メッセージ・パス・値は出力しない(コードと件数だけ)。
@@ -19,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-from .backup import BackupError, create_archive, extract_archive, inspect_archive
+from .backup import BackupError, check_db, create_archive, extract_archive, inspect_archive
 
 
 def _progress_writer(path: Path | None):
@@ -53,10 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("extract")
     e.add_argument("--zip", type=Path, required=True)
     e.add_argument("--staging", type=Path, required=True)
+    k = sub.add_parser("checkdb")
+    k.add_argument("--db", type=Path, required=True)
     for p in (c, i, e):
         p.add_argument("--progress", type=Path)
     args = ap.parse_args(argv)
-    progress = _progress_writer(args.progress)
+    progress = _progress_writer(getattr(args, "progress", None))
     try:
         if args.mode == "create":
             result = create_archive(
@@ -67,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
                 app_version=args.version,
                 progress=progress,
             )
+        elif args.mode == "checkdb":
+            result = {"schema": check_db(args.db)}
         elif args.mode == "inspect":
             result = inspect_archive(args.zip, progress=progress)
         else:

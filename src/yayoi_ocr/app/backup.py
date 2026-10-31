@@ -107,6 +107,7 @@ _RESERVED = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 _GEN_FILES = (*WEIGHT_FILES, CONFIDENCE_FILE, META_FILE)
+_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 _PATTERNS = (
     re.compile(r"^db/app\.sqlite3$"),
     re.compile(r"^images/\d{1,12}/(\d{1,12}\.png|view\.jpg)$"),
@@ -122,6 +123,9 @@ def _component_bad(c: str) -> bool:
     if any(ord(ch) < 32 or ord(ch) == 0x7F or ch in _FORBIDDEN for ch in c):
         return True
     if c.split(".")[0].upper() in _RESERVED:
+        return True
+    # 制御文字・書式制御文字(U+202E の右から左への上書きなど。名前の見かけを偽装できる)・サロゲート・私用領域・未割り当て・行/段落の区切りは使わない
+    if any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in c):
         return True
     try:
         c.encode("utf-8")
@@ -140,9 +144,10 @@ def entry_problem(name: object) -> str | None:
     if any(_component_bad(p) for p in parts):
         return "entry_name_invalid"
     if parts[0] == "exports":
+        # exports/<ファイル名>.csv だけ(出力が作るのは CSV だけ。日本語の名前もある)
         return (
-            None if len(parts) == 2 else "entry_name_invalid"
-        )  # exports/<ファイル名> だけ(日本語の名前もある)
+            None if len(parts) == 2 and parts[1].lower().endswith(".csv") else "entry_name_invalid"
+        )
     if any(p.fullmatch(name) for p in _PATTERNS):
         return None
     return "entry_name_invalid"
@@ -676,12 +681,67 @@ def _replace(src: Path, dst: Path) -> None:
             time.sleep(REPLACE_DELAY_S)
 
 
-def _movable(root: Path) -> list[str]:
-    return [n for n in (*DB_FILES, *DATA_DIRS) if (root / n).exists()]
+def _numbered_dirs(d: Path) -> list[str]:
+    if not d.is_dir():
+        return []
+    return [
+        p.name
+        for p in sorted(d.iterdir())
+        if p.is_dir() and not p.is_symlink() and p.name.isdigit()
+    ]
 
 
-def apply_pending(root: Path) -> dict | None:
+def _units(root: Path) -> list[str]:
+    """入れ替えの単位(領域からの相対パス)。**`models/` は丸ごと動かさない**: 試用版の配置では、出荷時の重み(`models/*.pt`・`confidence.json`・`adapted/` など)と
+    追加学習の世代(`models/<プロファイル ID>/gen_XXXX/`)が同じ `models/` に同居している。入れ替えるのは世代の置き場(`models/<数字>/`)だけ。"""
+    out = [n for n in (*DB_FILES, *(d for d in DATA_DIRS if d != "models")) if (root / n).exists()]
+    return out + [f"models/{n}" for n in _numbered_dirs(root / "models")]
+
+
+def _staged_units(staging: Path) -> list[str]:
+    out = [d for d in DATA_DIRS if d != "models" and (staging / d).exists()]
+    return out + [f"models/{n}" for n in _numbered_dirs(staging / "models")]
+
+
+def recheck_db(path: Path, timeout: float = 600.0) -> str | None:
+    """入れ替えの直前に、取り出してあった DB をもう一度検査する(準備から入れ替えまでの間に書き換えられていないか)。
+    zip と同じく DB は信用せず、**使い捨ての別プロセス**で開く(壊れた DB で起動そのものが落ち続けないように)。問題なければ None、あれば理由コード。"""
+    import subprocess
+    import sys
+
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "yayoi_ocr.app.backup_worker",
+                "checkdb",
+                "--db",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            cwd=str(path.parent),
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "recheck_failed"
+    try:
+        msg = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return "recheck_failed"
+    if proc.returncode == 0 and msg.get("ok") is True:
+        return None
+    code = msg.get("code")
+    return code if isinstance(code, str) and len(code) <= 64 else "recheck_failed"
+
+
+def apply_pending(root: Path, *, recheck: bool = True) -> dict | None:
     """復元の準備ができていれば、いまのデータを `restore-undo/` へ移して退避し、取り出したデータに入れ替える。**DB を開く前**に呼ぶ。
+    入れ替える前に、取り出してあった DB をもう一度検査する(`recheck`。別プロセス)。
     結果は `restore-result.json` に残す(画面に出す)。失敗したら元に戻す。準備がなければ何もしない(None)。"""
     pend = read_pending(root)
     if pend is None:
@@ -690,6 +750,8 @@ def apply_pending(root: Path) -> dict | None:
     result: dict
     if not (staging / DB_ENTRY).is_file():
         result = {"ok": False, "code": "staging_missing"}
+    elif recheck and (code := recheck_db(staging / DB_ENTRY)) is not None:
+        result = {"ok": False, "code": code}  # 何も動かしていない(いまのデータは元のまま)
     else:
         undo = root / UNDO_DIR
         shutil.rmtree(undo, ignore_errors=True)  # 退避は直近の 1 回分だけ
@@ -697,19 +759,23 @@ def apply_pending(root: Path) -> dict | None:
         moved: list[str] = []
         placed: list[str] = []
         current = ""  # 失敗したとき、どの名前の付け替えだったか(固定の名前だけ。値・パスは含まない)
+
+        def move(src: Path, dst: Path) -> None:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _replace(src, dst)
+
         try:
-            for n in _movable(root):
+            for n in _units(root):
                 current = n
-                _replace(root / n, undo / n)
+                move(root / n, undo / n)
                 moved.append(n)
             current = "app.sqlite3"
-            _replace(staging / DB_ENTRY, root / "app.sqlite3")
+            move(staging / DB_ENTRY, root / "app.sqlite3")
             placed.append("app.sqlite3")
-            for t in DATA_DIRS:
-                if (staging / t).exists():
-                    current = t
-                    _replace(staging / t, root / t)
-                    placed.append(t)
+            for t in _staged_units(staging):
+                current = t
+                move(staging / t, root / t)
+                placed.append(t)
             result = {"ok": True, "summary": pend["summary"], "undo_bytes": dir_bytes(undo)}
         except BaseException as exc:
             for n in placed:  # 置いたものを片づけて、退避したものを戻す
@@ -721,7 +787,7 @@ def apply_pending(root: Path) -> dict | None:
                         p.unlink()
             for n in moved:
                 with contextlib.suppress(OSError):
-                    _replace(undo / n, root / n)
+                    move(undo / n, root / n)
             shutil.rmtree(undo, ignore_errors=True)
             result = {"ok": False, "code": f"error_{type(exc).__name__}", "entry": current}
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):

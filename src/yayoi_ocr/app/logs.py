@@ -2,7 +2,7 @@
 
 - 出力先: データ領域の `logs/app.log`。1 ファイル最大 1 MiB で回転し、世代は 5 つまで(合計で最大 約 6 MiB)。
   起動のたびに、更新から 30 日を過ぎたログのファイルを消す(`purge_old`)。
-- 出すもの: ID・件数・コード・例外の**型名**だけ(呼び出し側が守る)。守られなかった場合の備えとして、**例外のメッセージとトレースバックは書かない**
+- 出すもの: ID・件数・コード・例外の**型名**だけ(呼び出し側が守る)。サーバ(uvicorn)の未処理の例外も同じ(`launcher` が uvicorn の既定のログ設定を外してこの設定に任せるので、入力値を含む検証エラーの文面がコンソールに出ない)。守られなかった場合の備えとして、**例外のメッセージとトレースバックは書かない**
   (`ValueFreeFormatter`。`log.exception(...)` や `exc_info=True` があっても、型名だけになる。メッセージにはパスや値が入りうるため)。
 - 保証は試験で行う(`tests/test_logs.py`): 一通りの操作(取り込み・認識・確認・確定・出力・追加学習・バックアップ・失敗)の後で、入力した値・ファイル名・設定の名前・パスがログに無い。
 - 標準エラー(最小化したコンソール)にも WARNING 以上を出す(困ったときに見える)。ログは利用者の PC の中だけ。外へ送らない。
@@ -24,7 +24,8 @@ FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 LOGGERS = (
     "yayoi",
     "yayoi_ocr",
-)  # アプリのログの名前(`yayoi.training` / `yayoi.gens` / `yayoi_ocr.app`)
+    "uvicorn",
+)  # アプリのログ(`yayoi.training` / `yayoi.gens` / `yayoi_ocr.app`)と、サーバ(uvicorn.error の未処理の例外)
 _MARK = "_yayoi_log_handler"
 
 

@@ -58,7 +58,10 @@ class RunningServer:
             backend=make_backend(backend),
             uploads_dir=self.paths.uploads,
         )
-        config = uvicorn.Config(self.app, log_level="warning", access_log=False, lifespan="off")
+        # log_config=None: uvicorn の既定のログ設定(例外の文面つきのトレースバックを標準エラーに出す)を使わず、logs.setup の設定(例外は型名だけ)に任せる
+        config = uvicorn.Config(
+            self.app, log_level="warning", access_log=False, lifespan="off", log_config=None
+        )
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(
             target=lambda: self.server.run(sockets=[self.sock]), name="yayoi-server", daemon=True
