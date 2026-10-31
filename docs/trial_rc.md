@@ -96,6 +96,8 @@ python scripts/verify_trial_bundle.py yayoi-ocr-trial-0.1.0.zip --sha256 <別経
 | 拒否リスト `$YAYOI_PRIVATE_DATA/denylist.txt` | **リポジトリにない**(実データの語を含むため)。別の経路で再作成が必要 | `scripts/check_no_private_data.py` と `scripts/model_provenance.py`(C4・C6)が使う。**重みの作成そのものには要らない**が、無いと、混入の検査とコミット前のフックが働かない |
 | 実サンプル | 不要 | 重みの作成には使っていない(`docs/model_provenance.md` §4) |
 
+- **拒否リストの方針(director の判断)**: 拒否リストは、実データの語を外に出さないため、別の経路に控えを作らない。コンテナが回収されて失われた場合は、それを受け入れ、`scripts/check_no_private_data.py` の拡張子・バイナリ(画像・PDF・整数列)の検査と、`scripts/model_provenance.py` の残りの検査(C1〜C3・C5)で運用する(今後の開発では実データを一切読まないので、混入のリスクは低いと判断)。
+
 ### 7.2 手順(順序に依存関係がある。所要時間は 4 コア・RAM 15 GB の CPU 機)
 
 `D=$YAYOI_PRIVATE_DATA/datasets`・`M=$YAYOI_PRIVATE_DATA/models`・`E=$YAYOI_PRIVATE_DATA/evals` とする。コマンドの全文は `docs/model_provenance.md` §2・§3。
