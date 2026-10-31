@@ -116,3 +116,16 @@ jsdom 25.0.1(MIT)、@playwright/test 1.49.0(Apache-2.0)、@axe-core/playwright 4
 
 - **外部リソースを読み込まない**: CDN・Web フォント・外部スクリプトは使わない。フォントは OS のシステムフォント(`Yu Gothic UI` など)を名前で指定するだけ。
   `tests/test_app_static.py` がビルド成果物に外部 URL が無いことを(名前空間の識別子と React のエラー文言を除いて)検査し、Playwright の E2E が実行時の通信先を検査する。
+
+## 試用版に同梱する Python(python-build-standalone)
+
+- **取得元**: <https://github.com/astral-sh/python-build-standalone> のリリース(`requirements/python-standalone.txt` に tag・ファイル名・SHA256 を固定。
+  現在は tag `20261026` の `cpython-3.11.18+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz`)。
+  検証は、リポジトリに固定した SHA256 と、同じリリースの公式 `SHA256SUMS` の両方(`scripts/fetch_python_standalone.py`)。
+- **ライセンス**:
+  - CPython: **PSF License Version 2**(`python/LICENSE.txt` に全文。CNRI・BeOpen・CWI の経緯、bzip2/libbzip2、Tcl/Tk などの表記を含む)。配布 zip の `licenses/python-LICENSE.txt` と `NOTICE.txt` に同じものを載せる。
+  - python-build-standalone のビルド手順・パッチ: **MPL-2.0**(アーカイブの配布元の表示に従う)。
+  - アーカイブに静的に組み込まれた第三者ライブラリ(OpenSSL・SQLite・libffi・expat・zlib・xz・mpdecimal など)の一覧とライセンスは、python-build-standalone の配布元の文書に従う
+    (ここには転記していない。配布前に配布元で確認すること)。
+  - アーカイブに入っている pip・setuptools は、セットアップでは使わない(ネットワークに接続しない。仮想環境の `pip` だけを `--no-index` で使う)。
+- **用途**: 配布 zip に同梱し、`setup.ps1` が `%LOCALAPPDATA%\yayoi-ocr\python` に展開して、仮想環境(`venv`)の基になる。利用者の PC の Python とは独立。

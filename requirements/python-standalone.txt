@@ -1,0 +1,7 @@
+# 同梱する Python(試用版)。python-build-standalone(astral-sh)の Windows x86_64 / CPython 3.11 / install_only_stripped。
+# scripts/fetch_python_standalone.py が取得し、ここの sha256 と、同じリリースの公式 SHA256SUMS の両方で検証する。
+# 更新するときは、tag と file をそろえて変え、公式の SHA256SUMS の値を sha256 に写す。
+tag=20261026
+version=3.11.18
+file=cpython-3.11.18+20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
+sha256=67215a7bf1643e33d01b17ee3f1e91a8b0b39163746855ee02594bf0608f68b4

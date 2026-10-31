@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """試用版の配布物(zip)を作る(開発用。リポジトリの外に出力する)。**オフライン版だけ**を作る。
 
-    python scripts/make_trial_bundle.py [--out DIR] [--models DIR] [--python-installer FILE]
+    python scripts/make_trial_bundle.py [--out DIR] [--models DIR] [--python-archive FILE | --no-python] [--python-installer FILE]
 
 zip の中身:
   wheels/yayoi_ocr-*.whl      このリポジトリのビルド(フロントエンドのビルド成果物 app/static を含む。先に `cd web && npm run build`)
@@ -10,7 +10,9 @@ zip の中身:
                               sdist しかない純 Python のパッケージは、lock のハッシュを検証してから wheel にする
   requirements-lock.txt       上の lock(setup.ps1 が `pip install --no-index --require-hashes` に使う)
   models/                     認識の重み(許可リストの名前だけ。docs/model_provenance.md)
-  python-installer.exe        --python-installer を指定したときだけ(python.org の 3.11 の公式インストーラ。setup.ps1 が Python 3.11 が無いときに使う)
+  python-standalone.tar.gz    同梱の Python(python-build-standalone の Windows x86_64 / CPython 3.11。requirements/python-standalone.txt の固定値と
+                              公式 SHA256SUMS で検証済み)。setup.ps1 はこれを %LOCALAPPDATA%/yayoi-ocr/python に展開して venv を作る(システムの Python は要らない)
+  python-installer.exe        --python-installer を指定したときだけ(python.org の 3.11 の公式インストーラ。同梱の Python が無いときの予備)
   setup.ps1, start-yayoi-ocr.cmd, README.txt, NOTICE.txt, windows_setup.md, windows_checklist.md, yayoi_export.md, model_provenance.md
   MANIFEST.sha256             配布物のハッシュ一覧
 
@@ -22,10 +24,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -55,6 +59,9 @@ yayoi-ocr 試用版 — 利用しているもの
 - セル種別分類器・確信度モデル・追加学習の重みは、合成データ(架空の帳票。実際の帳票は含まない)だけで学習・較正した。
   重みの出所(由来・データ・スクリプト・SHA256)は model_provenance.md に記録している。
 - 依存ライブラリ(PyTorch・NumPy・OpenCV・FastAPI など)は requirements-lock.txt のとおり。ライセンスは各配布元の表示に従う。
+- 同梱の Python: python-build-standalone(astral-sh。https://github.com/astral-sh/python-build-standalone)の CPython 3.11。
+  CPython は PSF License(licenses\\python-LICENSE.txt に全文。bzip2・Tcl/Tk など同梱ライブラリの表記を含む)。
+  静的に組み込まれた第三者ライブラリ(OpenSSL・SQLite・libffi・expat・zlib・xz など)のライセンスは、配布元の文書に従う。
 """
 
 
@@ -121,6 +128,24 @@ def build_wheel(out: Path) -> Path:
     return wheels[-1]
 
 
+def fetch_python() -> Path:
+    """固定した Python(python-build-standalone)を取得して検証する(scripts/fetch_python_standalone.py)。"""
+    spec = importlib.util.spec_from_file_location(
+        "fetch_python_standalone", ROOT / "scripts/fetch_python_standalone.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.ensure()
+
+
+def read_member(archive: Path, name: str) -> bytes:
+    with tarfile.open(archive, "r:gz") as t:
+        f = t.extractfile(name)
+        if f is None:
+            raise SystemExit(f"{archive.name} に {name} がありません")
+        return f.read()
+
+
 def download_wheels(out: Path) -> None:
     """lock(バージョン固定 + ハッシュ)から、Windows 64 ビット・Python 3.11 向けの wheel を取得して検証する。
     ハッシュが合わなければ pip が失敗する。torch は lock が CPU 版であることを確認済み(make_trial_lock.py)。"""
@@ -175,6 +200,16 @@ def main() -> int:
     ap.add_argument("--out", type=Path, help="出力先(既定: $YAYOI_PRIVATE_DATA/trial)")
     ap.add_argument("--models", type=Path, help="重みの置き場(既定: models_dir())")
     ap.add_argument(
+        "--python-archive",
+        type=Path,
+        help="同梱する Python のアーカイブ(既定: scripts/fetch_python_standalone.py で取得・検証したもの)",
+    )
+    ap.add_argument(
+        "--no-python",
+        action="store_true",
+        help="Python を同梱しない(利用者の PC の Python 3.11 か、--python-installer を使う)",
+    )
+    ap.add_argument(
         "--python-installer",
         type=Path,
         help="python.org の 3.11 の公式インストーラ(python-3.11.x-amd64.exe)。同梱すると、Python が無い PC で"
@@ -190,6 +225,14 @@ def main() -> int:
 
     build_wheel(stage / "wheels")
     download_wheels(stage / "wheels")
+    if not args.no_python:
+        archive = args.python_archive or fetch_python()
+        shutil.copy2(archive, stage / "python-standalone.tar.gz")
+        shutil.copy2(ROOT / "requirements/python-standalone.txt", stage / "python-standalone.pin")
+        (stage / "licenses").mkdir(exist_ok=True)
+        (stage / "licenses" / "python-LICENSE.txt").write_bytes(
+            read_member(archive, "python/LICENSE.txt")
+        )
     if args.python_installer:
         if not re.fullmatch(r"python-3\.11\.\d+-amd64\.exe", args.python_installer.name):
             raise SystemExit("python-3.11.x-amd64.exe を指定してください")

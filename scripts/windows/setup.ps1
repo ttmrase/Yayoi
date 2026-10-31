@@ -4,7 +4,8 @@
 # 何をするか: ① Python 3.11 以降と WebView2 を確認 ② 配布物のハッシュを検証 ③ 専用の仮想環境を作って依存を入れる
 #            ④ 認識の重みをコピー ⑤ 起動用のショートカットを作る ⑥ 動作確認(インポートとヘルプ)。
 # 完全にオフラインで入る(wheels\ の依存は、バージョン固定 + ハッシュつきの requirements-lock.txt のとおり。ネットワークは使わない)。
-# Python 3.11(64 ビット)が必要。無ければ、同梱の python-installer.exe(あれば)で現在のユーザー用に導入する。
+# Python は zip に同梱(python-standalone.tar.gz。python-build-standalone の CPython 3.11)。システムの Python は要らない
+# (同梱が無い版では、PC の Python 3.11 か、同梱の python-installer.exe を使う)。
 # アプリ本体は実行時にネットワークを使わない。
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "yayoi-ocr"),
@@ -17,31 +18,60 @@ function Step($msg) { Write-Host ""; Write-Host "== $msg" -ForegroundColor Cyan 
 function Fail($msg) { Write-Host "エラー: $msg" -ForegroundColor Red; exit 1 }
 
 Step "1/6 Python と WebView2 の確認"
+function Test-Python311($exe, $pyargs) {
+    try {
+        $out = & $exe @($pyargs) -c "import sys; print('%d.%d.%d' % sys.version_info[:3]); print(sys.maxsize > 2**32)" 2>$null
+        return ($LASTEXITCODE -eq 0 -and $out -and ($out -join " ") -match "^3\.11\.\d+ True$")
+    } catch { return $false }
+}
 function Find-Python311 {
     $cands = @(
         @{ exe = "py"; args = @("-3.11") },
         @{ exe = "python"; args = @() },
         @{ exe = (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"); args = @() }
     )
-    foreach ($c in $cands) {
-        try {
-            $out = & $c.exe @($c.args) -c "import sys; print('%d.%d.%d' % sys.version_info[:3]); print(sys.maxsize > 2**32)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $out -and ($out -join " ") -match "^3\.11\.\d+ True$") { return $c }
-        } catch { }
-    }
+    foreach ($c in $cands) { if (Test-Python311 $c.exe $c.args) { return $c } }
     return $null
 }
-$py = Find-Python311
+$py = $null
+$bundled = Join-Path $here "python-standalone.tar.gz"
+$pyHome = Join-Path $InstallDir "python"
+if (Test-Path $bundled) {
+    # 同梱の Python(python-build-standalone)。展開前に、固定した SHA256 と一致するか確かめる
+    $pin = @{}
+    foreach ($line in Get-Content (Join-Path $here "python-standalone.pin") -Encoding UTF8) {
+        if ($line -match "^\s*([a-z0-9_]+)=(.+)$") { $pin[$Matches[1]] = $Matches[2].Trim() }
+    }
+    if (-not $pin["sha256"]) { Fail "python-standalone.pin が壊れています" }
+    if ((Get-FileHash $bundled -Algorithm SHA256).Hash.ToLower() -ne $pin["sha256"].ToLower()) { Fail "同梱の Python の SHA256 が固定値と違います。zip をもう一度展開してください。" }
+    $pyExe = Join-Path $pyHome "python.exe"
+    if (-not (Test-Python311 $pyExe @())) {
+        $tar = Join-Path $env:SystemRoot "System32\tar.exe"
+        if (-not (Test-Path $tar)) { Fail "tar.exe が見つかりません(Windows 10 version 1803 以降が必要です)" }
+        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+        if (Test-Path $pyHome) { Remove-Item -Recurse -Force $pyHome }
+        Write-Host "同梱の Python を展開します: $pyHome"
+        & $tar -xzf $bundled -C $InstallDir
+        if ($LASTEXITCODE -ne 0) { Fail "同梱の Python を展開できませんでした" }
+    }
+    if (Test-Python311 $pyExe @()) { $py = @{ exe = $pyExe; args = @() } }
+}
+if (-not $py) { $py = Find-Python311 }
 if (-not $py) {
     $installer = Join-Path $here "python-installer.exe"
     if (Test-Path $installer) {
-        Write-Host "Python 3.11 が無いので、同梱のインストーラで導入します(現在のユーザー用。管理者権限は要りません)"
+        # 署名者が Python Software Foundation で署名が有効なものだけを実行する(zip の中の MANIFEST では差し替えを防げないため)
+        $sig = Get-AuthenticodeSignature $installer
+        if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "Python Software Foundation") {
+            Fail "python-installer.exe の署名を確認できません(状態: $($sig.Status))。実行しません。"
+        }
+        Write-Host "Python 3.11 が無いので、同梱のインストーラで導入します(署名者: Python Software Foundation。現在のユーザー用。管理者権限は要りません)"
         $p = Start-Process -FilePath $installer -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_launcher=0", "Include_test=0", "Include_doc=0", "Shortcuts=0" -Wait -PassThru
         if ($p.ExitCode -ne 0) { Fail "Python の導入に失敗しました(終了コード $($p.ExitCode))" }
         $py = Find-Python311
     }
 }
-if (-not $py) { Fail "Python 3.11(64 ビット)が見つかりません。python.org の Windows installer (64-bit) の 3.11 系を入れてから、もう一度実行してください。" }
+if (-not $py) { Fail "Python 3.11(64 ビット)が見つかりません。この zip には Python が入っていません。python.org の Windows installer (64-bit) の 3.11 系を入れてから、もう一度実行してください。" }
 Write-Host "Python 3.11 を使います: $($py.exe) $($py.args -join ' ')"
 
 $wv2Keys = @(

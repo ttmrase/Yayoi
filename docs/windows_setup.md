@@ -7,7 +7,7 @@
 | もの | 内容 |
 |---|---|
 | OS | Windows 10 / 11(64 ビット) |
-| Python | **3.11(64 ビット)**。無ければ、配布 zip に `python-installer.exe` が入っていれば `setup.ps1` が現在のユーザー用に静かに導入する(管理者権限は要らない)。入っていなければ <https://www.python.org/downloads/windows/> の 3.11 系 Windows installer (64-bit) を先に入れる |
+| Python | **zip に同梱**(python-build-standalone の CPython 3.11。`setup.ps1` が `%LOCALAPPDATA%\yayoi-ocr\python` に展開する。システムの Python は要らず、PC の Python とは独立)。展開には Windows 標準の `tar.exe`(Windows 10 version 1803 以降)を使う。同梱が無い版では、PC の Python 3.11(64 ビット)か、zip の `python-installer.exe` を使う |
 | WebView2 ランタイム | Windows 11 は標準で入っている。Windows 10 で無ければ Microsoft の Evergreen Standalone Installer(x64)を入れる。無いとウィンドウが開かない |
 | 空き容量 | 約 3 GB(PyTorch の CPU 版・重み・データ) |
 | 弥生 | やよいの青色申告 25(デスクトップ版)。出力した CSV を取り込む |
@@ -54,14 +54,17 @@ cd web && npm ci && npm run build && cd ..            # フロントエンドの
 pip install -e ".[dev,app,ml]" uv                      # build と lock の解決用
 python scripts/make_trial_lock.py                      # 依存を変えたときだけ: requirements/trial-win-cp311.txt(+ -sdist.txt)を作り直す(PyPI に接続)
 python scripts/model_provenance.py --reconvert         # 重みの出所の検査(docs/model_provenance.md)。失敗したら配布しない
-python scripts/make_trial_bundle.py [--python-installer python-3.11.x-amd64.exe]
+python scripts/make_trial_bundle.py                    # Python(python-build-standalone)は自動で取得・検証して同梱
 ```
 
 - **lock**(`requirements/trial-win-cp311.txt`): `uv pip compile --python-platform windows --python-version 3.11 --generate-hashes` の結果を、`pip download --require-hashes` で取り直して検証したもの。
   torch は PyPI の Windows 向け(**CPU 版**。wheel に CUDA の DLL がなく、`nvidia-*`/`cuda-*` の依存もないことを `make_trial_lock.py` が確認する)。wheel が無い純 Python の依存(proxy-tools)だけ、
   sdist のハッシュ(`…-sdist.txt`)を検証してから wheel にして同梱する。入力は `requirements/trial-win-cp311.in`。
 - **重み**: `YAYOI_PRIVATE_DATA/models`(または `--models`)から、**許可リストの 8 ファイルだけ**を入れる(評価用の画像・正解・学習データが紛れ込まない)。出所は `docs/model_provenance.md`。基本の重みが足りないと失敗する。
-- **Python のインストーラ**(`--python-installer`): python.org の 3.11 の公式インストーラを、**開発者が python.org の公開チェックサムで検証してから**渡す(この開発環境からは python.org に接続できないため、同梱は任意)。
+- **Python**: `requirements/python-standalone.txt` に固定した python-build-standalone(astral-sh)の Windows x86_64 / CPython 3.11(`install_only_stripped`)を、`scripts/fetch_python_standalone.py` が
+  取得し、**リポジトリに固定した SHA256 と、同じリリースの公式 `SHA256SUMS` の両方**で検証して zip に入れる(`--no-python` で同梱しない)。`setup.ps1` は展開前にも固定値と照合する。
+  ライセンス: CPython は PSF License(`licenses\python-LICENSE.txt`、`NOTICE.txt`)。静的に組み込まれた第三者ライブラリのライセンスは `docs/dependencies.md`。
+  予備として、python.org の 3.11 の公式インストーラを `--python-installer` で同梱できる(**開発者が python.org の公開チェックサムで検証してから**渡す。`setup.ps1` は実行前に Authenticode 署名〔署名者 Python Software Foundation・有効〕を確認する)。
 - 配布 zip は **コミットしない**(出力先がリポジトリの内側なら拒否する)。
 - **zip の SHA256**: 作成の最後に表示し、`<zip>.sha256` に書く。**配布経路とは別の経路**(開発の連絡窓口経由のメッセージ)で利用者に伝える。zip の中の `MANIFEST.sha256` は個々のファイルの検証用で、zip 自身の真正性は別経路の SHA256 で確かめる。
 - 出所・ライセンス: `NOTICE.txt` に NDLOCR-Lite(CC BY 4.0)・baudm/parseq(Apache-2.0)を記載(`docs/dependencies.md`)。
