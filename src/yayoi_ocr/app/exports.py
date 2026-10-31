@@ -50,11 +50,12 @@ ISSUE_LABELS = {
     "no_rows": "出力できる行がありません",
     "description_too_long": "摘要が長すぎます(弥生で切り捨てられます)",
     "formula_like": "摘要の先頭が = + - @ TAB のため、Excel で開くと数式として扱われる可能性があります(弥生への取り込みには影響しません。CSV は Excel で開かず、弥生で直接取り込んでください)",
+    "tax_suggested": "この行の税区分は、前に選んだ内容の記憶からの提案のまま出力されます(確認画面の F2 で変更できます)",
     "tax_amount_manual": "税抜経理の「外税」「別記」の行は、借方税金額を空で出力します(弥生側で税額を入力してください。税額は自動計算されません)",
     "title_lost": "スマート取引取込では勘定科目を指定できないため、ページのタイトル(借方の科目)は失われます(取り込み時に取引手段を選び、相手科目は弥生が摘要から推測します)",
     **dict(ERROR_LABELS),
 }
-WARNING_CODES = {"formula_like", "tax_amount_manual", "title_lost"}
+WARNING_CODES = {"formula_like", "tax_amount_manual", "title_lost", "tax_suggested"}
 
 
 @dataclass
@@ -393,7 +394,11 @@ def collect(
             desc = _value(vals["description"])
             if desc.startswith(FORMULA_PREFIX):  # 注意だけ(値は書き換えない)
                 issues.append(_issue("formula_like", pid, vals["description"]["id"], r))
-            row_tax = row_overrides.get(r, debit_tax)
+            row_tax, tax_source = row_overrides.get(r, (debit_tax, "default"))
+            if (
+                tax_source == "suggested" and s.taxpayer == "taxable"
+            ):  # 注意だけ(提案は利用者の過去の選択から)
+                issues.append(_issue("tax_suggested", pid, vals["amount"]["id"], r))
             if s.taxpayer == "exempt":
                 row_tax = taxmod.EXEMPT
             elif (

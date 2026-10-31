@@ -114,6 +114,8 @@ export default function ExportScreen({ onOpenCell }: Props) {
     }
   };
 
+  const suggestedWarnings = result?.warnings.filter((w) => w.code === "tax_suggested") ?? [];
+  const otherWarnings = result?.warnings.filter((w) => w.code !== "tax_suggested") ?? [];
   const blocked = !result || result.errors.length > 0 || result.missing_settings.length > 0 || result.n_rows === 0;
   const needsConsent = (result?.duplicates.length ?? 0) > 0 && !acceptDup;
 
@@ -226,10 +228,16 @@ export default function ExportScreen({ onOpenCell }: Props) {
               検証しました: {result.n_rows} 行を出力できます。
             </p>
           )}
-          {result.warnings.length > 0 && (
+          {suggestedWarnings.length > 0 && (
+            <div className="banner" role="note" data-testid="export-suggested">
+              提案の税区分で出力される行: {suggestedWarnings.length} 行(摘要の記憶からの提案のままです。違っていれば、確認画面で直してください。出力は止まりません)
+              <IssueList issues={suggestedWarnings} onOpenCell={onOpenCell} />
+            </div>
+          )}
+          {otherWarnings.length > 0 && (
             <div className="banner" role="note" data-testid="export-warnings">
-              注意 {result.warnings.length} 件(出力は止まりません)
-              <IssueList issues={dedupe(result.warnings)} onOpenCell={onOpenCell} />
+              注意 {otherWarnings.length} 件(出力は止まりません)
+              <IssueList issues={dedupe(otherWarnings)} onOpenCell={onOpenCell} />
             </div>
           )}
           {result.duplicates.length > 0 && (

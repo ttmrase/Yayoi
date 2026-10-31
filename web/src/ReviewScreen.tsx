@@ -414,6 +414,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
     );
   }
   const s = page.summary;
+  const nSuggested = page.tax.rows.filter((r) => r.source === "suggested").length; // 摘要の記憶から提案された税区分のままの行
   const confirmed = page.status === "confirmed";
 
   return (
@@ -430,6 +431,15 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
           検証エラー {s.errors.length}
         </span>
         {s.ambiguous.length > 0 && <span className="ng">未選択の金額 {s.ambiguous.length}</span>}
+        {nSuggested > 0 && !confirmed && (
+          <span
+            data-testid="suggested-count"
+            className="suggested-count"
+            title="摘要の記憶から提案された税区分のままの行です。確定するとこの税区分で出力されます。変えるには、その行で F2"
+          >
+            税区分が「提案」のまま: {nSuggested} 行
+          </span>
+        )}
         <button disabled={!page.can_undo} onClick={() => void enqueue(async () => { const r = await undoPage(page.id); setPage(r.page); if (r.cell_id !== null) setFocusId(r.cell_id); })}>
           元に戻す
         </button>
@@ -525,6 +535,12 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
       {prompt && !block && (
         <div className="banner" data-testid="prompt">
           最後のセルです。{s.can_confirm ? "Ctrl+Enter でこのページを確定します。" : "確定できない項目が残っています。"}
+          {nSuggested > 0 && (
+            <>
+              {" "}
+              税区分が「提案」のままの行: {nSuggested} 行(確定するとその税区分で出力されます。変えるには、その行で F2)。
+            </>
+          )}
         </div>
       )}
       {block && (

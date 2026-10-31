@@ -97,6 +97,17 @@ test("㉖ F2 で行の税区分を選び、確定すると摘要を記憶して�
   await input(page, 0, 2).fill(STAMP);
   await expect(page.getByTestId("taxcell-0")).toHaveAttribute("data-source", "suggested", { timeout: 5000 });
 
+  // 提案のままの行の数が、状態の表示に出る。確定して出力の検証へ → 提案の行の数とリンクが出る(出力は止まらない)
+  await expect(page.getByTestId("suggested-count")).toContainText("提案」のまま");
+  await page.getByTestId("confirm-page").click();
+  await expect(page.getByTestId("review")).toHaveCount(0);
+  await tab(page, "出力").click();
+  await page.getByTestId(`candidate-${b.pid}`).getByRole("checkbox").check();
+  await page.getByTestId("export-validate").click();
+  await expect(page.getByTestId("export-suggested")).toContainText("提案の税区分で出力される行");
+  await expect(page.getByTestId("export-suggested").getByRole("button", { name: "確認画面で開く" }).first()).toBeVisible();
+  await expect(page.getByTestId("export-run")).toBeEnabled();
+
   // 設定画面: 記憶が見える。税区分を直す → 削除
   await tab(page, "設定").click();
   const mem = page.getByTestId("tax-memory");

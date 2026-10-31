@@ -492,3 +492,11 @@ ul.plain {
 .taxopt.current:not(.active) {
   font-weight: 700;
 }
+
+.suggested-count {
+  color: var(--accent);
+  font-weight: 600;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  padding: 1px 8px;
+}

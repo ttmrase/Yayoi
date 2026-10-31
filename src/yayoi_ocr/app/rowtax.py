@@ -211,9 +211,11 @@ def memory_clear(con: sqlite3.Connection, profile_id: int = DEFAULT_PROFILE_ID) 
         return con.execute("DELETE FROM tax_memory WHERE profile_id = ?", (profile_id,)).rowcount
 
 
-def overrides_for_export(con: sqlite3.Connection, page_id: int) -> dict[int, str]:
-    """出力に使う行ごとの税区分(利用者が選んだもの、確定のときに固定した提案)。"""
+def overrides_for_export(con: sqlite3.Connection, page_id: int) -> dict[int, tuple[str, str]]:
+    """出力に使う行ごとの税区分: 行 → (税区分, source)。利用者が選んだもの(user)と、確定のときに固定した提案(suggested)。"""
     return {
-        r["row"]: r["tax_category"]
-        for r in con.execute("SELECT row, tax_category FROM row_tax WHERE page_id = ?", (page_id,))
+        r["row"]: (r["tax_category"], r["source"])
+        for r in con.execute(
+            "SELECT row, tax_category, source FROM row_tax WHERE page_id = ?", (page_id,)
+        )
     }

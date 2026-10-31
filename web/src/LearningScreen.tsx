@@ -146,6 +146,7 @@ export default function LearningScreen() {
       <p className="hint">
         確定したセルの切り出し画像(学習データ)を削除し、学習(摘要の辞書・科目の語彙・金額の履歴)を最初からやり直します。確定した値・出力の履歴・設定は残ります。
         削除後は、確定済みのページでも切り出し画像は表示されません。
+        摘要ごとの税区分の記憶(摘要の文字列を保存しています)は、ここでは消えません。設定画面の「摘要ごとの税区分の記憶」から削除してください。
       </p>
       {!confirmReset ? (
         <button data-testid="reset-learning" disabled={!data.can_reset} onClick={() => setConfirmReset(true)}>

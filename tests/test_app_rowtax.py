@@ -242,3 +242,23 @@ def test_a_row_choice_that_became_invalid_is_an_export_error_with_a_link(client)
     errs = [e for e in v["errors"] if e["code"] == "tax_category_not_allowed"]
     assert len(errs) == 1 and errs[0]["row"] == 0 and errs[0]["cell_id"] is not None
     assert client.post("/api/exports", json={"page_ids": [pid]}).status_code == 409
+
+
+def test_export_validation_warns_about_rows_exported_with_a_suggested_tax_category(client):
+    pid = open_page(client, {0: STAMP})
+    set_tax(client, pid, 0, "非課仕入")
+    confirm_with(client, pid, {})
+    v = client.post("/api/exports/validate", json={"page_ids": [pid]}).json()
+    assert [
+        w for w in v["warnings"] if w["code"] == "tax_suggested"
+    ] == []  # 自分で選んだ行は注意しない
+    pid2 = open_page(client, {0: STAMP}, seed=6)
+    suggested = [r for r, x in tax_of(client, pid2).items() if x["source"] == "suggested"]
+    assert 0 in suggested
+    confirm_with(client, pid2, {})
+    v = client.post("/api/exports/validate", json={"page_ids": [pid2]}).json()
+    warns = [w for w in v["warnings"] if w["code"] == "tax_suggested"]
+    assert sorted(w["row"] for w in warns) == sorted(suggested)
+    assert all(w["cell_id"] is not None and w["page_id"] == pid2 for w in warns)  # 行へのリンク
+    assert v["errors"] == []
+    assert client.post("/api/exports", json={"page_ids": [pid2]}).status_code == 200  # 止めない
