@@ -20,7 +20,7 @@ flowchart LR
       EXP["出力<br/>検証 → 弥生 CSV(cp932)"]
       DB[("SQLite<br/>確定値・設定・世代")]
     end
-    subgraph SUB["使い捨ての別プロセス(python -I)"]
+    subgraph SUB["別プロセス(重い処理と、持ち込まれたファイルの解読。probe・backup_worker・train_worker は python -I の使い捨て)"]
       PROBE["probe<br/>PDF・画像の検査"]
       REC["認識ワーカー<br/>位置合わせ → セル種別 → PARSeq → 後処理 → 確信度"]
       TW["train_worker<br/>追加学習 → 採用ゲート"]
