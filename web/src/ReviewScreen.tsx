@@ -47,6 +47,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
   const [mode, setMode] = useState<Mode>("row"); // 行モード(紙の並び)/ 列モード(1 列ずつ)
   const [layoutOpen, setLayoutOpen] = useState(false); // 罫線の確認・補正のパネル
   const modeRef = useRef<Mode>("row");
+  const looked = useRef(new Set<number>()); // 画像を PASS_MS 以上見たセル(サーバへの通過の記録より先に、手元で判定する)
   modeRef.current = mode;
   const inputs = useRef(new Map<number, HTMLInputElement>());
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -82,6 +83,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
     setBlock(null);
     setNotice(null);
     setTitleDraft(null);
+    looked.current = new Set();
     active.current = { last: performance.now(), seconds: 0 };
     (async () => {
       try {
@@ -202,6 +204,7 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
 
   const markPassed = useCallback(
     (cellId: number) => {
+      looked.current.add(cellId);
       const c = pageRef.current?.cells.find((x) => x.id === cellId);
       if (c && (c.review || c.reasons.includes("dash_digit_ambiguity")) && !c.passed) void patch(cellId, "pass");
     },
@@ -262,6 +265,11 @@ export default function ReviewScreen({ pageId, startCell = null, onOpenPage, onE
           setNotice("末尾が「-」か数字かを、Alt+1 / Alt+2 で選んでください");
           break;
         }
+        // 要確認のセルは、画像を一定時間見てからでないと Enter で通さない(連打・キーリピートで飛ばさない)。
+        // 値を直した・候補を選んだ場合は、見て判断した証拠なので待たない(サーバも同じ下限を持つ)
+        const needsLook = (cell.review || cell.reasons.includes("dash_digit_ambiguity")) && !cell.passed;
+        const decided = drafts[cell.id] !== undefined || value !== cell.resolved_value || cell.edit_kind === "candidate";
+        if (needsLook && !decided && !looked.current.has(cell.id)) break;
         const nxt = nextId(p.cells, cell.id, modeRef.current);
         const timer = timers.current.get(cell.id);
         if (timer !== undefined) window.clearTimeout(timer);

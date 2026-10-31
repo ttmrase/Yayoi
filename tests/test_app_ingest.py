@@ -370,6 +370,7 @@ def test_recut_validates_the_corners_and_the_page_state(tmp_path):
         app.state.runner.run_job(jid)
         for x in c.get(f"/api/pages/{pid}").json()["cells"]:
             if x["review"]:
+                c.patch(f"/api/pages/{pid}/cells/{x['id']}", json={"action": "pass"})
                 c.patch(f"/api/pages/{pid}/cells/{x['id']}", json={"action": "confirm"})
         for x in c.get(f"/api/pages/{pid}").json()["cells"]:
             c.patch(f"/api/pages/{pid}/cells/{x['id']}", json={"action": "revert"})

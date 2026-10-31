@@ -10,6 +10,7 @@ pytest.importorskip("cv2")
 
 from fastapi.testclient import TestClient
 
+from _app_helpers import look_and_confirm
 from yayoi_ocr.app.security import allowed_hosts_for, new_token
 from yayoi_ocr.app.server import create_app
 from yayoi_ocr.app.validate import validate_value
@@ -43,7 +44,7 @@ def cells_of(client, page_id):
 def pass_all_review(client, page_id):
     for c in cells_of(client, page_id):
         if c["review"] and "dash_digit_ambiguity" not in c["reasons"]:
-            r = client.patch(f"/api/pages/{page_id}/cells/{c['id']}", json={"action": "confirm"})
+            r = look_and_confirm(client, page_id, c["id"])
             assert r.status_code == 200, r.text
 
 
@@ -108,7 +109,7 @@ def test_full_flow_confirms_page_and_job(client):
                 )
         # 参照元を直すと、それを参照する〃は再展開されて要確認に戻る → もう一度通す
         for cid in client.get(f"/api/pages/{pid}").json()["summary"]["unpassed"]:
-            client.patch(f"/api/pages/{pid}/cells/{cid}", json={"action": "confirm"})
+            look_and_confirm(client, pid, cid)
         r = client.post(f"/api/pages/{pid}/confirm", json={"review_seconds": 12.5})
         assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
         got = {str(c["id"]): c["value"] for c in r.json()["cells"]}
@@ -294,3 +295,48 @@ def test_unknown_action_and_missing_resources(client):
     )
     assert client.get("/api/pages/999999").status_code == 404
     assert client.get("/api/jobs/999999").status_code == 404
+
+
+def test_enter_spam_does_not_pass_review_cells(client, monkeypatch):
+    """連打(キーリピート)で要確認を飛ばせない: 値を直さない Enter は、前の通過から一定時間たたないと「通過」に数えない。"""
+    from yayoi_ocr.app import store
+
+    job = new_job(client, error_rate=0, review_rate=1, ambiguous_rows=[])
+    page_id = job["pages"][0]["id"]
+    review = [c for c in cells_of(client, page_id) if c["review"]]
+    clock = [1000.0]
+    monkeypatch.setattr(store.time, "monotonic", lambda: clock[0])
+    store._LAST_LOOK.clear()
+    passed = []
+    for c in review[:4]:  # 10 ms 間隔の連打
+        clock[0] += 0.01
+        r = client.patch(
+            f"/api/pages/{page_id}/cells/{c['id']}", json={"action": "confirm", "value": c["value"]}
+        )
+        passed.append(next(x for x in r.json()["cells"] if x["id"] == c["id"])["passed"])
+    assert passed == [True, False, False, False]  # 最初の 1 つだけ(その後は間隔が足りない)
+    # 十分な間隔(人が画像を見る時間)があれば通る
+    for c in review[4:8]:
+        clock[0] += 0.3
+        r = client.patch(
+            f"/api/pages/{page_id}/cells/{c['id']}", json={"action": "confirm", "value": c["value"]}
+        )
+        assert next(x for x in r.json()["cells"] if x["id"] == c["id"])["passed"]
+    # 飛ばされたセルが残るので、ページは確定できない
+    assert client.post(f"/api/pages/{page_id}/confirm", json={}).status_code == 409
+
+
+def test_explicit_input_is_not_rate_limited(client, monkeypatch):
+    from yayoi_ocr.app import store
+
+    job = new_job(client, error_rate=0, review_rate=1, ambiguous_rows=[])
+    page_id = job["pages"][0]["id"]
+    review = [c for c in cells_of(client, page_id) if c["review"] and c["kind"] == "text"][:3]
+    monkeypatch.setattr(store.time, "monotonic", lambda: 1000.0)  # 時間が止まっていても
+    store._LAST_LOOK.clear()
+    for c in review:  # 値を入力して確認した(値を直した)セルは、すぐに通る
+        r = client.patch(
+            f"/api/pages/{page_id}/cells/{c['id']}",
+            json={"action": "confirm", "value": c["value"] + "0"},
+        )
+        assert next(x for x in r.json()["cells"] if x["id"] == c["id"])["passed"]

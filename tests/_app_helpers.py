@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 
+def look_and_confirm(client, page_id: int, cell_id: int, **extra):
+    """画面と同じ順: 250 ms 以上見て「通過」(pass)→ Enter(confirm)。連打だと通過に数えない(store.MIN_LOOK_S)。"""
+    client.patch(f"/api/pages/{page_id}/cells/{cell_id}", json={"action": "pass"})
+    return client.patch(
+        f"/api/pages/{page_id}/cells/{cell_id}", json={"action": "confirm", **extra}
+    )
+
+
 def confirm_with(client, page_id, values: dict[tuple[int, int], str]):
     """指定したセルの値を直して、残りの要確認を確認済みにして確定する(合成ジョブ)。"""
     for c in client.get(f"/api/pages/{page_id}").json()["cells"]:
@@ -16,13 +24,13 @@ def confirm_with(client, page_id, values: dict[tuple[int, int], str]):
             )
     for c in client.get(f"/api/pages/{page_id}").json()["cells"]:
         if c["review"] and "dash_digit_ambiguity" not in c["reasons"]:
-            client.patch(f"/api/pages/{page_id}/cells/{c['id']}", json={"action": "confirm"})
+            look_and_confirm(client, page_id, c["id"])
     for c in client.get(f"/api/pages/{page_id}").json()["cells"]:
         if "dash_digit_ambiguity" in c["reasons"]:
             client.patch(
                 f"/api/pages/{page_id}/cells/{c['id']}",
                 json={"action": "candidate", "candidate_index": 0},
             )
-            client.patch(f"/api/pages/{page_id}/cells/{c['id']}", json={"action": "confirm"})
+            look_and_confirm(client, page_id, c["id"])
     r = client.post(f"/api/pages/{page_id}/confirm", json={})
     assert r.status_code == 200, r.text

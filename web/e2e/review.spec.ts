@@ -39,6 +39,8 @@ async function openJob(page: Page, jobId: number) {
   await expect(page.getByTestId("review")).toBeVisible();
 }
 
+const LOOK_MS = 300; // 要確認セルの通過に要る滞在時間(250 ms)より少し長く
+
 const navigable = (cells: ApiCell[]) => cells.filter((c) => c.kind !== "blank" || c.review);
 const input = (page: Page, row: number, col: number) => page.getByTestId(`cell-${row}-${col}`).locator("input");
 const activeLabel = (page: Page) => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
@@ -52,6 +54,7 @@ test("① Enter だけで 1 ページを通し、Ctrl+Enter で確定して次�
   await expect(input(page, 0, 0)).toBeFocused();
   const started = Date.now();
   for (let i = 0; i < steps; i++) {
+    await page.waitForTimeout(LOOK_MS); // 人が画像を見る時間(これより速い Enter は要確認セルを通さない。⑨ で確かめる)
     await page.keyboard.press("Enter");
     if (i === Math.floor(steps / 2)) {
       // フォーカス行が画面の上から約 1/3 に保たれる
@@ -68,7 +71,7 @@ test("① Enter だけで 1 ページを通し、Ctrl+Enter で確定して次�
   const after = await apiPage(request, job.pages[0].id);
   expect(after.summary.can_confirm).toBeTruthy();
   const seconds = (Date.now() - started) / 1000;
-  console.log(`Enter だけ: ${steps} セルを ${seconds.toFixed(1)} 秒で通した`);
+  console.log(`Enter だけ(1 セル ${LOOK_MS} ms): ${steps} セルを ${seconds.toFixed(1)} 秒で通した`);
   expect(seconds).toBeLessThan(60); // 回帰の目安(実測は M5 で見積りと比べる)
 });
 
@@ -128,6 +131,7 @@ test("⑤ 日本語入力の変換中の Enter ではセルが進まない(IME)"
   await openJob(page, job.job_id);
   const desc = input(page, 0, 2);
   await desc.click();
+  await page.waitForTimeout(LOOK_MS);
   const label = await activeLabel(page);
   // 変換の開始 → 変換中の Enter(isComposing / keyCode 229)→ 変換の確定
   await desc.evaluate((el) => {
@@ -141,6 +145,7 @@ test("⑤ 日本語入力の変換中の Enter ではセルが進まない(IME)"
   await page.keyboard.press("Enter"); // 変換が終わったあとの Enter は送る
   expect(await activeLabel(page)).not.toBe(label);
   // keyCode 229 だけ(isComposing が付かない実装)でも動かない
+  await page.waitForTimeout(LOOK_MS);
   const next = page.locator(`input[aria-label="${await activeLabel(page)}"]`);
   const label2 = await activeLabel(page);
   await next.evaluate((el) =>
@@ -198,4 +203,29 @@ test("⑧ 〃(展開済み)のバッジが付き、参照元を直すと〃は�
   await page.keyboard.press("Enter");
   await expect(input(page, ditto.row, ditto.col)).toHaveValue("書き換え後");
   await expect(page.getByTestId(`cell-${ditto.row}-${ditto.col}`)).toContainText("参照元が変わった");
+});
+
+test("⑳ Enter の連打(キーリピート)では要確認セルを通過できない。見てから(250 ms 以上)なら通る", async ({ page, request }) => {
+  const job = await createJob(request, { seed: 91, error_rate: 0, review_rate: 1, ambiguous_rows: [] });
+  const pid = job.pages[0].id;
+  await openJob(page, job.job_id);
+  const total = (await apiPage(request, pid)).cells.filter((c) => c.review).length;
+  // 5 ms 間隔で 40 回(押しっぱなしのキーリピート相当)
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(5);
+  }
+  await page.waitForTimeout(500);
+  const passed = (await apiPage(request, pid)).cells.filter((c) => c.review && c.passed).length;
+  expect(passed).toBeLessThan(total / 2); // ほとんどが未通過のまま
+  await expect(page.getByTestId("confirm-page")).toBeDisabled();
+  // サーバにも下限がある(クライアントが壊れていても、値を直さない連打は通過に数えない)
+  const todo = (await apiPage(request, pid)).cells.filter((c) => c.review && !c.passed).slice(0, 3);
+  const flags: boolean[] = [];
+  for (const c of todo) {
+    const r = await request.patch(`/api/pages/${pid}/cells/${c.id}`, { headers: AUTH, data: { action: "confirm" } });
+    const cell = ((await r.json()) as { cells: ApiCell[] }).cells.find((x) => x.id === c.id)!;
+    flags.push(cell.passed);
+  }
+  expect(flags.filter(Boolean).length).toBeLessThanOrEqual(1);
 });

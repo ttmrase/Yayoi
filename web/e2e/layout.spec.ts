@@ -68,7 +68,10 @@ test("⑫ 列モード(Ctrl+L): 1 列ずつ表示して上から下へ進み、�
   await expect(page.getByTestId(`cell-${col1[0].row}-1`)).toHaveCount(0);
   expect(await activeLabel(page)).toBe(labelBefore); // フォーカスは保たれる
   // Enter で日付の列を上から下へ。最後のセルの次は科目の列の先頭
-  for (let i = 0; i < col0.length; i++) await page.keyboard.press("Enter");
+  for (let i = 0; i < col0.length; i++) {
+    await page.waitForTimeout(300); // 人が画像を見る時間(要確認セルは速すぎる Enter では通らない)
+    await page.keyboard.press("Enter");
+  }
   await expect(input(page, col1[0].row, 1)).toBeFocused();
   await expect(page.getByTestId(`coltab-1`)).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId(`cell-${col0[0].row}-0`)).toHaveCount(0);

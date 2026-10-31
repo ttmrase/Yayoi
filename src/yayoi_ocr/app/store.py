@@ -19,6 +19,10 @@ from .validate import ERROR_LABELS, validate_value
 
 EDIT_KINDS = ("none", "unchanged", "corrected", "candidate", "expanded_edit")
 R_AMBIGUITY = "dash_digit_ambiguity"
+# 要確認のセルを、値を直さずに Enter だけで通すときの最小の間隔(秒)。連打・キーリピートで要確認を飛ばせないようにする
+# (画面側も同じ時間セルを見ていないと Enter を無視する。これはクライアントが壊れていても守るための下限)
+MIN_LOOK_S = 0.25
+_LAST_LOOK: dict[int, float] = {}
 R_DITTO_SOURCE_CHANGED = "ditto_source_changed"
 
 
@@ -522,7 +526,21 @@ def patch_cell(
             kind = cell["edit_kind"] if cell["confirmed_value"] == value and cell["edit_kind"] != "none" else (
                 "unchanged" if value == cell["resolved_value"] else "corrected")  # fmt: skip
             _set_value(con, page_id, cell, value, kind)
-            con.execute("UPDATE cells SET passed = 1 WHERE id = ?", (cell_id,))
+            needs_look = (
+                bool(
+                    (cell["review"] or R_AMBIGUITY in json.loads(cell["reasons"]))
+                    and not cell["passed"]
+                )
+                and kind == "unchanged"
+            )  # 値を直した・選んだのなら、見て判断した証拠なので間隔は問わない
+            now = time.monotonic()
+            last = _LAST_LOOK.get(page_id)
+            if needs_look and last is not None and now - last < MIN_LOOK_S:
+                pass  # 速すぎる Enter: 値は確認済みにするが、「通過」には数えない(戻って見直す)
+            else:
+                if needs_look:
+                    _LAST_LOOK[page_id] = now
+                con.execute("UPDATE cells SET passed = 1 WHERE id = ?", (cell_id,))
             _bump(con, page_id)
         elif action == "candidate":
             cands = json.loads(cell["candidates"])
