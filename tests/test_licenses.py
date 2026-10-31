@@ -94,6 +94,24 @@ def test_license_is_read_from_expression_short_license_or_classifiers(tmp_path):
     assert (texts / "pip/beta-2.0/NOTICE").read_text() == "notice"
 
 
+def test_a_wheel_without_a_license_field_is_identified_from_a_standard_license_text_only(tmp_path):
+    lock = tmp_path / "lock.txt"
+    lock.write_text(
+        "mitlike==1.0 \\\n    --hash=sha256:aa\nodd==2.0 \\\n    --hash=sha256:bb\n",
+        encoding="utf-8",
+    )
+    wheels = tmp_path / "w"
+    wheels.mkdir()
+    mit = "MIT License\n\nCopyright (c) 2019\n\nPermission is hereby granted, free of charge, to any person"
+    make_wheel(wheels, "mitlike", "1.0", [], {"licenses/LICENSE": mit})
+    make_wheel(
+        wheels, "odd", "2.0", [], {"licenses/LICENSE": "Some custom terms. All rights reserved."}
+    )
+    by = {c["name"]: c for c in gen.pip_components(wheels, [lock], None)}
+    assert by["mitlike"]["license"].startswith("MIT")
+    assert by["odd"]["license"] == gen.UNKNOWN  # 定型の本文でなければ判定しない(要確認のまま)
+
+
 def test_npm_components_include_only_production_dependencies(tmp_path):
     lock = tmp_path / "package-lock.json"
     lock.write_text(

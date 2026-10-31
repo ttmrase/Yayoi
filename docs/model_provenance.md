@@ -135,3 +135,4 @@ pytest tests/test_provenance_paths.py             # C1 だけ(CI でも走る)
 
 配布物(zip)を作るときは `scripts/make_trial_bundle.py` が許可リストの 9 ファイルだけを入れ、`MANIFEST.sha256` と zip の SHA256 を表示・記録する(`docs/windows_setup.md`)。
 同梱前に、この文書の SHA256 の表と実ファイルが一致することを確認する(`model_provenance.py` の先頭の表)。
+束ができたら、`python scripts/verify_trial_bundle.py <zip>` で、zip の SHA256 の控え・`MANIFEST.sha256`・**束の `models/` とこの文書の表(9 ファイル)の過不足のない一致と SHA256**・wheel と lock の対応・同梱の Python の SHA256・画像/拒否リストの語がないこと、を別経路で確かめる(失敗があれば終了コード 1)。

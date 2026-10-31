@@ -40,8 +40,23 @@ def parse_lock(path: Path) -> dict[str, str]:
     return out
 
 
-def license_of(meta) -> str:
-    """METADATA の License-Expression > 短い License > 分類子 の順で、短い表記にする。"""
+def license_from_files(files: dict[str, bytes]) -> str | None:
+    """METADATA に表記が無いとき、ライセンスの本文から判定する(MIT と Apache-2.0 の定型の本文だけ。ほかは判定しない)。"""
+    for data in files.values():
+        text = data.decode("utf-8", errors="replace")
+        head = text.strip().splitlines()[0].strip() if text.strip() else ""
+        if (
+            head.upper().startswith("MIT LICENSE")
+            and "Permission is hereby granted, free of charge" in text
+        ):
+            return "MIT(LICENSE の本文から判定)"
+        if head.upper().startswith("APACHE LICENSE") and "Version 2.0" in text[:400]:
+            return "Apache-2.0(LICENSE の本文から判定)"
+    return None
+
+
+def license_of(meta, files: dict[str, bytes] | None = None) -> str:
+    """METADATA の License-Expression > 短い License > 分類子 > (ライセンスの本文)の順で、短い表記にする。"""
     expr = (meta.get("License-Expression") or "").strip()
     if expr:
         return expr[:200]
@@ -54,7 +69,7 @@ def license_of(meta) -> str:
         if c.startswith("License ::")
     ]
     classifiers = [c for c in classifiers if c and c != "OSI Approved"]
-    return "; ".join(dict.fromkeys(classifiers))[:200] or UNKNOWN
+    return "; ".join(dict.fromkeys(classifiers))[:200] or license_from_files(files or {}) or UNKNOWN
 
 
 def read_wheel(whl: Path) -> tuple[dict, dict[str, bytes]]:
@@ -92,7 +107,7 @@ def pip_components(wheels: Path | None, locks: list[Path], texts: Path | None) -
             {
                 "name": meta.get("Name") or name,
                 "version": version,
-                "license": license_of(meta) if meta else UNKNOWN,
+                "license": license_of(meta, files) if meta else UNKNOWN,
                 "kind": "python",
                 "texts": sorted(files),
             }
