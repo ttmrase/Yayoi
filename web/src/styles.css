@@ -522,3 +522,11 @@ ul.plain {
 .legend .swatch.miss {
   background: #b3261e;
 }
+.notice-banner {
+  background: #fff4e5;
+  border-bottom: 2px solid #e68a00;
+  padding: 4px 16px;
+}
+.notice-banner p {
+  margin: 4px 0;
+}

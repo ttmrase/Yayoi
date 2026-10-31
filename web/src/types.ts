@@ -299,6 +299,14 @@ export interface GenerationObserved {
   n_unflagged_corrected: number;
 }
 /** 採否の評価の値(評価用ページを親・新世代の両方で認識し直した結果) */
+/** 確信度の較正の質(評価セルのうち確認必須でないもの)。期待見逃し = 要確認でないセルの (1 - 確信度) の合計 */
+export interface GenerationCalib {
+  n: number;
+  nll: number;
+  brier: number;
+  expected_miss: number;
+  observed_miss: number;
+}
 export interface GenerationEvalSide {
   accuracy: number;
   review_rate: number;
@@ -306,6 +314,8 @@ export interface GenerationEvalSide {
   n_cells: number;
   n_text: number;
   n_miss: number;
+  calib?: GenerationCalib | null;
+  by_column?: Record<string, Omit<GenerationEvalSide, "by_column">>;
 }
 export interface Generation {
   id: number;
@@ -314,7 +324,7 @@ export interface Generation {
   parent_id: number | null;
   created_at: number;
   activated_at: number | null;
-  status: "active" | "retired" | "rejected" | "discarded";
+  status: "active" | "retired" | "rejected" | "discarded" | "broken" | "halted";
   reject_reason: string | null;
   n_train_pages: number | null;
   n_eval_pages: number | null;
@@ -322,12 +332,23 @@ export interface Generation {
   recalibration: Record<string, unknown> | null;
   restorable: boolean;
   n_recognized: number | null;
+  /** 安全のため停止したときの理由と件数(観測した見逃しの件数・全セル数) */
+  halt?: { code: string; k_total?: number; k_amount?: number; n_cells?: number; n_pages?: number } | null;
   observed?: GenerationObserved | null;
+}
+/** 利用者に知らせること: 使えなくなった世代(重みと確信度の組が壊れた / 安全のため停止した)。確認するまで画面の上部に出す */
+export interface Notice {
+  id: number;
+  number: number;
+  status: "broken" | "halted";
+  code: string;
+  at: number | null;
 }
 export interface LearningData {
   profile_id: number;
   generations: Generation[];
   active_id: number | null;
+  notices: Notice[];
   pages: PageMetric[];
   summary: {
     n_pages: number;

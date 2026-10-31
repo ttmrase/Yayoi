@@ -78,3 +78,63 @@ def test_pick_device_prefers_gpu_only_when_available():
     assert train_worker.pick_device({"device": "auto"}, Cuda(False)) == "cpu"
     assert train_worker.pick_device({"device": "cpu"}, Cuda(True)) == "cpu"  # 明示すれば CPU
     assert train_worker.pick_device({"device": "cuda"}, Cuda(False)) == "cpu"  # GPU が無ければ CPU
+
+
+# ---- リハーサルの束の作成: 入力が合成データの署名を持たなければ失敗する(I-10)
+
+
+def _write_page(path, *, with_signature: bool):
+    import json
+
+    page = {"seed": 1, "writer_id": 2, "font": "FakeFont-Regular"}
+    if not with_signature:
+        page = {"title": "署名のないページ"}
+    meta = {"page": page, "cells": []}
+    np.savez(path, meta=np.array(json.dumps(meta)), clf=np.zeros((0, 64, 448), np.uint8))
+
+
+def _build(tmp_path, monkeypatch, with_signature: bool, fonts: bool):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    private = tmp_path / "private"
+    (private / "fonts").mkdir(parents=True)
+    if fonts:
+        (private / "fonts" / "FakeFont-Regular.ttf").write_bytes(b"x")
+    data = tmp_path / "ds"
+    data.mkdir()
+    _write_page(data / "page_000.npz", with_signature=with_signature)
+    monkeypatch.setenv("YAYOI_PRIVATE_DATA", str(private))
+    spec = importlib.util.spec_from_file_location(
+        "build_rehearsal", Path(__file__).resolve().parent.parent / "scripts" / "build_rehearsal.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(
+        sys, "argv", ["x", "--data", str(data), "--out", str(private / "models" / "r.npz")]
+    )
+    (private / "models").mkdir()
+    return mod.main(), private / "models" / "r.npz"
+
+
+def test_rehearsal_build_refuses_pages_without_the_synthetic_signature(tmp_path, monkeypatch):
+    code, out = _build(tmp_path, monkeypatch, with_signature=False, fonts=True)
+    assert code == 1 and not out.exists()
+
+
+def test_rehearsal_build_refuses_when_the_font_set_is_unknown(tmp_path, monkeypatch):
+    code, out = _build(tmp_path, monkeypatch, with_signature=True, fonts=False)
+    assert code == 1 and not out.exists()
+
+
+def test_rehearsal_build_records_the_input_datasets_when_the_signature_is_valid(
+    tmp_path, monkeypatch
+):
+    import json
+
+    code, out = _build(tmp_path, monkeypatch, with_signature=True, fonts=True)
+    assert code == 0 and out.exists()
+    with np.load(out, allow_pickle=False) as z:
+        meta = json.loads(str(z["meta"]))
+    assert meta["sources"] == [{"dataset": "ds", "pages": 1, "seed_min": 1, "seed_max": 1}]

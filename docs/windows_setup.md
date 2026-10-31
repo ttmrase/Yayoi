@@ -65,9 +65,19 @@ python scripts/make_trial_bundle.py                    # Python(python-build-sta
   取得し、**リポジトリに固定した SHA256 と、同じリリースの公式 `SHA256SUMS` の両方**で検証して zip に入れる(`--no-python` で同梱しない)。`setup.ps1` は展開前にも固定値と照合する。
   ライセンス: CPython は PSF License(`licenses\python-LICENSE.txt`、`NOTICE.txt`)。静的に組み込まれた第三者ライブラリのライセンスは `docs/dependencies.md`。
   予備として、python.org の 3.11 の公式インストーラを `--python-installer` で同梱できる(**開発者が python.org の公開チェックサムで検証してから**渡す。`setup.ps1` は実行前に Authenticode 署名〔署名者 Python Software Foundation・有効〕を確認する)。
+- **署名のない実行ファイル**: 同梱の Python(python-build-standalone)のバイナリは、python.org の署名付き配布物とは出所が異なり、**Authenticode の署名がない**。
+  Windows の SmartScreen や、ウイルス対策ソフトが警告を出す可能性がある(「発行元不明」「PC を保護しました」など)。zip の SHA256 が別経路で伝えた値と一致することを確かめてから、
+  「詳細情報 → 実行」で許可するか、ウイルス対策ソフトに `%LOCALAPPDATA%\yayoi-ocr` の除外を登録する(社内の情報システム担当者に確認する)。
 - 配布 zip は **コミットしない**(出力先がリポジトリの内側なら拒否する)。
 - **zip の SHA256**: 作成の最後に表示し、`<zip>.sha256` に書く。**配布経路とは別の経路**(開発の連絡窓口経由のメッセージ)で利用者に伝える。zip の中の `MANIFEST.sha256` は個々のファイルの検証用で、zip 自身の真正性は別経路の SHA256 で確かめる。
 - 出所・ライセンス: `NOTICE.txt` に NDLOCR-Lite(CC BY 4.0)・baudm/parseq(Apache-2.0)を記載(`docs/dependencies.md`)。
+
+## 利用者のデータから作った重み(追加学習)
+
+追加学習で作った世代は `%LOCALAPPDATA%\yayoi-ocr\models\<プロファイル>\gen_XXXX\`(重み・確信度・メタ)に置かれる。**利用者の確定データ(手書きの特徴)に由来する**ので、
+`models\` や `%LOCALAPPDATA%\yayoi-ocr` ごとのバックアップ・他の PC へのコピーでは、利用者のデータ由来の重みも一緒に渡る。渡したくないときは `models\` を除いてコピーするか、学習画面で
+「出荷時の重みに戻す(リセット)」を実行してから渡す。同じフォルダにある `pagedata\`(認識の入力)・`images\`(切り出し画像)・`uploads\`(元画像)も、帳票の内容そのものを含む。
+配布物(zip)には、世代の重みは入らない(許可リストは固定名の 9 ファイルだけ)。
 
 ## うまくいかないとき
 

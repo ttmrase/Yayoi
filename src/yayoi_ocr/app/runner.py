@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 from . import gens, learned, settings, store
+from .recalibrate import WARM_PAGES
 from .worker import Backend, PagePayload, upload_path
 
 
@@ -121,6 +122,12 @@ class JobRunner:
                     if self.models_root is not None
                     else None
                 )
+                # 採用した直後の数ページは、より厳しいしきい値(warm_threshold)で認識する
+                warm = (
+                    w is not None
+                    and w.dir is not None
+                    and gens.recognized_count(self.con, w.generation_id) < WARM_PAGES
+                )
             page_id = int(row["id"])
             try:
                 payload = PagePayload(
@@ -139,6 +146,7 @@ class JobRunner:
                     ),
                     weights_dir=None if w is None or w.dir is None else str(w.dir),
                     confidence=None if w is None or w.confidence is None else str(w.confidence),
+                    confidence_warm=warm,
                     pagedata_path=(
                         None
                         if self.pagedata_root is None

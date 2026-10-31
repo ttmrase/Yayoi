@@ -47,14 +47,14 @@ def _need() -> None:
         pytest.skip("合成データ・出荷時の重み・リハーサルの束が無い(開発機でだけ実行)")
 
 
-def _writer_pages() -> list:
+def _writer_pages(n: int = N_PAGES) -> list:
     by: dict[int, list] = {}
     for p in list_pages(DATA):
         with np.load(p, allow_pickle=False) as z:
             m = json.loads(str(z["meta"]))
         by.setdefault(m["page"]["writer_id"], []).append((m["page"]["seed"], p))
     w = sorted(by)[0]
-    return [load_page(p) for _, p in sorted(by[w])[:N_PAGES]]
+    return [load_page(p) for _, p in sorted(by[w])[:n]]
 
 
 def _spec(pg) -> store.PageSpec:
@@ -177,3 +177,68 @@ def test_real_training_adopts_or_rejects_consistently_and_the_generation_is_usab
         con, DEFAULT_PROFILE_ID, app_settings.load(con), only_pages=set(page_ids[:12])
     )
     assert state.dictionary is not None
+
+
+def test_a_generation_trained_on_three_pages_is_not_adopted_when_its_unflagged_errors_increase(
+    tmp_path, monkeypatch
+):
+    """報告 4 の再現条件(少数ページ N = 3 で学習)。実際に別プロセスの学習器と同じ経路(`train_worker.run`)で学習し、
+    評価用 9 ページで親と比べる。全体の較正のしきい値のままだと見逃しが増える世代を、新しいゲート(クロスフィッティング + 感度の高い指標)が採用しない。"""
+    _need()
+    from yayoi_ocr.app import evalstats, gate, train_worker
+    from yayoi_ocr.recognize.confidence import ConfidenceModel
+
+    monkeypatch.setattr(train_worker, "MAX_PASSES", 900)  # 時間を抑える(学習量を絞る)
+    all_pages = _writer_pages(16)
+    n_train, n_eval = 3, 9
+    pages, prev = [], None
+    for i, pg in enumerate(all_pages[: n_train + n_eval]):
+        f = tmp_path / f"{i}.npz"
+        save_page_input(f, from_page_data(pg), prev)
+        cells = [
+            [c.row, c.col, c.column, "wave" if c.kind == "elided" else c.kind, c.resolved]
+            for c in pg.cells
+        ]
+        pages.append({"page_id": i, "file": str(f), "cells": cells})
+    plan = {
+        "run_id": 1,
+        "profile_id": 1,
+        "parent": {"generation_id": 1, "number": 0, "weights_dir": None, "confidence": None},
+        "pages": {"train": pages[:n_train], "eval": pages[n_train:]},
+        "context": {
+            "accounts": list(ACCOUNTS),
+            "titles": list(TITLES),
+            "dictionary": {},
+            "amount_history": {},
+        },
+        "n_confirmed_pages": n_train + n_eval,  # 20 未満: しきい値は親より緩めない
+        "device": "cpu",
+        "threads": 4,
+    }
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    res = train_worker.run(plan, run_dir)
+    parent = gate.EvalSide.from_dict(res["eval"]["parent"])
+    cand = gate.EvalSide.from_dict(res["eval"]["candidate"])  # クロスフィッティングした判定
+    glob = gate.EvalSide.from_dict(res["eval"]["candidate_global"])  # 全体の較正のしきい値のまま
+    decision = gate.decide(parent, cand)
+    harmful = glob.total.n_miss > parent.total.n_miss
+    print(  # 件数だけ
+        f"\n[few-pages N={n_train}] parent_miss={parent.total.n_miss} global_miss={glob.total.n_miss} "
+        f"cross_fitted_miss={cand.total.n_miss} amount_miss={cand.by_column['amount'].n_miss} "
+        f"decision={decision.outcome}:{decision.reason} acc {parent.total.accuracy:.3f}->{cand.total.accuracy:.3f}"
+    )
+    if harmful:
+        assert not decision.adopted  # 見逃しが増える世代は採用しない
+    if (
+        decision.adopted
+    ):  # 採用されるなら、クロスフィッティングした見逃しは親より増えず、金額は 0 件
+        assert cand.total.n_miss <= parent.total.n_miss and cand.by_column["amount"].n_miss == 0
+    # 採用した場合に使う確信度は、親より緩くない(確定ページ 20 未満)。重みと確信度は組になる(整合の記録は install が付ける)
+    cal = ConfidenceModel.load(res["confidence"])
+    parent_cal = ConfidenceModel.load(variants.confidence_path(variants.default_variant()))
+    for gk, g in cal.groups.items():
+        if g.lr is not None:
+            assert g.threshold >= parent_cal.groups[gk].threshold - 1e-12
+            assert g.warm_threshold is None or g.warm_threshold >= g.threshold - 1e-12
+    assert evalstats  # (モジュールが読み込めること)

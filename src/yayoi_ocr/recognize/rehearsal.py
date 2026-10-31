@@ -17,11 +17,16 @@ FILE = "rehearsal.npz"
 FORMAT = 1
 
 
-def save_rehearsal(path: str | Path, items: list[tuple[int, str, np.ndarray, str]]) -> None:
-    """items: (幅, 列, グレー画像, 正解の文字列)。"""
+def save_rehearsal(
+    path: str | Path,
+    items: list[tuple[int, str, np.ndarray, str]],
+    sources: list[dict] | None = None,
+) -> None:
+    """items: (幅, 列, グレー画像, 正解の文字列)。`sources` は入力にした合成データセットの識別子(名前・使ったページ数・seed の範囲。生成器の署名を検査した結果)。"""
     meta = {
         "format": FORMAT,
         "synthetic": True,
+        "sources": sources or [],
         "cells": [{"width": w, "column": c, "text": t} for w, c, _, t in items],
     }
     arrays = {"meta": np.array(json.dumps(meta, ensure_ascii=False))}

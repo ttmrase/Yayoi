@@ -25,15 +25,15 @@ from pathlib import Path
 
 import numpy as np
 
-from . import gate, recalibrate
+from . import evalstats, gate, recalibrate
 from .trainers import WEIGHTS_SUBDIR
 
 Progress = Callable[[str, float], None]
 
 REHEARSAL_FRACTION = 0.5
-MAX_PASSES = int(
-    os.environ.get("YAYOI_TRAIN_MAX_PASSES", "4000")
-)  # 1 回の追加学習で見るサンプル数(のべ)の上限(環境変数は試験用。下げる方向にだけ使う)
+MAX_PASSES = max(
+    1, min(4000, int(os.environ.get("YAYOI_TRAIN_MAX_PASSES", "4000")))
+)  # 1 回の追加学習で見るサンプル数(のべ)の上限(環境変数は試験用。下げる方向にだけ効く)
 LR = 3e-4
 L2SP = 0.1
 BATCH = 32
@@ -243,47 +243,79 @@ def run(plan: dict, run_dir: Path, progress: Progress | None = None) -> dict:
 
     def evaluate(
         rec: PageRecognizer,
-    ) -> tuple[dict[str, gate.EvalCounts], list[recalibrate.CellObs]]:
-        counts: dict[str, gate.EvalCounts] = {}
-        obs: list[recalibrate.CellObs] = []
-        for page, py, conf in inputs:
+    ) -> tuple[list[list[evalstats.CellObs]], list[list[bool]]]:
+        """評価用ページごとの観測(確信度・正誤・要確認の理由)と、実際の要確認の判定。"""
+        pages_obs: list[list[evalstats.CellObs]] = []
+        pages_flags: list[list[bool]] = []
+        for n, (page, py, conf) in enumerate(inputs):
             res = rec.recognize_page(page, context(py))
-            counts = gate.add_counts(counts, gate.count_cells(res.cells, conf))
+            obs, flags = [], []
             for r, t in zip(res.cells, conf, strict=True):
+                idx = r.row * 4 + r.col
                 obs.append(
-                    recalibrate.CellObs(
+                    evalstats.CellObs(
                         r.column,
                         r.kind,
                         float(r.confidence),
                         gate.same_value(t.column, r.value, t.resolved),
-                        bool(HARD_REASONS & set(r.reasons)),
+                        # 同上の参照元の要確認による理由は、しきい値で変わるので静的な理由に含めない(`evalstats.review_flags` が参照元から再現する)
+                        bool(HARD_REASONS & (set(r.reasons) - {"ditto_source_uncertain"})),
+                        page=n,
+                        idx=idx,
+                        nonblank=t.kind != "blank",
+                        src=None if r.source is None else r.source[0] * 4 + r.source[1],
                     )
                 )
-        return counts, obs
+                flags.append(bool(r.review))
+            pages_obs.append(obs)
+            pages_flags.append(flags)
+        return pages_obs, pages_flags
 
     prog("eval", 0.76)
     parent_engine = ParseqEngine(models_dir=parent_dir, device=device)
     parent_cal = ConfidenceModel.load(parent_conf) if parent_conf.is_file() else None
-    parent_counts, _ = evaluate(PageRecognizer(parent_engine, clf, calibrator=parent_cal))
+    parent_obs, parent_flags = evaluate(PageRecognizer(parent_engine, clf, calibrator=parent_cal))
     del parent_engine
-    _log(f"eval: parent {_fmt(parent_counts['all'])}")
+    parent_side = evalstats.side_from(parent_obs, parent_flags)
+    _log(f"eval: parent {_fmt(parent_side)}")
     prog("eval", 0.84)
     cand_engine = ParseqEngine.from_models(models, charset, device=device)
     global_cal = ConfidenceModel.load(global_conf)
-    cand_counts, obs = evaluate(PageRecognizer(cand_engine, clf, calibrator=global_cal))
-    _log(f"eval: candidate(global calibration) {_fmt(cand_counts['all'])}")
-
-    # ---- 4. 再較正(全体の較正から出発。観測した見逃しが目標を超えた列だけ厳しくする)
-    prog("recalibrate", 0.92)
-    n_cells = {c: len(eval_pages) * 29 for c in ("date", "account", "description", "amount")}
-    cal, calibs = recalibrate.recalibrate(global_cal, obs, n_cells)
-    summary = recalibrate.summarize(calibs)
-    if summary["changed"]:
-        cand_counts, _ = evaluate(PageRecognizer(cand_engine, clf, calibrator=cal))
-        _log(
-            f"eval: candidate(recalibrated {','.join(summary['changed'])}) {_fmt(cand_counts['all'])}"
-        )
+    cand_obs, cand_flags = evaluate(PageRecognizer(cand_engine, clf, calibrator=global_cal))
     del cand_engine
+    # 要確認の判定をしきい値から再現できることの確認(再現が合わなければ、クロスフィッティングの数え方が信用できないので失敗にする)
+    for pg, fl in zip(cand_obs, cand_flags, strict=True):
+        if evalstats.review_flags(pg, global_cal) != fl:
+            raise WorkerError("review_replay_mismatch")
+    if parent_cal is not None:
+        for pg, fl in zip(parent_obs, parent_flags, strict=True):
+            if evalstats.review_flags(pg, parent_cal) != fl:
+                raise WorkerError("review_replay_mismatch")
+    side_global = evalstats.side_from(cand_obs, cand_flags)
+    _log(f"eval: candidate(global thresholds) {_fmt(side_global)}")
+
+    # ---- 4. 再較正(全体の較正から出発。観測した見逃しが目標を超えた列だけ厳しくする)+ クロスフィッティング
+    prog("recalibrate", 0.92)
+    n_confirmed = int(plan.get("n_confirmed_pages", len(train_pages) + len(eval_pages)))
+    floor = (
+        parent_cal if n_confirmed < recalibrate.FLOOR_PAGES else None
+    )  # 確定ページが少ない間は親より緩めない
+    cal, calibs, cf_flags = recalibrate.cross_fit(global_cal, cand_obs, floor=floor)
+    summary = recalibrate.summarize(calibs)
+    summary["floor"] = floor is not None
+    cand_side = evalstats.side_from(
+        cand_obs, cf_flags
+    )  # 採否に使う成績: 各ページを除いて決めたしきい値での判定
+    final_flags = [evalstats.review_flags(pg, cal) for pg in cand_obs]
+    side_final = evalstats.side_from(
+        cand_obs, final_flags
+    )  # 参考: 全評価ページで決めたしきい値(同じページに合わせているので楽観的)
+    n_cells = {c: len(eval_pages) * 29 for c in recalibrate.TARGETS}
+    cal = recalibrate.warm_thresholds(cal, [o for pg in cand_obs for o in pg], n_cells)
+    _log(f"eval: candidate(cross-fitted) {_fmt(cand_side)}")
+    _log(f"eval: candidate(final thresholds, optimistic) {_fmt(side_final)}")
+    if summary["changed"]:
+        _log(f"recalibrate: changed columns={','.join(summary['changed'])}")
 
     # ---- 保存(テンソルと基本型だけの .pt。weights_only で読める)
     prog("save", 0.97)
@@ -313,26 +345,23 @@ def run(plan: dict, run_dir: Path, progress: Progress | None = None) -> dict:
         "weights_dir": str(wdir),
         "confidence": str(wdir / "confidence.json"),
         "eval": {
-            "parent": parent_counts["all"].to_dict(),
-            "candidate": cand_counts["all"].to_dict(),
-            "by_column": {
-                col: {
-                    "parent": parent_counts[col].to_dict(),
-                    "candidate": cand_counts[col].to_dict(),
-                }
-                for col in parent_counts
-                if col != "all" and col in cand_counts
-            },
+            "parent": parent_side.to_dict(),
+            "candidate": cand_side.to_dict(),  # クロスフィッティングした判定での成績(ゲートが使う)
+            "candidate_global": side_global.to_dict(),  # 参考: 全体の較正のしきい値のまま
+            "candidate_final": side_final.to_dict(),  # 参考: 採用した場合に使うしきい値(楽観的)
         },
         "recalibration": summary,
         "train": train_info,
     }
 
 
-def _fmt(c: gate.EvalCounts) -> str:
+def _fmt(side: gate.EvalSide) -> str:
+    c = side.total
+    k = side.calib
+    extra = "" if k is None else f" nll={k.nll:.3f} expected_miss={k.expected_miss:.2f}"
     return (
         f"cells={c.n_cells} text={c.n_text} acc={c.accuracy:.3f} "
-        f"review={c.review_rate:.3f} miss={c.n_miss}"
+        f"review={c.review_rate:.3f} miss={c.n_miss}{extra}"
     )
 
 

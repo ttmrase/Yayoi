@@ -44,6 +44,9 @@ class PagePayload:
     )
     weights_dir: str | None = None  # 使用中の世代の重み(Phase 4)。None なら出荷時の重み
     confidence: str | None = None  # その世代の確信度モデル。None なら出荷時のもの
+    confidence_warm: bool = (
+        False  # 採用直後の数ページ: 確信度モデルの warm_threshold(通常より厳しい)を使う
+    )
     pagedata_path: str | None = (
         None  # 認識の入力(追加学習・世代の評価に使う)を保存する先。None なら保存しない
     )
@@ -179,8 +182,13 @@ def worker_threads(cpu_count: int | None = None) -> int:
     return max(2, min(4, n // 2))
 
 
-def _recognizer(variant: str, weights_dir: str | None = None, confidence: str | None = None):
-    key = f"{variant}|{weights_dir or ''}|{confidence or ''}"
+def _recognizer(
+    variant: str,
+    weights_dir: str | None = None,
+    confidence: str | None = None,
+    warm: bool = False,
+):
+    key = f"{variant}|{weights_dir or ''}|{confidence or ''}|{int(warm)}"
     if key not in _RECOGNIZERS:
         while (
             len(_RECOGNIZERS) >= 2
@@ -207,7 +215,7 @@ def _recognizer(variant: str, weights_dir: str | None = None, confidence: str | 
             conf_path = variants.confidence_path(variant)
         clf_path = models_dir() / "celltype.pt"
         clf = CellTypeClassifier.load(clf_path) if clf_path.is_file() else None
-        calibrator = ConfidenceModel.load(conf_path) if conf_path.is_file() else None
+        calibrator = ConfidenceModel.load(conf_path, warm=warm) if conf_path.is_file() else None
         _RECOGNIZERS[key] = PageRecognizer(engine, clf, calibrator=calibrator)
     return _RECOGNIZERS[key]
 
@@ -287,7 +295,10 @@ def process_page_real(payload: PagePayload, variant: str | None = None) -> PageO
         corners=payload.corners,
     )
     rec = _recognizer(
-        variant or variants.default_variant(), payload.weights_dir, payload.confidence
+        variant or variants.default_variant(),
+        payload.weights_dir,
+        payload.confidence,
+        payload.confidence_warm,
     )
     ctx = JobContext(
         prev_year=payload.prev_year,

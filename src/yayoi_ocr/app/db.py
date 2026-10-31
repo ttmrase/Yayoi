@@ -209,6 +209,11 @@ MIGRATIONS: list[str] = [
         progress REAL
     );
     """,
+    # --- v10: 世代は (プロファイル, 番号) で一意(並行する学習で同じ番号が二重にできない)。使えなくなった世代の警告を確認済みにできる
+    """
+    CREATE UNIQUE INDEX ux_generations_profile_number ON generations(profile_id, number);
+    ALTER TABLE generations ADD COLUMN ack INTEGER NOT NULL DEFAULT 0;           -- 使えなくなった世代(broken / halted)の警告を利用者が確認した
+    """,
 ]
 
 

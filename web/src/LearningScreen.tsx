@@ -1,18 +1,11 @@
 import { useEffect, useState } from "react";
 import TrainingPanel from "./TrainingPanel";
-import { reasonText } from "./trainingText";
+import { GEN_STATUS_TEXT, reasonText } from "./trainingText";
 import { activateGeneration, fetchLearning, learningReport, resetGenerations } from "./pageApi";
 import type { Generation, LearningData, PageMetric } from "./types";
 
 const pct = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(1)}%`);
 const fmt = (t: number | null) => (t === null ? "—" : new Date(t * 1000).toLocaleString("ja-JP"));
-
-const STATUS_LABEL: Record<Generation["status"], string> = {
-  active: "使用中",
-  retired: "過去",
-  rejected: "不採用",
-  discarded: "リセットで破棄",
-};
 
 /** 確定したページ順の折れ線(要確認率・直した割合・見逃しの観測)と、世代が切り替わった位置。外部ライブラリを使わない小さな SVG。 */
 function Trend({ pages, genNumber }: { pages: PageMetric[]; genNumber: Record<number, number> }) {
@@ -196,7 +189,7 @@ export default function LearningScreen() {
             <tr key={g.id} data-testid={`generation-${g.number}`} className={g.status === "active" ? "active-row" : undefined}>
               <td>{g.kind === "shipped" ? "世代 0(出荷時)" : `世代 ${g.number}`}</td>
               <td>
-                {STATUS_LABEL[g.status]}
+                {GEN_STATUS_TEXT[g.status] ?? g.status}
                 {g.reject_reason && <div className="hint">{reasonText(g.reject_reason)}</div>}
               </td>
               <td>{g.kind === "shipped" ? "—" : fmt(g.created_at)}</td>
@@ -209,6 +202,13 @@ export default function LearningScreen() {
                     要確認 {pct(g.eval.parent.review_rate)} → {pct(g.eval.candidate.review_rate)}
                     <br />
                     見逃し {g.eval.parent.n_miss} → {g.eval.candidate.n_miss} 件 / {g.eval.candidate.n_cells} セル
+                    {g.eval.parent.calib && g.eval.candidate.calib && (
+                      <>
+                        <br />
+                        較正(NLL) {g.eval.parent.calib.nll.toFixed(2)} → {g.eval.candidate.calib.nll.toFixed(2)} / 予測した見逃し{" "}
+                        {g.eval.candidate.calib.expected_miss.toFixed(1)} 件に対し観測 {g.eval.candidate.calib.observed_miss} 件
+                      </>
+                    )}
                   </>
                 ) : (
                   "—"
@@ -236,7 +236,7 @@ export default function LearningScreen() {
       <h2>出荷時の重みに戻す(リセット)</h2>
       <p className="hint">
         追加学習した世代をすべて捨てて、出荷時の重み(世代 0)に戻します。確定した値・出力の履歴・設定は残ります。確定データ(切り出し画像・辞書・金額の履歴)を残すかを選べます。
-        摘要ごとの税区分の記憶(摘要の文字列を保存しています)は、ここでは消えません。設定画面の「摘要ごとの税区分の記憶」から削除してください。
+        元画像の保管の設定(出力後に削除)では、切り出し画像と追加学習用の入力は消えません(ここで削除します)。摘要ごとの税区分の記憶(摘要の文字列を保存しています)は、ここでは消えません。設定画面の「摘要ごとの税区分の記憶」から削除してください。
       </p>
       <fieldset className="reset-choice">
         <legend>確定データ</legend>

@@ -131,3 +131,38 @@ test("㉛ 自動開始: 確定セルがしきい値たまると始まり、止�
   await page.getByTestId("auto-train").click(); // 保存してから画面が更新される(uncheck() は即時の状態変化を要求する)
   await expect.poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { auto_train: boolean }).auto_train).toBe(false);
 });
+
+test("㉜ 採用した世代で認識したページの金額に「要確認でなかったのに直したセル」があると、自動で前の世代に戻り、画面の上部に通知が出る(確認で消える)", async ({ page, request }) => {
+  await confirmPages(request, 7, 4000);
+  await setTrainer(request, "improve", 0);
+  await post(request, "/api/training/start");
+  await expect
+    .poll(async () => ((await (await request.get("/api/training", { headers: AUTH })).json()) as { last: { status: string } | null }).last?.status)
+    .toBe("adopted");
+  // 新しい世代で認識したページ(合成): 要確認のないページの金額を利用者が直して確定する = 観測した見逃し
+  const job = (await post(request, "/api/dev/jobs", {
+    pages: 1,
+    seed: 4100,
+    fill_rows: 29,
+    error_rate: 0,
+    review_rate: 0,
+    ambiguous_rows: [],
+  })) as { pages: { id: number }[] };
+  const pid = job.pages[0].id;
+  const detail = (await (await request.get(`/api/pages/${pid}`, { headers: AUTH })).json()) as { cells: { id: number; column: string; kind: string }[] };
+  const amount = detail.cells.find((c) => c.column === "amount" && c.kind === "text")!;
+  const edit = await request.patch(`/api/pages/${pid}/cells/${amount.id}`, { headers: AUTH, data: { action: "edit", value: "999" } });
+  expect(edit.ok()).toBeTruthy();
+  const done = (await post(request, `/api/pages/${pid}/confirm`)) as { generation_halted?: { code: string } };
+  expect(done.generation_halted?.code).toBe("halted_amount_miss");
+
+  await openApp(page);
+  await expect(page.getByTestId("notice-banner")).toContainText("安全のため停止しました");
+  await expect(page.getByTestId("notice-banner")).toContainText("金額");
+  await tab(page, "学習").click();
+  await expect(page.getByTestId("active-generation")).toHaveText("世代 0(出荷時)"); // 親(出荷時)に戻っている
+  await expect(page.getByTestId("generations")).toContainText("安全のため停止");
+  await expect(page.getByRole("button", { name: "この世代に戻す" })).toHaveCount(0); // 停止した世代は戻せない
+  await page.locator('[data-testid^="ack-notice-"]').first().click();
+  await expect(page.getByTestId("notice-banner")).toHaveCount(0);
+});

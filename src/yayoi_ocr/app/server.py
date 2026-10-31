@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__ as app_version
-from . import db, exports, gens, metrics, retention, rowtax, store, tax, uploads
+from . import db, exports, gens, metrics, monitor, retention, rowtax, store, tax, uploads
 from . import settings as app_settings
 from .paths import AppPaths
 from .runner import JobRunner
@@ -39,7 +39,9 @@ class CellPatch(BaseModel):
 
 
 class DevTrainerBody(BaseModel):
-    mode: Literal["improve", "worsen", "flat", "fail"] = "improve"
+    mode: Literal[
+        "improve", "worsen", "flat", "fail", "amount_miss", "overconfident", "calib_worse"
+    ] = "improve"
     delay: float = Field(default=0.0, ge=0.0, le=30.0)
     auto: bool | None = (
         None  # False: 設定 auto_train が有効でも自動では始めない(共有サーバの E2E 用)
@@ -206,6 +208,7 @@ def create_app(
                 "profile_id": profile_id,
                 "generations": glist,
                 "active_id": next((g["id"] for g in glist if g["status"] == "active"), None),
+                "notices": gens.notices(con, profile_id),
                 "pages": rows,
                 "summary": metrics.summary(rows),
                 # 戻せるのは、重みが残っている使用中でない世代(世代 0 を含む)
@@ -244,6 +247,18 @@ def create_app(
         """この世代に戻す(ロールバック)。以降に認識するページから使う。すでに認識したページは変わらない。"""
         with lock:
             return gens.activate(con, models_root, gen_id)
+
+    @app.get("/api/notices")
+    def notices_list(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
+        """利用者に知らせること(使えなくなった世代: 重みと確信度の組が壊れた / 安全のため停止した)。確認(ack)するまで画面の上部に出す。"""
+        with lock:
+            return {"notices": gens.notices(con, profile_id)}
+
+    @app.post("/api/notices/{gen_id}/ack")
+    def notices_ack(gen_id: int) -> dict:
+        with lock:
+            gens.acknowledge(con, gen_id)
+        return {"ok": True}
 
     @app.get("/api/training")
     def training_status(profile_id: int = db.DEFAULT_PROFILE_ID) -> dict:
@@ -441,6 +456,10 @@ def create_app(
     def confirm(page_id: int, body: ConfirmBody) -> dict:
         with lock:
             out = store.confirm_page(con, page_id, body.review_seconds)
+            # 採用した世代で認識したページなら、観測した見逃しを数えて、基準に当たれば自動で親の世代に戻す
+            halted = monitor.check_after_confirm(con, models_root, page_id)
+        if halted is not None:
+            out["generation_halted"] = {"number": halted["number"], "code": halted["reject_reason"]}
         trainer_mgr.notify_confirmed()  # 新しい確定セルがたまっていれば、バックグラウンドの追加学習を始める
         return out
 

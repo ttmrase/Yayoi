@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from yayoi_ocr.app import gate
@@ -88,46 +90,87 @@ def test_split_needs_at_least_six_pages():
     assert split_pages([]) is None
 
 
-# ---- セルの突き合わせ(ページごとの件数)
-
-
-class R:
-    def __init__(self, column, value, review):
-        self.column, self.value, self.review = column, value, review
-
-
-class T:
-    def __init__(self, column, kind, resolved):
-        self.column, self.kind, self.resolved = column, kind, resolved
-
-
-def test_count_cells_by_column_and_total():
-    rec = [
-        R("date", "R7.11.19", False),  # 正解
-        R("account", "現 金", False),  # 正解(空白・全角半角を無視して比べる)
-        R("description", "旅費", True),  # 誤りだが要確認 → 見逃しではない
-        R("amount", "1200", False),  # 誤りで要確認なし → 見逃し
-        R("date", "", False),  # 空欄どうし → 正解だが非空欄ではない
-        R("amount", "5", False),  # 確定は空欄なのに値がある → 誤り・要確認なし = 見逃し
-    ]
-    conf = [
-        T("date", "text", "R7.11.19"),
-        T("account", "text", "現金"),
-        T("description", "text", "交通費"),
-        T("amount", "text", "1000"),
-        T("date", "blank", ""),
-        T("amount", "blank", ""),
-    ]
-    c = gate.count_cells(rec, conf)
-    a = c["all"]
-    assert (a.n_cells, a.n_text, a.n_correct, a.n_review, a.n_miss) == (6, 4, 2, 1, 2)
-    assert c["amount"].n_miss == 2 and c["description"].n_miss == 0
-    assert c["description"].n_review == 1 and c["account"].accuracy == 1.0
-    merged = gate.total_counts([c, c])
-    assert merged["all"].n_cells == 12 and merged["amount"].n_miss == 4
-
-
 def test_same_value_normalizes_only_text_columns():
     assert gate.same_value("description", "ＡＢＣ　旅費", "ABC旅費")
     assert not gate.same_value("amount", "1,000", "1000")
     assert not gate.same_value("date", "R7.1.1", "R07.1.1")
+
+
+# ---- 感度の高い指標(金額 1 件で不採用・列ごと・期待見逃しとの比較・較正の質)
+
+
+def calib(n=500, nll=0.40, expected=3.0, observed=2):
+    return gate.Calib(n, nll, nll * 0.8, expected, observed)
+
+
+def side(total=None, calib_=None, **by_column):
+    """by_column: 列 -> (n_miss, observed_miss, expected_miss)。"""
+    t = total or counts()
+    by = {
+        c: EvalCounts(n_cells=250, n_text=150, n_correct=135, n_review=40, n_miss=m)
+        for c, (m, _o, _e) in by_column.items()
+    }
+    cb = {c: calib(150, 0.4, e, o) for c, (_m, o, e) in by_column.items()}
+    return gate.EvalSide(t, calib_ or calib(), by, cb)
+
+
+def test_poisson_upper_tail_matches_closed_forms():
+    assert gate.poisson_sf(0, 0.3) == 1.0
+    assert gate.poisson_sf(1, 0.3) == pytest.approx(1 - math.exp(-0.3))
+    assert gate.poisson_sf(2, 0.5) == pytest.approx(1 - math.exp(-0.5) * 1.5)
+    assert gate.poisson_sf(3, 0.0) == 0.0
+
+
+def test_one_unflagged_error_in_the_amount_column_rejects_even_a_better_generation():
+    parent = side(counts(correct=500, miss=5), amount=(0, 0, 0.3))
+    cand = side(counts(correct=580, review=150, miss=2), amount=(1, 1, 0.5))
+    assert decide(parent, cand) == Decision("reject", gate.R_AMOUNT_MISS)
+    ok = side(counts(correct=580, review=150, miss=2), amount=(0, 0, 0.5))
+    assert decide(parent, ok).adopted
+
+
+def test_a_column_whose_misses_grow_rejects_even_if_the_total_does_not_get_worse():
+    parent = side(counts(miss=5), account=(0, 0, 0.2), date=(5, 5, 4.0))
+    cand = side(counts(correct=560, miss=5), account=(1, 1, 1.0), date=(4, 4, 4.0))
+    assert decide(parent, cand) == Decision("reject", gate.R_MISS_WORSE)
+
+
+def test_confident_errors_more_than_predicted_reject_by_the_poisson_test():
+    parent = side(counts(miss=3), calib_=calib(expected=3.0, observed=3))
+    # 予測 0.5 件に対して 4 件観測(P ≈ 0.0017)。見逃しの件数は親と同じでも、自信のある誤りが予測より有意に多い
+    over = side(counts(correct=560, review=170, miss=3), calib_=calib(expected=0.5, observed=4))
+    assert decide(parent, over) == Decision("reject", gate.R_OVERCONFIDENT)
+    # 予測 3 件に対して 4 件は偶然の範囲
+    fine = side(counts(correct=560, review=170, miss=3), calib_=calib(expected=3.0, observed=4))
+    assert decide(parent, fine).adopted
+    # 列ごとは 1% の水準: 予測 0.3 件に対して 2 件(P ≈ 0.037)は全体の 5% では引っかかるが列では通る
+    col_ok = side(counts(correct=560, review=170, miss=3), date=(2, 2, 0.3))
+    assert decide(parent, col_ok).adopted
+    col_ng = side(counts(correct=560, review=170, miss=3), date=(3, 3, 0.3))  # P ≈ 0.0036
+    assert decide(parent, col_ng).reason in (gate.R_OVERCONFIDENT, gate.R_MISS_WORSE)
+
+
+def test_calibration_quality_must_not_get_worse():
+    parent = side(counts(miss=2), calib_=calib(nll=0.40, expected=3, observed=2))
+    worse = side(
+        counts(correct=570, review=170, miss=2), calib_=calib(nll=0.55, expected=3, observed=2)
+    )
+    assert decide(parent, worse) == Decision("reject", gate.R_CALIBRATION_WORSE)
+    better = side(
+        counts(correct=570, review=170, miss=2), calib_=calib(nll=0.30, expected=3, observed=2)
+    )
+    assert decide(parent, better).adopted
+
+
+def test_gate_still_accepts_plain_counts_and_missing_calibration():
+    assert decide(counts(), counts(correct=560, review=170, miss=4)).adopted
+    assert decide(side(counts()), counts(correct=560, review=170, miss=4)).adopted
+
+
+def test_eval_side_roundtrips_through_a_dict():
+    s = side(counts(), amount=(0, 0, 0.3), date=(2, 2, 1.0))
+    back = gate.EvalSide.from_dict(s.to_dict())
+    assert back.total == s.total and back.calib == s.calib
+    assert back.by_column == s.by_column and back.calib_by_column == s.calib_by_column
+    flat = gate.EvalSide.from_dict(EvalCounts(10, 5, 4, 1, 0).to_dict())
+    assert flat.calib is None and flat.by_column == {}

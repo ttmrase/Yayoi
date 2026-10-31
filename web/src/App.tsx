@@ -3,6 +3,7 @@ import { ApiError, api, hasToken } from "./api";
 import ExportScreen from "./ExportScreen";
 import JobsScreen from "./JobsScreen";
 import LearningScreen from "./LearningScreen";
+import NoticeBanner from "./NoticeBanner";
 import ReviewScreen from "./ReviewScreen";
 import { fetchSettings } from "./pageApi";
 import SettingsScreen from "./SettingsScreen";
@@ -66,6 +67,7 @@ export default function App() {
           {health ? `接続 OK (v${health.version})` : (error ?? "接続中…")}
         </span>
       </header>
+      {wizard === null && <NoticeBanner onOpenLearning={() => setTab("学習")} />}
       <main>
         {wizard !== null && (
           <SetupWizard

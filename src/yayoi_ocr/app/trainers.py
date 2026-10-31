@@ -19,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from .gate import EvalCounts
+from .gate import Calib, EvalCounts, EvalSide
 
 Progress = Callable[[str, float], None]
 
@@ -54,13 +54,50 @@ def _eval_text_cells(plan: dict) -> int:
     )  # cell = [row, col, column, kind, resolved]
 
 
+def _mock_side(
+    n_cells: int,
+    n_text: int,
+    correct: float,
+    review: float,
+    miss: int,
+    nll: float,
+    calibration: float = 1.0,
+    amount_miss: int = 0,
+) -> EvalSide:
+    """計画の件数から作る合成の成績(全体 + 4 列)。見逃し `miss` は日付・科目・摘要に均等に割り、金額は `amount_miss`。
+    予測した見逃しの件数は、観測した件数の `calibration` 倍(1.0 = 較正が合っている、小さいほど自信過剰)。"""
+    cols = ("date", "account", "description", "amount")
+
+    def share(x: int, i: int, n: int = 4) -> int:
+        return x // n + (1 if i < x % n else 0)
+
+    total_miss = miss + amount_miss
+    total = EvalCounts(n_cells, n_text, round(correct * n_text), round(review * n_text), total_miss)
+    by, cal = {}, {}
+    for i, col in enumerate(cols):
+        m = amount_miss if col == "amount" else share(miss, i, 3)
+        by[col] = EvalCounts(
+            share(n_cells, i),
+            share(n_text, i),
+            share(total.n_correct, i),
+            share(total.n_review, i),
+            m,
+        )
+        cal[col] = Calib(share(n_text, i), nll, nll * 0.8, calibration * m, m)
+    return EvalSide(
+        total, Calib(n_text, nll, nll * 0.8, calibration * total_miss, total_miss), by, cal
+    )
+
+
 class MockTrainer:
-    """合成の成績を返す学習器(重みは空のファイル)。評価用ページの非空欄セル数は、計画の実際の件数を使う(評価が足りない場合の見送りも試験できる)。"""
+    """合成の成績を返す学習器(重みは空のファイル)。評価用ページの非空欄セル数は、計画の実際の件数を使う(評価が足りない場合の見送りも試験できる)。
+    mode: improve(採用される)/ worsen(見逃しが増える)/ flat(変わらない)/ fail(失敗)/ amount_miss(金額に要確認でない誤り)/
+    overconfident(見逃しが予測より有意に多い)/ calib_worse(較正が悪化)。"""
 
     needs_pagedata = False
 
     def __init__(self) -> None:
-        self.mode = "improve"  # improve / worsen / fail / flat
+        self.mode = "improve"
         self.delay = 0.0
         self.calls = 0
 
@@ -79,25 +116,15 @@ class MockTrainer:
             raise TrainerError("mock_failure")
         n_text = _eval_text_cells(plan)
         n_cells = len(plan["pages"]["eval"]) * 116
-        parent = EvalCounts(
-            n_cells,
-            n_text,
-            round(0.88 * n_text),
-            round(0.30 * n_text),
-            max(1, round(0.01 * n_cells)),
-        )
+        miss0 = max(1, round(0.01 * n_cells))
+        parent = _mock_side(n_cells, n_text, 0.88, 0.30, miss0, 0.40)
         cand = {
-            "improve": EvalCounts(
-                n_cells,
-                n_text,
-                round(0.94 * n_text),
-                round(0.26 * n_text),
-                max(0, parent.n_miss - 1),
-            ),
-            "worsen": EvalCounts(
-                n_cells, n_text, round(0.84 * n_text), round(0.30 * n_text), parent.n_miss + 3
-            ),
-            "flat": EvalCounts(n_cells, n_text, parent.n_correct, parent.n_review, parent.n_miss),
+            "improve": _mock_side(n_cells, n_text, 0.94, 0.26, max(0, miss0 - 1), 0.30),
+            "worsen": _mock_side(n_cells, n_text, 0.84, 0.30, miss0 + 3, 0.45),
+            "flat": _mock_side(n_cells, n_text, 0.88, 0.30, miss0, 0.40),
+            "amount_miss": _mock_side(n_cells, n_text, 0.94, 0.26, 0, 0.30, amount_miss=1),
+            "overconfident": _mock_side(n_cells, n_text, 0.94, 0.26, miss0, 0.30, calibration=0.02),
+            "calib_worse": _mock_side(n_cells, n_text, 0.94, 0.26, max(0, miss0 - 1), 0.55),
         }[self.mode]
         wdir = run_dir / WEIGHTS_SUBDIR
         wdir.mkdir(parents=True, exist_ok=True)
@@ -112,9 +139,9 @@ class MockTrainer:
             "recalibration": {},
             "train": {
                 "samples": {"256": 0, "384": 0},
-                "rehearsal": 0,
-                "epochs": 0,
-                "seconds": 0.0,
+                "rehearsal": {"256": 0, "384": 0},
+                "epochs": {"256": 0, "384": 0},
+                "seconds_total": 0.0,
                 "device": "mock",
                 "threads": 1,
             },

@@ -36,12 +36,15 @@ def models(tmp_path):
 
 
 def write_weights(tmp_path, profile: int, number: int, with_confidence: bool = True):
+    """`gens.install` が作るのと同じ形の世代の置き場(重み・確信度・メタに、重みの SHA256 を記録する)。"""
     d = models(tmp_path) / str(profile) / gens.gen_dir_name(number)
     d.mkdir(parents=True)
     for f in gens.WEIGHT_FILES:
-        (d / f).write_bytes(b"w")
+        (d / f).write_bytes(f"w{number}".encode())
+    hashes = gens.weights_hashes(d)
     if with_confidence:
-        (d / gens.CONFIDENCE_FILE).write_text("{}")
+        (d / gens.CONFIDENCE_FILE).write_text(json.dumps({"weights_sha256": hashes}))
+    (d / gens.META_FILE).write_text(json.dumps({"weights_sha256": hashes}))
     return d
 
 
@@ -170,7 +173,10 @@ def test_rollback_is_refused_for_rejected_discarded_or_weightless_generations(co
     gens.activate(con, models(tmp_path), gens.shipped(con)["id"])
     with pytest.raises(store.StoreError) as e:
         gens.activate(con, models(tmp_path), g2)
-    assert e.value.code == "generation_weights_missing"
+    assert (
+        e.value.code == "generation_weights_invalid"
+        and e.value.extra["reason"] == "weights_missing"
+    )
     with pytest.raises(store.StoreError) as e:
         gens.activate(con, models(tmp_path), 999)
     assert e.value.status == 404
@@ -334,3 +340,255 @@ def test_the_runner_recognizes_with_the_active_generation_and_records_its_id(tmp
         c.post(f"/api/generations/{gens.shipped(con)['id']}/activate")  # ロールバック
         pl, gen = run()
         assert pl.weights_dir is None and gen == gens.shipped(con)["id"]
+
+
+# ---- 重みと確信度の組の整合(director: 重みだけ欠け / 確信度だけ欠け / 組が一致しない)
+
+
+def test_a_missing_weight_file_sends_recognition_back_to_the_shipped_pair_with_a_warning(
+    con, tmp_path
+):
+    gid = add_trained(con, tmp_path)
+    (models(tmp_path) / "1" / "gen_0001" / gens.WEIGHT_FILES[0]).unlink()
+    w = gens.weights_for(con, models(tmp_path))
+    assert w.dir is None and w.confidence is None and w.number == 0  # 重みも確信度も出荷時の組
+    row = con.execute("SELECT * FROM generations WHERE id = ?", (gid,)).fetchone()
+    assert (row["status"], row["reject_reason"], row["ack"]) == ("broken", "weights_missing", 0)
+    assert gens.active(con)["kind"] == "shipped"
+    n = gens.notices(con)
+    assert [(x["number"], x["status"], x["code"]) for x in n] == [(1, "broken", "weights_missing")]
+
+
+def test_a_missing_confidence_file_is_refused_the_same_way(con, tmp_path):
+    add_trained(con, tmp_path)
+    (
+        models(tmp_path) / "1" / "gen_0001" / gens.CONFIDENCE_FILE
+    ).unlink()  # 重みはあるが確信度が無い
+    w = gens.weights_for(con, models(tmp_path))
+    assert w.dir is None and w.confidence is None
+    assert gens.notices(con)[0]["code"] == "confidence_missing"
+
+
+@pytest.mark.parametrize("tamper", ["confidence_hash", "weights_bytes", "meta_hash"])
+def test_a_mismatched_pair_is_refused(con, tmp_path, tamper):
+    add_trained(con, tmp_path)
+    d = models(tmp_path) / "1" / "gen_0001"
+    if tamper == "confidence_hash":  # 別の世代の確信度を置いた
+        other = write_weights(tmp_path, 1, 2)
+        (d / gens.CONFIDENCE_FILE).write_bytes((other / gens.CONFIDENCE_FILE).read_bytes())
+    elif tamper == "weights_bytes":  # 重みを別のものに差し替えた
+        (d / gens.WEIGHT_FILES[1]).write_bytes(b"another weights")
+    else:
+        (d / gens.META_FILE).write_text(json.dumps({"weights_sha256": {"x": "y"}}))
+    w = gens.weights_for(con, models(tmp_path))
+    assert w.dir is None and w.confidence is None
+    assert gens.notices(con)[0]["code"] == "pair_mismatch"
+
+
+def test_a_valid_pair_is_used_and_the_verification_is_remembered(con, tmp_path, monkeypatch):
+    add_trained(con, tmp_path)
+    assert gens.weights_for(con, models(tmp_path)).number == 1
+    calls = []
+    real = gens._sha256
+    monkeypatch.setattr(gens, "_sha256", lambda p: calls.append(p) or real(p))
+    for _ in range(5):  # ページごとに呼ばれても、ファイルが変わらなければハッシュを計算し直さない
+        assert gens.weights_for(con, models(tmp_path)).number == 1
+    assert calls == []
+
+
+def test_rollback_to_a_broken_retired_generation_is_refused(con, tmp_path):
+    g1 = add_trained(con, tmp_path, 1)
+    add_trained(con, tmp_path, 2)
+    (models(tmp_path) / "1" / "gen_0001" / gens.CONFIDENCE_FILE).write_text("{}")  # 組が壊れる
+    with pytest.raises(store.StoreError) as e:
+        gens.activate(con, models(tmp_path), g1)
+    assert e.value.status == 409 and e.value.extra["reason"] == "pair_mismatch"
+    g = next(x for x in gens.list_generations(con, models(tmp_path)) if x["id"] == g1)
+    assert g["restorable"] is False
+
+
+def test_the_warning_can_be_acknowledged_and_reset_clears_it(con, tmp_path):
+    gid = add_trained(con, tmp_path)
+    (models(tmp_path) / "1" / "gen_0001" / gens.WEIGHT_FILES[0]).unlink()
+    gens.weights_for(con, models(tmp_path))
+    assert len(gens.notices(con)) == 1
+    gens.acknowledge(con, gid)
+    assert gens.notices(con) == []
+    with pytest.raises(store.StoreError):
+        gens.acknowledge(con, 999)
+
+
+def test_the_runner_recognizes_with_the_shipped_pair_when_the_generation_is_broken(tmp_path):
+    from test_app_hardening import png_bytes, upload
+
+    backend = Recording()
+    app = create_app(
+        tmp_path / "a.sqlite3", TOKEN, allowed_hosts_for(PORT), dev=True, backend=backend
+    )
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=AUTH) as c:
+        con = app.state.db
+        g1 = add_trained(con, tmp_path)
+        (models(tmp_path) / "1" / "gen_0001" / gens.CONFIDENCE_FILE).unlink()
+        up = upload(c, "a.png", png_bytes()).json()
+        job = c.post("/api/jobs", json={"upload_ids": [up["id"]]}).json()
+        app.state.runner.run_job(job["job_id"])
+        pl = backend.payloads[-1]
+        assert (
+            pl.weights_dir is None and pl.confidence is None
+        )  # 重みだけ使う、ということが起きない
+        assert (
+            con.execute(
+                "SELECT generation FROM pages WHERE id = ?", (job["page_ids"][0],)
+            ).fetchone()[0]
+            == gens.shipped(con)["id"]
+        )
+        notes = c.get("/api/notices").json()["notices"]
+        assert [(n["id"], n["code"]) for n in notes] == [(g1, "confidence_missing")]
+        assert c.get("/api/learning").json()["notices"] == notes
+        assert c.post(f"/api/notices/{g1}/ack").status_code == 200
+        assert c.get("/api/notices").json()["notices"] == []
+
+
+# ---- checker の指摘: 置き場の厳密な一致(G-1)・メタの許可リスト(I-6)・番号の一意(I-7)・結果のパス(T-2)
+
+
+def test_only_the_exact_generation_dir_is_ever_read_or_deleted(con, tmp_path):
+    """dir 列が出荷時の重みの置き場や他の世代を指していても、読み込みも削除もしない。"""
+    keep = tmp_path / "models" / "adapted"
+    keep.mkdir(parents=True)
+    (keep / "x.pt").write_bytes(b"shipped")
+    gid = add_trained(con, tmp_path, 1)
+    for bad in (
+        "models/adapted",
+        "models/1",
+        "models",
+        "models/1/gen_0002",
+        "../models/1/gen_0001",
+        "/etc",
+    ):
+        con.execute("UPDATE generations SET dir = ?, status = 'active' WHERE id = ?", (bad, gid))
+        row = con.execute("SELECT * FROM generations WHERE id = ?", (gid,)).fetchone()
+        assert gens.gen_path(models(tmp_path), row) is None
+        assert gens.verify_pair(models(tmp_path), row) == "dir_invalid"
+        gens._remove_dir(models(tmp_path), row)
+        assert (keep / "x.pt").exists() and (models(tmp_path) / "1" / "gen_0001").exists()
+    con.execute(
+        "UPDATE generations SET dir = 'models/adapted', status = 'active' WHERE id = ?", (gid,)
+    )
+    assert gens.reset(con, models(tmp_path)) == 1  # リセットしても出荷時の重みは消えない
+    assert (keep / "x.pt").exists()
+
+
+def test_meta_only_accepts_numbers_and_code_like_strings(con, tmp_path):
+    ok = {
+        "n_train_pages": 3,
+        "train_page_ids": [1, 2],
+        "eval": {"candidate": {"accuracy": 0.9}},
+        "decision": {"reason": "adopted_accuracy_up"},
+        "device": "cpu",
+    }
+    assert gens.clean_meta(ok) == ok
+    for bad in (
+        {"note": "旅費交通費"},
+        {"x": "has space"},
+        {"x": ["摘要"]},
+        {"キー": 1},
+        {"x": {"y": "金額 1,200"}},
+        {"x": object()},
+    ):
+        with pytest.raises(ValueError):
+            gens.clean_meta(bad)
+    with pytest.raises(ValueError):  # 登録の入口でも通らない
+        gens.register(
+            con,
+            models(tmp_path),
+            profile_id=1,
+            number=5,
+            parent_id=None,
+            meta={"memo": "旅費"},
+            adopt=False,
+        )
+    assert gens.clean_meta({"x": float("nan")}) == {"x": None}
+
+
+def test_generation_numbers_are_unique_per_profile(con, tmp_path):
+    add_trained(con, tmp_path, 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute(
+            "INSERT INTO generations (profile_id, created_at, status, kind, number) VALUES (1, 1.0, 'rejected', 'trained', 1)"
+        )
+
+
+def test_install_refuses_result_paths_outside_the_run_dir(con, tmp_path):
+    run_dir = tmp_path / "training" / "1"
+    (run_dir / "weights").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    for f in gens.WEIGHT_FILES:
+        (outside / f).write_bytes(b"w")
+        (run_dir / "weights" / f).write_bytes(b"w")
+    (outside / "confidence.json").write_text("{}")
+    (run_dir / "weights" / "confidence.json").write_text("{}")
+    kw = dict(profile_id=1, number=1, parent_id=None, meta={"n_train_pages": 1})
+    with pytest.raises(ValueError):
+        gens.install(
+            con,
+            models(tmp_path),
+            weights_dir=outside,
+            confidence=run_dir / "weights" / "confidence.json",
+            run_dir=run_dir,
+            **kw,
+        )
+    with pytest.raises(ValueError):
+        gens.install(
+            con,
+            models(tmp_path),
+            weights_dir=run_dir / "weights",
+            confidence=outside / "confidence.json",
+            run_dir=run_dir,
+            **kw,
+        )
+    assert not (models(tmp_path) / "1").exists()
+    gid = gens.install(
+        con,
+        models(tmp_path),
+        weights_dir=run_dir / "weights",
+        confidence=run_dir / "weights" / "confidence.json",
+        run_dir=run_dir,
+        **kw,
+    )
+    d = models(tmp_path) / "1" / "gen_0001"
+    conf = json.loads((d / "confidence.json").read_text())
+    meta = json.loads((d / "meta.json").read_text())
+    assert (
+        conf["weights_sha256"] == meta["weights_sha256"] == gens.weights_hashes(d)
+    )  # 組の識別子が両方に入る
+    assert gens.weights_for(con, models(tmp_path)).generation_id == gid
+
+
+# ---- 採用後の安全のための停止
+
+
+def test_halt_returns_to_the_restorable_parent_and_cannot_be_restored(con, tmp_path):
+    shipped = gens.shipped(con)["id"]
+    g1 = add_trained(con, tmp_path, 1)
+    g2 = add_trained(con, tmp_path, 2)
+    assert gens.active(con)["id"] == g2
+    out = gens.halt(
+        con, models(tmp_path), g2, "halted_amount_miss", {"k_amount": 1, "cutoff": 123.0}
+    )
+    assert out["status"] == "halted" and gens.active(con)["id"] == g1  # 親(世代 1)に戻る
+    assert out["halt"]["code"] == "halted_amount_miss" and out["halt"]["cutoff"] == 123.0
+    assert gens.halt_cutoff(con) == 123.0
+    with pytest.raises(store.StoreError) as e:
+        gens.activate(con, models(tmp_path), g2)
+    assert e.value.code == "generation_not_restorable"
+    # 親も使えなければ、さらにその親(最後は出荷時)
+    (models(tmp_path) / "1" / "gen_0001" / gens.WEIGHT_FILES[0]).unlink()
+    g3 = add_trained(con, tmp_path, 3)
+    gens.halt(con, models(tmp_path), g3, "halted_miss_rate")
+    assert gens.active(con)["id"] == shipped
+    assert [n["status"] for n in gens.notices(con)] == ["halted", "halted"]
+    assert (
+        gens.halt(con, models(tmp_path), g3, "halted_miss_rate")["status"] == "halted"
+    )  # 何度呼んでも同じ

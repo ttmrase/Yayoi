@@ -9,6 +9,7 @@ import type {
   JobSummary,
   LayoutData,
   LearningData,
+  Notice,
   Page,
   Pt,
   SettingsResponse,
@@ -53,6 +54,8 @@ export const exportSample = (format: string, date: string) =>
   apiBlobUrl(`/api/exports/sample?format=${encodeURIComponent(format)}&date=${encodeURIComponent(date)}`);
 export const fetchLearning = () => api<LearningData>("/api/learning");
 export const learningReport = () => apiBlobUrl("/api/learning/report");
+export const fetchNotices = () => api<{ notices: Notice[] }>("/api/notices");
+export const ackNotice = (id: number) => api<{ ok: boolean }>(`/api/notices/${id}/ack`, json("POST", {}));
 export const fetchTraining = () => api<TrainingData>("/api/training");
 export const startTraining = () => api<{ run_id: number }>("/api/training/start", json("POST", {}));
 export const cancelTraining = () => api<{ cancelled: boolean }>("/api/training/cancel", json("POST", {}));

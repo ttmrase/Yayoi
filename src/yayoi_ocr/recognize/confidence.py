@@ -140,6 +140,8 @@ class GroupModel:
     const: float = 0.5
     threshold: float = 1.1  # p < threshold を要確認。1.1 = 常に確認
     n_train: int = 0
+    # 追加学習した世代を採用した直後の数ページに使う、より厳しいしきい値(期待される見逃し率が目標 × 0.8 以下になる値)。None なら通常のしきい値のまま
+    warm_threshold: float | None = None
 
     def prob(self, x: np.ndarray) -> float:
         if self.lr is None:
@@ -178,6 +180,7 @@ class ConfidenceModel:
                 "const": g.const,
                 "threshold": g.threshold,
                 "n_train": g.n_train,
+                **({} if g.warm_threshold is None else {"warm_threshold": g.warm_threshold}),
             }
         return json.dumps(
             {"features": list(FEATURE_NAMES), "groups": out, "default": self.default_threshold},
@@ -189,7 +192,8 @@ class ConfidenceModel:
         Path(path).write_text(self.to_json(), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: str | Path) -> ConfidenceModel:
+    def load(cls, path: str | Path, warm: bool = False) -> ConfidenceModel:
+        """`warm` が真なら、`warm_threshold` を持つ群はそのしきい値を使う(採用直後の数ページ。通常より厳しいか同じ)。"""
         d = json.loads(Path(path).read_text(encoding="utf-8"))
         if d["features"] != list(FEATURE_NAMES):
             raise ValueError("特徴量の構成が違う確信度モデルです(再較正が必要)")
@@ -200,7 +204,13 @@ class ConfidenceModel:
                 lr = LogisticRegression()
                 lr.w = np.array(g["w"])
                 lr.b = float(g["b"])
-            m.groups[k] = GroupModel(lr, g["const"], g["threshold"], g["n_train"])
+            wt = g.get("warm_threshold")
+            thr = float(g["threshold"])
+            if warm and wt is not None:
+                thr = max(thr, float(wt))
+            m.groups[k] = GroupModel(
+                lr, g["const"], thr, g["n_train"], None if wt is None else float(wt)
+            )
         return m
 
 
@@ -293,6 +303,22 @@ def cp_upper(k: int, n: int, alpha: float = 0.05) -> float:
         else:
             hi = mid
     return hi
+
+
+def cp_lower(k: int, n: int, alpha: float = 0.05) -> float:
+    """見逃し k 件 / n セルの割合の、Clopper-Pearson の片側 (1 - alpha) 下側信頼限界。これが目標を超えれば、実際の見逃し率が目標を超えていると言える。"""
+    if n <= 0 or k <= 0:
+        return 0.0
+    lo, hi = 0.0, min(1.0, k / n) if k < n else 1.0
+    for _ in range(
+        80
+    ):  # P(X ≥ k | p) = 1 - P(X ≤ k-1 | p) は p について単調増加。= alpha となる p を二分法で求める
+        mid = 0.5 * (lo + hi)
+        if 1.0 - _binom_cdf(k - 1, n, mid) < alpha:
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 def choose_threshold(

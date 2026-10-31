@@ -109,8 +109,28 @@ _COUNT_KEYS = (
 )
 
 
+_CALIB_KEYS = ("n", "nll", "brier", "expected_miss", "observed_miss")
+
+
 def _counts(d: dict | None) -> dict | None:
     return None if not d else {k: d[k] for k in _COUNT_KEYS if k in d}
+
+
+def _side(d: dict | None) -> dict | None:
+    """親または新世代の評価成績(全体 + 列ごと。件数・割合・較正の質だけ)。"""
+    if not d:
+        return None
+    out = _counts(d) or {}
+    if d.get("calib"):
+        out["calib"] = {k: d["calib"].get(k) for k in _CALIB_KEYS}
+    out["by_column"] = {
+        col: {
+            **(_counts(v) or {}),
+            **({"calib": {k: v["calib"].get(k) for k in _CALIB_KEYS}} if v.get("calib") else {}),
+        }
+        for col, v in (d.get("by_column") or {}).items()
+    }
+    return out
 
 
 def generation_report(con: sqlite3.Connection, profile_id: int, rows: list[dict]) -> list[dict]:
@@ -147,12 +167,8 @@ def generation_report(con: sqlite3.Connection, profile_id: int, rows: list[dict]
                     )
                 },
                 "eval": {
-                    "parent": _counts(ev.get("parent")),
-                    "candidate": _counts(ev.get("candidate")),
-                    "by_column": {
-                        col: {side: _counts(v.get(side)) for side in ("parent", "candidate")}
-                        for col, v in (ev.get("by_column") or {}).items()
-                    },
+                    k: _side(ev.get(k))
+                    for k in ("parent", "candidate", "candidate_global", "candidate_final")
                 },
                 "recalibration": {
                     col: {
@@ -161,6 +177,12 @@ def generation_report(con: sqlite3.Connection, profile_id: int, rows: list[dict]
                     }
                     for col, c in recal.items()
                 },
+                "halt": {
+                    k: (meta.get("halt") or {}).get(k)
+                    for k in ("code", "k_total", "k_amount", "n_cells", "n_pages")
+                }
+                if meta.get("halt")
+                else None,
                 "observed": obs.get(g["id"]),
             }
         )

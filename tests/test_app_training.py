@@ -377,3 +377,65 @@ def test_accuracy_report_has_generation_and_training_statistics_only(env):
     assert rep["settings"]["auto_train"] is False and rep["settings"]["train_threshold_cells"] == 50
     assert all(p["generation"] in (0, 1) for p in rep["pages"])  # 世代の ID ではなく番号
     assert secret not in r.text
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        ("amount_miss", "amount_miss"),
+        ("overconfident", "overconfident"),
+        ("calib_worse", "calibration_worse"),
+    ],
+)
+def test_sensitive_gate_rules_reject_a_generation_that_looks_better_by_accuracy(env, mode, reason):
+    set_mock(env, mode)
+    confirm_pages(env, 6)
+    env.post("/api/training/start")
+    wait(env)
+    run = last(env)
+    assert run["status"] == "rejected" and run["reason"] == reason
+    assert gens.active(env.app_.state.db)["kind"] == "shipped"
+    g = next(x for x in env.get("/api/generations").json()["generations"] if x["number"] == 1)
+    assert (
+        g["eval"]["candidate"]["accuracy"] > g["eval"]["parent"]["accuracy"]
+        or mode == "calib_worse"
+    )
+    assert (
+        g["eval"]["candidate"]["calib"]["n"] > 0 and "amount" in g["eval"]["candidate"]["by_column"]
+    )
+
+
+def test_the_first_pages_after_adoption_use_the_warm_thresholds(tmp_path):
+    from test_app_generations import add_trained
+    from test_app_hardening import png_bytes, upload
+    from yayoi_ocr.app.recalibrate import WARM_PAGES
+
+    class Rec(FakeBackend):
+        def __init__(self):
+            super().__init__(error_rate=0.0)
+            self.payloads = []
+
+        def process(self, payload):
+            self.payloads.append(payload)
+            return super().process(payload)
+
+    backend = Rec()
+    app = create_app(
+        tmp_path / "a.sqlite3", TOKEN, allowed_hosts_for(PORT), dev=True, backend=backend
+    )
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=AUTH) as c:
+        con = app.state.db
+        add_trained(con, tmp_path)
+        warm = []
+        for _ in range(WARM_PAGES + 1):
+            up = upload(c, "a.png", png_bytes()).json()
+            job = c.post("/api/jobs", json={"upload_ids": [up["id"]]}).json()
+            app.state.runner.run_job(job["job_id"])
+            warm.append(backend.payloads[-1].confidence_warm)
+        assert warm == [True] * WARM_PAGES + [False]
+        # 出荷時の世代では warm_threshold を使わない
+        gens.activate(con, tmp_path / "models", gens.shipped(con)["id"])
+        up = upload(c, "a.png", png_bytes()).json()
+        job = c.post("/api/jobs", json={"upload_ids": [up["id"]]}).json()
+        app.state.runner.run_job(job["job_id"])
+        assert backend.payloads[-1].confidence_warm is False

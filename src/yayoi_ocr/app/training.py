@@ -85,7 +85,7 @@ class TrainManager:
             f"({','.join('?' * len(COUNTED_STATUSES))})",
             (profile_id, *COUNTED_STATUSES),
         ).fetchone()
-        return float(r[0] or 0.0)
+        return max(float(r[0] or 0.0), gens.halt_cutoff(self.con, profile_id))
 
     def eligible_pages(self, profile_id: int = DEFAULT_PROFILE_ID) -> list[sqlite3.Row]:
         """学習に使える確定ページ(確定した順)。学習器が認識の入力を要するなら、それが残っているものだけ。"""
@@ -324,8 +324,8 @@ class TrainManager:
     def _conclude(
         self, run_id: int, profile_id: int, plan: dict, result: dict, trigger: str
     ) -> None:
-        parent = gate.EvalCounts.from_dict(result["eval"]["parent"])
-        cand = gate.EvalCounts.from_dict(result["eval"]["candidate"])
+        parent = gate.EvalSide.from_dict(result["eval"]["parent"])
+        cand = gate.EvalSide.from_dict(result["eval"]["candidate"])
         decision = gate.decide(parent, cand)
         with self.lock:
             now_active = gens.active(self.con, profile_id)["id"]
@@ -355,8 +355,12 @@ class TrainManager:
             "train": result.get("train", {}),
             "eval": {
                 "parent": parent.to_dict(),
-                "candidate": cand.to_dict(),
-                "by_column": result["eval"].get("by_column", {}),
+                "candidate": cand.to_dict(),  # クロスフィッティングした判定での成績(ゲートが使った)
+                **{
+                    k: result["eval"][k]
+                    for k in ("candidate_global", "candidate_final")
+                    if k in result["eval"]
+                },
             },
             "recalibration": result.get("recalibration", {}),
             "decision": {"outcome": decision.outcome, "reason": decision.reason},
@@ -387,5 +391,6 @@ class TrainManager:
                 meta=meta,
                 weights_dir=Path(result["weights_dir"]),
                 confidence=Path(result["confidence"]),
+                run_dir=self.paths.training / str(run_id),
             )
         self._finish(run_id, "adopted", decision.reason, gid)
