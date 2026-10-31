@@ -153,40 +153,43 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\bundle" | Out-Null
           & "$env:SystemRoot\System32\tar.exe" -xf $zip.FullName -C "$env:RUNNER_TEMP\bundle"
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\setup.ps1" -InstallDir "$env:RUNNER_TEMP\yayoi-install"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP\bundle\setup.ps1" -InstallDir "$env:RUNNER_TEMP\yayoi-ocr"
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Smoke test (non-dev server over HTTP)
         run: >
           python scripts/trial_smoke.py
-          --python "$env:RUNNER_TEMP\yayoi-install\venv\Scripts\python.exe"
-          --models "$env:RUNNER_TEMP\yayoi-install\models"
+          --python "$env:RUNNER_TEMP\yayoi-ocr\venv\Scripts\python.exe"
+          --models "$env:RUNNER_TEMP\yayoi-ocr\models"
           --timeout 1500
 
       - name: Window launch check (informational)
         continue-on-error: true
         shell: powershell
         run: |
-          $env:YAYOI_MODELS_DIR = "$env:RUNNER_TEMP\yayoi-install\models"
+          $env:YAYOI_MODELS_DIR = "$env:RUNNER_TEMP\yayoi-ocr\models"
           $env:YAYOI_APP_DATA = "$env:RUNNER_TEMP\window-data"
           $out = "$env:RUNNER_TEMP\window.out"; $err = "$env:RUNNER_TEMP\window.err"
           $p = $null
           try {
-            $p = Start-Process -FilePath "$env:RUNNER_TEMP\yayoi-install\venv\Scripts\python.exe" -ArgumentList "-m","yayoi_ocr.app" -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            # venv の python.exe は、実体の python.exe を子プロセスとして起動する。待ち受けは子プロセス側なので、プロセスの木全体で見る
+            $p = Start-Process -FilePath "$env:RUNNER_TEMP\yayoi-ocr\venv\Scripts\python.exe" -ArgumentList "-m","yayoi_ocr.app" -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
             Start-Sleep -Seconds 30
             if ($p.HasExited) { Write-Host "exited early: $($p.ExitCode)"; Get-Content $err -Tail 40; exit 1 }
-            $conn = Get-NetTCPConnection -OwningProcess $p.Id -State Listen -ErrorAction SilentlyContinue
-            $conn | Format-Table LocalAddress, LocalPort
-            if (-not $conn) { Write-Host "no listener"; exit 1 }
+            $ids = @($p.Id) + @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $p.Id } | ForEach-Object { $_.ProcessId })
+            Write-Host ("process ids: " + ($ids -join ", "))
+            $conn = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.OwningProcess })
+            $conn | Format-Table LocalAddress, LocalPort, OwningProcess
+            if ($conn.Count -eq 0) { Write-Host "no listener"; Get-Content $err -Tail 40; exit 1 }
             if ($conn | Where-Object { $_.LocalAddress -ne "127.0.0.1" }) { Write-Host "non-loopback listener"; exit 1 }
           } finally {
-            if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            if ($p) { & taskkill /PID $p.Id /T /F | Out-Null }
           }
 
       - name: Installed files (manual, licenses, uninstall script)
         shell: powershell
         run: |
-          $d = "$env:RUNNER_TEMP\yayoi-install"
+          $d = "$env:RUNNER_TEMP\yayoi-ocr"
           foreach ($f in "manual.html", "user_manual.md", "uninstall.ps1", "NOTICE.txt") { if (-not (Test-Path "$d\$f")) { Write-Host "missing: $f"; exit 1 } }
           if (-not (Get-ChildItem "$d\licenses" -Recurse -File -ErrorAction SilentlyContinue)) { Write-Host "no license texts"; exit 1 }
           Write-Host ("license text files: " + (Get-ChildItem "$d\licenses" -Recurse -File).Count)
@@ -194,7 +197,7 @@ jobs:
       - name: Uninstall (keeps the data), then -DeleteData (needs DELETE typed)
         shell: powershell
         run: |
-          $d = "$env:RUNNER_TEMP\yayoi-install"
+          $d = "$env:RUNNER_TEMP\yayoi-ocr"
           New-Item -ItemType Directory -Force -Path "$d\images\1" | Out-Null
           Set-Content "$d\app.sqlite3" "x"; Set-Content "$d\images\1\1.png" "x"
           # 1) プログラムだけ削除。データは残る

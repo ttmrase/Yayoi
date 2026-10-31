@@ -190,7 +190,11 @@ def test_a_file_that_is_not_a_zip_is_rejected(tmp_path):
 )
 def test_entries_that_escape_or_are_not_in_the_allow_list_are_rejected(tmp_path, bad):
     z = build_zip(tmp_path / "a.zip", good_files(tmp_path), extra={bad: b"x"})
-    assert code_of(z) == "entry_name_invalid"
+    # Windows の zipfile は、名前の `\` を `/` に直して読み書きする(その場合は普通の名前になり、ファイル一覧との不一致で断られる)
+    want = {"entry_name_invalid"} | (
+        {"file_list_mismatch"} if os.name == "nt" and "\\" in bad else set()
+    )
+    assert code_of(z) in want
     stage = tmp_path / "stage"
     with pytest.raises(BackupError):
         backup.extract_archive(z, stage)
@@ -361,6 +365,42 @@ def test_a_database_with_extra_schema_objects_or_unsafe_paths_is_rejected(tmp_pa
             backup.extract_archive(z, stage)
         assert ei.value.code == want, i
         assert not stage.exists()  # 失敗したら取り出したものを消す
+
+
+def test_database_paths_with_windows_separators_are_accepted_but_traversal_is_not(tmp_path):
+    def with_paths(sep: str, first: str):
+        def mut(con):
+            con.execute(
+                "INSERT INTO jobs (id, name, profile_id, status, created_at) VALUES (1, 'j', 1, 'done', 1.0)"
+            )
+            con.execute(
+                "INSERT INTO pages (id, job_id, idx, status, view_path) VALUES (1, 1, 0, 'confirmed', ?)",
+                (f"1{sep}view.jpg",),
+            )
+            con.execute(
+                "INSERT INTO cells (page_id, row, col, column_kind, kind, crop_path) VALUES (1, 0, 0, 'date', 'text', ?)",
+                (first,),
+            )
+
+        return mut
+
+    for i, (sep, first, ok) in enumerate(
+        [
+            ("/", "1/1.png", True),
+            ("\\", "1\\1.png", True),  # Windows では DB にこの形で入る(os.sep)
+            ("\\", "..\\..\\secret.png", False),
+            ("/", "C:/Windows/x.png", False),
+            ("/", "1/1.png\n", False),
+        ]
+    ):
+        path = tmp_path / f"p{i}.sqlite3"
+        path.write_bytes(db_bytes(tmp_path, with_paths(sep, first), f"q{i}.sqlite3"))
+        if ok:
+            assert backup.check_db(path) == len(appdb.MIGRATIONS)
+        else:
+            with pytest.raises(BackupError) as ei:
+                backup.check_db(path)
+            assert ei.value.code == "db_path_invalid", (i, first)
 
 
 def test_a_corrupted_database_is_rejected(tmp_path):

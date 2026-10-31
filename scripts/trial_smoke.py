@@ -200,7 +200,9 @@ def run(args: argparse.Namespace) -> None:
         if not lic["generated"] or len(lic["components"]) < 20 or len(lic["main"]) < 4:
             raise SmokeError("ライセンスの一覧が生成されていません")
         unknown = [x["name"] for x in lic["components"] if x["license"] == "(要確認)"]
-        log(f"OK ライセンス一覧({len(lic['components'])} 件、ライセンス不明 {len(unknown)} 件)")
+        log(
+            f"OK ライセンス一覧({len(lic['components'])} 件、ライセンス不明 {len(unknown)} 件: {', '.join(unknown)})"
+        )
 
         # ---- 2. 取り込み → 認識 → 確定
         png = synthetic_page_png()

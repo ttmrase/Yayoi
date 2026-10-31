@@ -143,7 +143,7 @@ def entry_problem(name: object) -> str | None:
         return (
             None if len(parts) == 2 else "entry_name_invalid"
         )  # exports/<ファイル名> だけ(日本語の名前もある)
-    if any(p.match(name) for p in _PATTERNS):
+    if any(p.fullmatch(name) for p in _PATTERNS):
         return None
     return "entry_name_invalid"
 
@@ -531,10 +531,12 @@ def extract_archive(
 
 # ---------------------------------------------------------------------- DB の検査
 
-_SAFE_REL = re.compile(r"^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\.[A-Za-z0-9]{1,8}$")
-_RE_CROP = re.compile(r"^\d{1,12}/\d{1,12}\.png$")
-_RE_VIEW = re.compile(r"^\d{1,12}/view\.jpg$")
-_RE_UPLOAD = re.compile(r"^[0-9a-f]{32}/original\.[a-z0-9]{1,8}$")
+# DB に入るファイルの置き場は「領域からの相対パス」で、区切りは OS による(Windows では `\`)。許す文字は英数字・`_`・`-` だけなので、`..`・ドライブ文字・絶対パスは通らない
+_SEP = r"[/\\]"
+_SAFE_REL = re.compile(rf"^[A-Za-z0-9_\-]+({_SEP}[A-Za-z0-9_\-]+)*\.[A-Za-z0-9]{{1,8}}$")
+_RE_CROP = re.compile(rf"^\d{{1,12}}{_SEP}\d{{1,12}}\.png$")
+_RE_VIEW = re.compile(rf"^\d{{1,12}}{_SEP}view\.jpg$")
+_RE_UPLOAD = re.compile(rf"^[0-9a-f]{{32}}{_SEP}original\.[a-z0-9]{{1,8}}$")
 # (テーブル, 列, 許可する形)。NULL は許す
 _PATH_COLUMNS = (
     ("cells", "crop_path", _RE_CROP),
@@ -598,7 +600,7 @@ def check_db(path: Path, *, limits: Limits = DEFAULT_LIMITS) -> int:
                 for (value,) in con.execute(
                     f"SELECT {column} FROM {table} WHERE {column} IS NOT NULL"
                 ):
-                    if not isinstance(value, str) or not rx.match(value):
+                    if not isinstance(value, str) or not rx.fullmatch(value):
                         raise BackupError("db_path_invalid")
             for table, column in (("exports", "file_name"), ("export_files", "name")):
                 if not _has_column(con, table, column):
